@@ -49,11 +49,11 @@ Verification recorded 2026-04-27: `npm run check`, `npm test`, `npm run build`, 
 
 ## 7. Robust tooling roadmap
 
-- [ ] Define the post-v1 workflow layer for guided propose/apply/archive operations backed by OpenSpec CLI commands.
-- [ ] Define multi-repo workspace support for viewing several local OpenSpec repos in one dashboard.
-- [ ] Define cross-repo search over changes, specs, proposals, designs, tasks, and validation errors.
-- [ ] Define timeline/activity view using file modification times, git history, and OpenSpec archive state.
-- [ ] Define dependency graph view connecting changes to touched specs/capabilities and archive readiness.
-- [ ] Define safe artifact authoring/editing flows, including markdown preview and task checkbox updates.
-- [ ] Identify OpenSpec CLI JSON gaps needed for robust app behavior and capture upstream change proposals separately.
-- [ ] Keep all robust features source-of-truth compatible: derived state must be rebuildable from OpenSpec files and CLI output.
+- [x] Define the post-v1 workflow layer for guided propose/apply/archive operations backed by OpenSpec CLI commands. Moved to `add-guided-operator-workflows`.
+- [x] Define multi-repo workspace support for viewing several local OpenSpec repos in one dashboard. Moved to `add-multi-repo-workspace`.
+- [x] Define cross-repo search over changes, specs, proposals, designs, tasks, and validation errors. Moved to `add-cross-repo-search`.
+- [x] Define timeline/activity view using file modification times, git history, and OpenSpec archive state. Moved to `add-timeline-activity-view`.
+- [x] Define dependency graph view connecting changes to touched specs/capabilities and archive readiness. Moved to `add-dependency-graph-view`.
+- [x] Define safe artifact authoring/editing flows, including markdown preview and task checkbox updates. Moved to `add-safe-artifact-authoring`.
+- [x] Identify OpenSpec CLI JSON gaps needed for robust app behavior and capture upstream change proposals separately. Moved to `improve-cli-json-contracts`.
+- [x] Keep all robust features source-of-truth compatible: derived state must be rebuildable from OpenSpec files and CLI output. Captured as a shared constraint across the follow-up changes.

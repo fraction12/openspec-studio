@@ -202,6 +202,43 @@ pub fn validate_repo(repo_path: String) -> Result<RepositoryValidation, BridgeEr
 }
 
 #[tauri::command]
+pub fn pick_repository_folder() -> Result<Option<String>, BridgeErrorDto> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"set selectedFolder to choose folder with prompt "Choose an OpenSpec repository folder"
+POSIX path of selectedFolder"#;
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|source| BridgeError::CommandStartFailed {
+                program: "osascript".to_string(),
+                message: source.to_string(),
+            })?;
+
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Ok((!path.is_empty()).then_some(path));
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") || output.status.code() == Some(1) {
+            return Ok(None);
+        }
+
+        Err(BridgeErrorDto {
+            code: "dialog_failed".to_string(),
+            message: stderr.trim().to_string(),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
 pub fn run_openspec_command(
     repo_path: String,
     args: Vec<String>,

@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import {
   buildOpenSpecFileSignature,
   deriveChangeHealth,
+  deriveValidationTrustState,
+  decideRepositoryCandidateOpen,
   extractJsonPayload,
+  isPersistableLocalRepoPath,
+  normalizeRecentRepoPaths,
+  recentRepoSwitcherPaths,
+  selectVisibleItemId,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
   type ChangeHealth,
@@ -23,6 +30,7 @@ import {
   type VirtualOpenSpecFileRecord,
 } from "./domain/openspecIndex";
 import {
+  createValidationCommandFailureResult,
   markValidationStaleAfterFileChange,
   parseValidationResult,
   type ValidationIssue,
@@ -36,6 +44,7 @@ type DetailTab = "proposal" | "design" | "tasks" | "spec-delta" | "status";
 type Health = ChangeHealth;
 type ArtifactStatus = "present" | "missing" | "blocked";
 type LoadState = "idle" | "loading" | "loaded" | "error";
+type CandidateErrorKind = "missing" | "no-workspace" | "unavailable";
 
 interface RepositoryValidationDto {
   path: string;
@@ -61,6 +70,13 @@ interface RepositoryView {
   branch: string;
   state: RepoState;
   summary: string;
+}
+
+interface CandidateRepoError {
+  kind: CandidateErrorKind;
+  path: string;
+  title: string;
+  message: string;
 }
 
 interface Artifact {
@@ -115,6 +131,9 @@ interface SpecRecord {
   requirements: number;
   updatedAt: string;
   summary: string;
+  summaryQuality: "available" | "missing";
+  validationIssues: ValidationIssue[];
+  requirementsPreview: string[];
 }
 
 interface WorkspaceView {
@@ -126,15 +145,15 @@ interface WorkspaceView {
   validation: ValidationResult | null;
 }
 
-const DEFAULT_REPO_PATH = "/Volumes/MacSSD/Projects/openspec-studio";
+const BROWSER_PREVIEW_REPO_PATH = "browser-preview://openspec-studio";
 const RECENT_REPOS_STORAGE_KEY = "openspec-studio.recent-repos";
 const AUTO_REFRESH_INTERVAL_MS = 15_000;
 
 const healthLabels: Record<Health, string> = {
-  valid: "Valid",
-  stale: "Stale",
-  invalid: "Invalid",
-  missing: "Missing",
+  valid: "Checked",
+  stale: "Check needed",
+  invalid: "Needs attention",
+  missing: "Incomplete",
   blocked: "Blocked",
   ready: "Ready",
 };
@@ -149,72 +168,16 @@ const detailTabs: Array<{ id: DetailTab; label: string }> = [
   { id: "proposal", label: "Proposal" },
   { id: "design", label: "Design" },
   { id: "tasks", label: "Tasks" },
-  { id: "spec-delta", label: "Spec delta" },
-  { id: "status", label: "Status" },
-];
-
-const browserPreviewFiles: VirtualOpenSpecFileRecord[] = [
-  {
-    path: "openspec/changes/build-local-desktop-companion/proposal.md",
-    kind: "file",
-    modifiedTimeMs: Date.now() - 90_000,
-    content:
-      "## Why\n\nOpenSpec Studio is a local-first desktop companion for OpenSpec.\n\n## What Changes\n\n- Tauri shell\n- React/TypeScript UI\n- Change board and detail drill-down\n",
-  },
-  {
-    path: "openspec/changes/build-local-desktop-companion/design.md",
-    kind: "file",
-    modifiedTimeMs: Date.now() - 60_000,
-    content:
-      "## Decisions\n\nUse Tauri with React/TypeScript. Keep the board scan-first and reveal dense detail through selection, tabs, and focused panels.\n",
-  },
-  {
-    path: "openspec/changes/build-local-desktop-companion/tasks.md",
-    kind: "file",
-    modifiedTimeMs: Date.now() - 30_000,
-    content: [
-      "- [x] Choose v1 desktop shell: Tauri with a React/TypeScript frontend.",
-      "- [x] Scaffold the app with a minimal desktop window and packaged launch path.",
-      "- [x] Add basic project scripts for development, build, lint/check, and test.",
-      "- [x] Document how to run the app locally and how to produce an app bundle.",
-      "- [ ] Run repository-wide validation from the UI.",
-    ].join("\n"),
-  },
-  {
-    path: "openspec/changes/build-local-desktop-companion/specs/change-board/spec.md",
-    kind: "file",
-    modifiedTimeMs: Date.now() - 20_000,
-    content:
-      "### Requirement: Change board overview\nThe system SHALL provide a visual overview of OpenSpec changes.\n",
-  },
-  {
-    path: "openspec/specs/change-board/spec.md",
-    kind: "file",
-    modifiedTimeMs: Date.now() - 10_000,
-    content:
-      "### Requirement: Change board overview\n### Requirement: Task progress summary\n",
-  },
-];
-
-const browserPreviewStatuses: VirtualOpenSpecChangeStatusRecord[] = [
-  {
-    changeName: "build-local-desktop-companion",
-    schemaName: "spec-driven",
-    isComplete: false,
-    artifacts: [
-      { id: "proposal", status: "done" },
-      { id: "design", status: "done" },
-      { id: "specs", status: "done" },
-      { id: "tasks", status: "ready" },
-    ],
-  },
+  { id: "spec-delta", label: "Spec changes" },
+  { id: "status", label: "Validation" },
 ];
 
 function App() {
-  const [repoPathInput, setRepoPathInput] = useState(DEFAULT_REPO_PATH);
+  const [recentRepos, setRecentRepos] = useState<string[]>(readRecentRepos);
+  const [repoPathInput, setRepoPathInput] = useState("");
   const [repo, setRepo] = useState<RepositoryView | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceView | null>(null);
-  const [recentRepos, setRecentRepos] = useState<string[]>(readRecentRepos);
+  const [candidateError, setCandidateError] = useState<CandidateRepoError | null>(null);
   const [view, setView] = useState<BoardView>("changes");
   const [phase, setPhase] = useState<ChangePhase>("active");
   const [query, setQuery] = useState("");
@@ -226,8 +189,33 @@ function App() {
   const [message, setMessage] = useState("Loading local workspace...");
 
   useEffect(() => {
-    void loadRepository(DEFAULT_REPO_PATH);
+    const lastRepoPath = recentRepos[0];
+
+    if (lastRepoPath) {
+      setRepoPathInput(lastRepoPath);
+      void loadRepository(lastRepoPath);
+      return;
+    }
+
+    setLoadState("loaded");
+    setMessage("Choose an OpenSpec repository folder to begin.");
   }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let unlisten: (() => void) | undefined;
+
+    void listen("open-repository-menu", () => {
+      void chooseRepositoryFolder();
+    }).then((nextUnlisten) => {
+      unlisten = nextUnlisten;
+    });
+
+    return () => unlisten?.();
+  }, [repo?.path, repoPathInput]);
 
   useEffect(() => {
     if (!repo || repo.state !== "ready" || !workspace || !isTauriRuntime()) {
@@ -244,16 +232,44 @@ function App() {
   const changes = workspace?.changes ?? [];
   const specs = workspace?.specs ?? [];
   const selectedChange =
-    changes.find((change) => change.id === selectedChangeId) ??
-    changes.find((change) => change.phase === phase) ??
-    changes[0] ??
-    null;
+    changes.find(
+      (change) =>
+        change.id === selectedChangeId && matchesChangeFilters(change, phase, query),
+    ) ?? null;
   const selectedSpec =
-    specs.find((spec) => spec.id === selectedSpecId) ?? specs[0] ?? null;
-  const selectedChangeFilteredOut =
-    view === "changes" && selectedChange ? !matchesChangeFilters(selectedChange, phase, query) : false;
-  const selectedSpecFilteredOut =
-    view === "specs" && selectedSpec ? !matchesSpecFilters(selectedSpec, query) : false;
+    specs.find((spec) => spec.id === selectedSpecId && matchesSpecFilters(spec, query)) ??
+    null;
+
+  useEffect(() => {
+    if (view !== "changes") {
+      return;
+    }
+
+    const nextSelectedChangeId = selectVisibleItemId(
+      changes,
+      selectedChangeId,
+      (change) => matchesChangeFilters(change, phase, query),
+    );
+
+    if (nextSelectedChangeId !== selectedChangeId) {
+      setSelectedChangeId(nextSelectedChangeId);
+      setDetailTab("proposal");
+    }
+  }, [changes, phase, query, selectedChangeId, view]);
+
+  useEffect(() => {
+    if (view !== "specs") {
+      return;
+    }
+
+    const nextSelectedSpecId = selectVisibleItemId(specs, selectedSpecId, (spec) =>
+      matchesSpecFilters(spec, query),
+    );
+
+    if (nextSelectedSpecId !== selectedSpecId) {
+      setSelectedSpecId(nextSelectedSpecId);
+    }
+  }, [query, selectedSpecId, specs, view]);
 
   useEffect(() => {
     const path = artifactPathForTab(selectedChange, detailTab);
@@ -283,40 +299,61 @@ function App() {
   }, [detailTab, repo, selectedChange, workspace]);
 
   async function loadRepository(repoPath: string) {
+    const candidatePath = repoPath.trim();
+
+    if (!candidatePath) {
+      setCandidateError({
+        kind: "missing",
+        path: "",
+        title: "Choose a repository folder",
+        message: "Select a local folder that contains an openspec/ directory.",
+      });
+      setMessage("Choose a repository folder to begin.");
+      return;
+    }
+
     setLoadState("loading");
-    setMessage("Indexing " + repoPath);
+    setCandidateError(null);
+    setMessage("Reading local OpenSpec files from " + candidatePath);
 
     if (!isTauriRuntime()) {
+      const previewFiles: VirtualOpenSpecFileRecord[] = [];
+      const previewStatuses: VirtualOpenSpecChangeStatusRecord[] = [];
       const indexed = indexOpenSpecWorkspace({
-        files: browserPreviewFiles,
-        changeStatuses: browserPreviewStatuses,
+        files: previewFiles,
+        changeStatuses: previewStatuses,
       });
       const previewRepo: RepositoryView = {
-        id: DEFAULT_REPO_PATH,
+        id: BROWSER_PREVIEW_REPO_PATH,
         name: "openspec-studio",
-        path: DEFAULT_REPO_PATH,
+        path: BROWSER_PREVIEW_REPO_PATH,
         branch: "browser-preview",
         state: "ready",
-        summary: "Browser preview data",
+        summary: "Browser preview only",
       };
       const nextWorkspace = buildWorkspaceView(
         indexed,
-        browserPreviewFiles,
+        previewFiles,
         null,
-        browserPreviewStatuses,
+        previewStatuses,
       );
 
       setRepo(previewRepo);
       setWorkspace(nextWorkspace);
       selectFirstItems(nextWorkspace);
       setLoadState("loaded");
-      setMessage("Browser preview loaded. Run the Tauri app to inspect local files.");
+      setMessage("Browser preview loaded without repository data. Run the Tauri app to inspect local files.");
       return;
     }
 
     try {
-      const validation = await invoke<RepositoryValidationDto>("validate_repo", { repoPath });
+      const validation = await invoke<RepositoryValidationDto>("validate_repo", { repoPath: candidatePath });
       const hasOpenSpec = Boolean(validation.has_openspec ?? validation.hasOpenSpec);
+      const candidateDecision = decideRepositoryCandidateOpen({
+        readable: true,
+        hasOpenSpec,
+      });
+      const isSameRepo = repo?.path === validation.path;
       const nextRepo: RepositoryView = {
         id: validation.path,
         name: validation.name,
@@ -326,19 +363,25 @@ function App() {
         summary: hasOpenSpec ? "OpenSpec workspace" : "No openspec/ directory",
       };
 
-      setRepo(nextRepo);
       setRepoPathInput(validation.path);
 
-      if (!hasOpenSpec) {
-        setWorkspace(null);
-        setSelectedChangeId("");
-        setSelectedSpecId("");
+      if (!candidateDecision.promote) {
+        if (!repo) {
+          setRepo(nextRepo);
+          setWorkspace(null);
+          setSelectedChangeId("");
+          setSelectedSpecId("");
+        }
+        setCandidateError({
+          kind: "no-workspace",
+          path: validation.path,
+          title: "No OpenSpec workspace found",
+          message: "The selected folder does not contain an openspec/ directory.",
+        });
         setLoadState("loaded");
-        setMessage("No OpenSpec workspace was found.");
+        setMessage("No OpenSpec workspace was found in " + validation.path);
         return;
       }
-
-      rememberRecentRepo(validation.path);
 
       const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
         repoPath: validation.path,
@@ -354,25 +397,34 @@ function App() {
       const nextWorkspace = buildWorkspaceView(
         indexed,
         fileRecords,
-        validationForFileRecords(workspace?.validation ?? null, workspace?.fileSignature, fileSignature),
+        isSameRepo
+          ? validationForFileRecords(workspace?.validation ?? null, workspace?.fileSignature, fileSignature)
+          : null,
         changeStatuses,
       );
 
+      setRepo(nextRepo);
       setWorkspace(nextWorkspace);
-      selectFirstItems(nextWorkspace);
+      setCandidateError(null);
+      rememberRecentRepo(validation.path);
+      if (isSameRepo) {
+        keepSelectionInWorkspace(nextWorkspace);
+      } else {
+        selectFirstItems(nextWorkspace);
+      }
       setLoadState("loaded");
-      setMessage("Indexed " + nextWorkspace.changes.length + " changes and " + nextWorkspace.specs.length + " specs.");
+      setMessage("Refreshed files: " + nextWorkspace.changes.length + " changes and " + nextWorkspace.specs.length + " specs.");
     } catch (error) {
-      setRepo({
-        id: repoPath,
-        name: repoPath.split("/").filter(Boolean).pop() ?? repoPath,
-        path: repoPath,
-        branch: "local",
-        state: "cli-failure",
-        summary: "Unable to load repository",
+      setCandidateError({
+        kind: "unavailable",
+        path: candidatePath,
+        title: "Repository unavailable",
+        message: errorMessage(error),
       });
-      setWorkspace(null);
-      setLoadState("error");
+      if (!repo) {
+        setWorkspace(null);
+      }
+      setLoadState(repo ? "loaded" : "error");
       setMessage(errorMessage(error));
     }
   }
@@ -384,49 +436,37 @@ function App() {
     }
 
     if (!isTauriRuntime()) {
-      const result = parseValidationResult(
-        { items: [{ id: "browser-preview", type: "change", valid: true }] },
-        { validatedAt: new Date() },
-      );
-      const indexed = indexOpenSpecWorkspace({
-        files: browserPreviewFiles,
-        changeStatuses: browserPreviewStatuses,
-      });
-      const nextWorkspace = buildWorkspaceView(
-        indexed,
-        browserPreviewFiles,
-        result,
-        browserPreviewStatuses,
-      );
-
-      setWorkspace(nextWorkspace);
-      setLoadState("loaded");
-      setMessage("Browser preview validation simulated.");
+      setMessage("Validation requires the Tauri desktop runtime and real OpenSpec files.");
       return;
     }
 
     setLoadState("loading");
-    setMessage("Running openspec validate --all --json...");
+    setMessage("Running OpenSpec validation...");
 
     try {
       const command = await invoke<CommandResultDto>("run_openspec_command", {
         repoPath: repo.path,
         args: ["validate", "--all", "--json"],
       });
-      const rawJson = extractJsonPayload(command.stdout) ?? {
-        valid: command.success,
-        issues: command.success
-          ? []
-          : [
-              {
-                message: command.stderr || command.stdout || "OpenSpec validation failed.",
-              },
-            ],
-      };
-      const result = parseValidationResult(rawJson, {
-        validatedAt: new Date(),
-        repoPath: repo.path,
-      });
+      const rawJson = extractJsonPayload(command.stdout);
+      const result =
+        rawJson !== undefined
+          ? parseValidationResult(rawJson, {
+              validatedAt: new Date(),
+              repoPath: repo.path,
+            })
+          : command.success
+            ? parseValidationResult(command.stdout || command, {
+                validatedAt: new Date(),
+                repoPath: repo.path,
+              })
+            : createValidationCommandFailureResult({
+                stdout: command.stdout,
+                stderr: command.stderr,
+                statusCode: command.status_code ?? command.statusCode ?? null,
+                validatedAt: new Date(),
+                raw: command,
+              });
       const records = Object.values(workspace?.filesByPath ?? {});
       const changeStatuses = workspace?.changeStatuses ?? [];
       const indexed = indexOpenSpecWorkspace({ files: records, changeStatuses });
@@ -434,9 +474,38 @@ function App() {
 
       setWorkspace(nextWorkspace);
       setLoadState("loaded");
-      setMessage(result.state === "pass" ? "Validation passed." : "Validation needs attention.");
+      setMessage(
+        result.diagnostics[0]?.message ??
+          (result.state === "pass" ? "Validation checked clean." : "Validation found items that need attention."),
+      );
     } catch (error) {
       setLoadState("error");
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function chooseRepositoryFolder() {
+    if (!isTauriRuntime()) {
+      setMessage("Folder selection requires the Tauri desktop runtime.");
+      return;
+    }
+
+    try {
+      const selectedPath = await invoke<string | null>("pick_repository_folder");
+
+      if (!selectedPath) {
+        return;
+      }
+
+      setRepoPathInput(selectedPath);
+      await loadRepository(selectedPath);
+    } catch (error) {
+      setCandidateError({
+        kind: "unavailable",
+        path: repoPathInput,
+        title: "Folder picker unavailable",
+        message: errorMessage(error),
+      });
       setMessage(errorMessage(error));
     }
   }
@@ -458,6 +527,37 @@ function App() {
       setMessage("Opened " + artifact.path);
     } catch (error) {
       setMessage(errorMessage(error));
+    }
+  }
+
+  async function revealRepository() {
+    if (!repo) {
+      return;
+    }
+
+    if (!isTauriRuntime()) {
+      setMessage("Reveal requested: " + repo.path);
+      return;
+    }
+
+    try {
+      await openPath(repo.path);
+      setMessage("Opened repository folder in Finder.");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function copyRepositoryPath() {
+    if (!repo) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(repo.path);
+      setMessage("Repository path copied.");
+    } catch {
+      setMessage(repo.path);
     }
   }
 
@@ -525,15 +625,22 @@ function App() {
 
       setWorkspace(nextWorkspace);
       keepSelectionInWorkspace(nextWorkspace);
-      setMessage("OpenSpec files changed. Workspace refreshed.");
+      setMessage("OpenSpec files changed. Local files refreshed.");
     } catch (error) {
       setMessage(errorMessage(error));
     }
   }
 
   function rememberRecentRepo(repoPath: string) {
+    if (!isPersistableLocalRepoPath(repoPath)) {
+      return;
+    }
+
     setRecentRepos((current) => {
-      const next = [repoPath, ...current.filter((path) => path !== repoPath)].slice(0, 5);
+      const next = normalizeRecentRepoPaths([
+        repoPath,
+        ...current.filter((path) => path !== repoPath),
+      ]);
       writeRecentRepos(next);
       return next;
     });
@@ -567,11 +674,17 @@ function App() {
       <Sidebar
         repo={repo}
         recentRepos={recentRepos}
+        candidateError={candidateError}
         repoPathInput={repoPathInput}
         loadState={loadState}
         onRepoPathInput={setRepoPathInput}
+        onChooseFolder={() => void chooseRepositoryFolder()}
         onLoadRepo={() => void loadRepository(repoPathInput)}
         onOpenRecent={(path) => void loadRepository(path)}
+        onRetryCandidate={(path) => void loadRepository(path)}
+        onReturnToActive={() => setCandidateError(null)}
+        onRevealRepo={() => void revealRepository()}
+        onCopyRepoPath={() => void copyRepositoryPath()}
       />
 
       <WorkspaceMain
@@ -591,6 +704,7 @@ function App() {
           setDetailTab("proposal");
         }}
         onSelectSpec={setSelectedSpecId}
+        onChooseFolder={() => void chooseRepositoryFolder()}
         onValidate={() => void runValidation()}
         onReload={() => repo && void loadRepository(repo.path)}
       />
@@ -601,8 +715,6 @@ function App() {
         view={view}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
-        selectedChangeFilteredOut={selectedChangeFilteredOut}
-        selectedSpecFilteredOut={selectedSpecFilteredOut}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
         onDetailTabChange={setDetailTab}
@@ -618,21 +730,33 @@ function App() {
 function Sidebar({
   repo,
   recentRepos,
+  candidateError,
   repoPathInput,
   loadState,
   onRepoPathInput,
+  onChooseFolder,
   onLoadRepo,
   onOpenRecent,
+  onRetryCandidate,
+  onReturnToActive,
+  onRevealRepo,
+  onCopyRepoPath,
 }: {
   repo: RepositoryView | null;
   recentRepos: string[];
+  candidateError: CandidateRepoError | null;
   repoPathInput: string;
   loadState: LoadState;
   onRepoPathInput: (path: string) => void;
+  onChooseFolder: () => void;
   onLoadRepo: () => void;
   onOpenRecent: (path: string) => void;
+  onRetryCandidate: (path: string) => void;
+  onReturnToActive: () => void;
+  onRevealRepo: () => void;
+  onCopyRepoPath: () => void;
 }) {
-  const visibleRecentRepos = recentRepos.filter((path) => path !== repo?.path);
+  const switcherRepos = recentRepoSwitcherPaths(repo?.path, recentRepos);
 
   return (
     <aside className="repo-rail" aria-label="Repository navigation">
@@ -648,40 +772,77 @@ function Sidebar({
 
       <section className="rail-section">
         <div className="rail-heading">Local repository</div>
-        <form
-          className="repo-path-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onLoadRepo();
-          }}
-        >
-          <label>
-            <span className="sr-only">Repository path</span>
-            <input
-              value={repoPathInput}
-              onChange={(event) => onRepoPathInput(event.currentTarget.value)}
-              placeholder="/path/to/repo"
-            />
-          </label>
-          <button type="submit" className="primary-button" disabled={loadState === "loading"}>
-            {loadState === "loading" ? "Loading" : "Open"}
+        <div className="repo-open-stack">
+          <button type="button" className="primary-button full-width-action" onClick={onChooseFolder} disabled={loadState === "loading"}>
+            {loadState === "loading" ? "Opening..." : "Choose folder"}
           </button>
-        </form>
+          <details className="manual-path">
+            <summary>Enter path manually</summary>
+            <form
+              className="repo-path-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onLoadRepo();
+              }}
+            >
+              <label>
+                <span className="sr-only">Repository path</span>
+                <input
+                  value={repoPathInput}
+                  onChange={(event) => onRepoPathInput(event.currentTarget.value)}
+                  placeholder="/path/to/repo"
+                />
+              </label>
+              <button type="submit" className="primary-outline" disabled={loadState === "loading"}>
+                Open path
+              </button>
+            </form>
+          </details>
+          {candidateError ? (
+            <div className={"candidate-error " + candidateError.kind}>
+              <strong>{candidateError.title}</strong>
+              <span>{candidateError.message}</span>
+              {candidateError.path ? <code>{candidateError.path}</code> : null}
+              <div className="candidate-actions">
+                <button type="button" className="primary-outline" onClick={onChooseFolder}>
+                  Choose folder
+                </button>
+                {candidateError.path ? (
+                  <button type="button" className="primary-outline" onClick={() => onRetryCandidate(candidateError.path)}>
+                    Retry
+                  </button>
+                ) : null}
+                {repo?.state === "ready" ? (
+                  <button type="button" className="link-button" onClick={onReturnToActive}>
+                    Return to current
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <section className="rail-section">
-        <div className="rail-heading">Recent repos</div>
-        {visibleRecentRepos.length > 0 ? (
-          <div className="recent-repos">
-            {visibleRecentRepos.map((path) => (
-              <button type="button" key={path} onClick={() => onOpenRecent(path)}>
+        <div className="rail-heading">Repositories</div>
+        {switcherRepos.length > 0 ? (
+          <div className="recent-repos repo-switcher">
+            {switcherRepos.map((path) => (
+              <button
+                type="button"
+                key={path}
+                className={path === repo?.path ? "is-selected" : ""}
+                aria-current={path === repo?.path ? "true" : undefined}
+                onClick={() => onOpenRecent(path)}
+              >
                 <strong>{repoNameFromPath(path)}</strong>
                 <span>{path}</span>
+                {path === repo?.path ? <em>Current</em> : null}
               </button>
             ))}
           </div>
         ) : (
-          <EmptyState compact title="No other recents" body="Opened repositories will appear here." />
+          <EmptyState compact title="No repositories yet" body="Choose a folder to add it here." />
         )}
       </section>
 
@@ -689,10 +850,20 @@ function Sidebar({
         <div className="rail-heading">Workspace</div>
         {repo ? (
           <div className="rail-status">
+            <strong className="repo-current-name">{repo.name}</strong>
+            <span className="repo-current-path" title={repo.path}>{repo.path}</span>
             <HealthPill health={repoHealth(repo)} label={repo.summary} />
+            <div className="repo-file-actions">
+              <button type="button" className="primary-outline" onClick={onCopyRepoPath}>
+                Copy path
+              </button>
+              <button type="button" className="primary-outline" onClick={onRevealRepo}>
+                Reveal
+              </button>
+            </div>
           </div>
         ) : (
-          <EmptyState compact title="No repo selected" body="Enter a local path to inspect an OpenSpec workspace." />
+          <EmptyState compact title="No repo selected" body="Choose a local folder to inspect its OpenSpec workspace." />
         )}
       </section>
     </aside>
@@ -713,6 +884,7 @@ function WorkspaceMain({
   onQueryChange,
   onSelectChange,
   onSelectSpec,
+  onChooseFolder,
   onValidate,
   onReload,
 }: {
@@ -729,13 +901,19 @@ function WorkspaceMain({
   onQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
   onSelectSpec: (specId: string) => void;
+  onChooseFolder: () => void;
   onValidate: () => void;
   onReload: () => void;
 }) {
   if (!repo) {
     return (
       <main className="workspace-main">
-        <EmptyState title="Select a repository" body="Open a local repo to inspect its OpenSpec workspace." />
+        <EmptyState
+          title="Choose a repository"
+          body="OpenSpec Studio reads local repositories and does not create files when you select a folder."
+          actionLabel="Choose folder"
+          onAction={onChooseFolder}
+        />
       </main>
     );
   }
@@ -747,6 +925,8 @@ function WorkspaceMain({
           tone="warning"
           title="No OpenSpec workspace found"
           body="The selected folder does not contain openspec/. Studio will not create project files without an explicit action."
+          actionLabel="Choose another folder"
+          onAction={onChooseFolder}
         />
       </main>
     );
@@ -759,7 +939,7 @@ function WorkspaceMain({
           tone="danger"
           title="Workspace unavailable"
           body="Studio could not index this repository. Check the path, filesystem permissions, and OpenSpec CLI."
-          actionLabel="Retry"
+          actionLabel="Retry current repo"
           onAction={onReload}
         />
       </main>
@@ -796,10 +976,10 @@ function WorkspaceMain({
             </button>
           </div>
           <button type="button" className="primary-outline" onClick={onReload} disabled={loadState === "loading"}>
-            Refresh
+            Refresh files
           </button>
           <button type="button" className="primary-button" onClick={onValidate} disabled={loadState === "loading"}>
-            Validate workspace
+            Run validation
           </button>
         </div>
       </header>
@@ -951,7 +1131,7 @@ function SpecsBrowser({
       <div className="board-toolbar">
         <div>
           <h2>Specs</h2>
-          <p>Capability specs appear here after repository indexing.</p>
+          <p>{specs.length} capabilities indexed from openspec/specs/.</p>
         </div>
         <SearchField label="Search specs" value={query} onChange={onQueryChange} />
       </div>
@@ -975,7 +1155,7 @@ function SpecsBrowser({
             <thead>
               <tr>
                 <th scope="col">Capability</th>
-                <th scope="col">Status</th>
+                <th scope="col">Trust</th>
                 <th scope="col">Requirements</th>
                 <th scope="col">Updated</th>
               </tr>
@@ -990,7 +1170,10 @@ function SpecsBrowser({
                     </button>
                   </td>
                   <td>
-                    <HealthPill health={spec.health} label={healthLabels[spec.health]} />
+                    <div className="status-stack">
+                      <HealthPill health={spec.health} label={healthLabels[spec.health]} />
+                      <span>{spec.summaryQuality === "available" ? "Summary found" : "Summary missing"}</span>
+                    </div>
                   </td>
                   <td>{spec.requirements}</td>
                   <td className="updated-cell">{spec.updatedAt}</td>
@@ -1010,8 +1193,6 @@ function Inspector({
   view,
   selectedChange,
   selectedSpec,
-  selectedChangeFilteredOut,
-  selectedSpecFilteredOut,
   detailTab,
   artifactPreview,
   onDetailTabChange,
@@ -1023,8 +1204,6 @@ function Inspector({
   view: BoardView;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
-  selectedChangeFilteredOut: boolean;
-  selectedSpecFilteredOut: boolean;
   detailTab: DetailTab;
   artifactPreview: string;
   onDetailTabChange: (tab: DetailTab) => void;
@@ -1048,33 +1227,72 @@ function Inspector({
               <span>Capability</span>
               <h2>{selectedSpec.capability}</h2>
               <p className="path-copy">{selectedSpec.path}</p>
-              {selectedSpecFilteredOut ? (
-                <p className="context-note">This selected spec is hidden by the current search.</p>
-              ) : null}
               <div className="inspector-actions">
                 <HealthPill health={selectedSpec.health} label={healthLabels[selectedSpec.health]} />
                 <button type="button" className="primary-outline" onClick={() => onOpenArtifact(selectedSpec)}>
-                  Open spec
+                  Open file
                 </button>
               </div>
             </div>
-            <section className="inspector-section">
-              <h3>Summary</h3>
-              <p>{selectedSpec.summary}</p>
-            </section>
-            <section className="inspector-section two-column-facts">
-              <div>
-                <span>Requirements</span>
-                <strong>{selectedSpec.requirements}</strong>
-              </div>
-              <div>
-                <span>Updated</span>
-                <strong>{selectedSpec.updatedAt}</strong>
-              </div>
-            </section>
+            <div className="inspector-body">
+              <section className="inspector-section">
+                <h3>Summary</h3>
+                <p>
+                  {selectedSpec.summaryQuality === "available"
+                    ? selectedSpec.summary
+                    : "No polished summary has been written for this spec yet."}
+                </p>
+              </section>
+              <section className="inspector-section two-column-facts">
+                <div>
+                  <span>Requirements</span>
+                  <strong>{selectedSpec.requirements}</strong>
+                </div>
+                <div>
+                  <span>Updated</span>
+                  <strong>{selectedSpec.updatedAt}</strong>
+                </div>
+                <div>
+                  <span>Summary</span>
+                  <strong>{selectedSpec.summaryQuality === "available" ? "Available" : "Missing"}</strong>
+                </div>
+                <div>
+                  <span>Messages</span>
+                  <strong>{selectedSpec.validationIssues.length}</strong>
+                </div>
+              </section>
+              <section className="inspector-section">
+                <h3>Requirements preview</h3>
+                {selectedSpec.requirementsPreview.length > 0 ? (
+                  <ul className="detail-list">
+                    {selectedSpec.requirementsPreview.map((requirement) => (
+                      <li key={requirement}>{requirement}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted-copy">No requirement headings were found in this spec.</p>
+                )}
+              </section>
+              <section className="inspector-section">
+                <h3>Validation messages</h3>
+                {selectedSpec.validationIssues.length > 0 ? (
+                  <ul className="message-list">
+                    {selectedSpec.validationIssues.map((issue) => (
+                      <li key={issue.id} className={"message " + issue.severity}>
+                        <strong>{issue.code ?? issue.severity}</strong>
+                        <span>{issue.message}</span>
+                        {issue.path ? <code>{issue.path}</code> : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted-copy">No validation messages are linked to this spec.</p>
+                )}
+              </section>
+            </div>
           </>
         ) : (
-          <EmptyState compact tone="warning" title="No spec selected" body="Select a spec to inspect it." />
+          <EmptyState compact tone="warning" title="No matching spec selected" body="Adjust search or choose a visible spec." />
         )}
       </aside>
     );
@@ -1094,13 +1312,15 @@ function Inspector({
         <span>Selected change</span>
         <h2>{selectedChange.title}</h2>
         <p className="path-copy">{selectedChange.name}</p>
-        {selectedChangeFilteredOut ? (
-          <p className="context-note">This selected change is hidden by the current phase or search.</p>
-        ) : null}
         <div className="inspector-actions">
           <HealthPill health={selectedChange.health} label={healthLabels[selectedChange.health]} />
-          <button type="button" className="primary-outline" onClick={() => onOpenArtifact(selectedChange.artifacts[0])}>
-            Open artifact
+          <button
+            type="button"
+            className="primary-outline"
+            disabled={!selectedChange.artifacts[0]}
+            onClick={() => selectedChange.artifacts[0] && onOpenArtifact(selectedChange.artifacts[0])}
+          >
+            Open proposal
           </button>
         </div>
       </div>
@@ -1121,7 +1341,7 @@ function Inspector({
       </div>
 
       <div className="inspector-body">
-        {renderDetailTab(selectedChange, detailTab, artifactPreview, onOpenArtifact, onValidate)}
+        {renderDetailTab(selectedChange, detailTab, artifactPreview, workspace.validation, onOpenArtifact, onValidate)}
       </div>
     </aside>
   );
@@ -1131,6 +1351,7 @@ function renderDetailTab(
   change: ChangeRecord,
   tab: DetailTab,
   artifactPreview: string,
+  validation: ValidationResult | null,
   onOpenArtifact: (artifact: Artifact) => void,
   onValidate: () => void,
 ) {
@@ -1202,8 +1423,21 @@ function renderDetailTab(
 
   return (
     <>
+      {validation?.diagnostics.length ? (
+        <details className="disclosure" open>
+          <summary>Validation command output</summary>
+          <ul className="message-list">
+            {validation.diagnostics.map((diagnostic) => (
+              <li key={diagnostic.id} className="message error">
+                <strong>{diagnostic.kind === "command-failure" ? "Command problem" : "Output problem"}</strong>
+                <span>{diagnostic.message}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
       <details className="disclosure" open>
-        <summary>Validation details</summary>
+        <summary>Linked validation messages</summary>
         {change.validationIssues.length === 0 ? (
           <p className="muted-copy">No validation messages are linked to this change.</p>
         ) : (
@@ -1218,12 +1452,12 @@ function renderDetailTab(
           </ul>
         )}
         <button type="button" className="primary-outline full-width-action" onClick={onValidate}>
-          Validate workspace
+          Run validation
         </button>
       </details>
 
       <details className="disclosure">
-        <summary>Artifacts</summary>
+        <summary>Files</summary>
         <div className="artifact-list">
           {change.artifacts.map((artifact) => (
             <div className="artifact-row" key={artifact.id}>
@@ -1478,25 +1712,24 @@ function StatusBand({
   loadState: LoadState;
   message: string;
 }) {
-  const attentionCount = workspace?.changes.filter((change) => ["invalid", "missing", "blocked"].includes(change.health)).length ?? 0;
-  const attentionLabel = attentionCount === 1 ? "1 change" : attentionCount + " changes";
-  const validationLabel = workspace?.validation
-    ? workspace.validation.state === "pass"
-      ? "Validation clean"
-      : workspace.validation.state === "stale"
-        ? "Validation stale"
-        : "Validation failed"
-    : "Not run";
+  const trust = deriveValidationTrustState(workspace?.validation ?? null, loadState === "loading");
+  const attentionCount =
+    workspace?.changes.filter((change) => ["invalid", "missing", "blocked"].includes(change.health)).length ?? 0;
+  const attentionLabel = trust.attentionKnown
+    ? attentionCount === 1
+      ? "1 change"
+      : attentionCount + " changes"
+    : "Unknown";
 
   return (
-    <footer className="status-band" aria-label="Validation status">
+    <footer className="status-band" aria-label="Workspace status">
       <div className="status-band-item">
         <span>Workspace</span>
         <strong>{repo?.summary ?? "No repo selected"}</strong>
       </div>
       <div className="status-band-item">
-        <span>Validation</span>
-        <strong>{validationLabel}</strong>
+        <span>Validation check</span>
+        <strong title={trust.detail}>{trust.label}</strong>
       </div>
       <div className="status-band-item">
         <span>Attention</span>
@@ -1580,7 +1813,7 @@ function activeChangeToView(
     archiveReadiness: {
       ready: archiveReady,
       reasons: archiveReady
-        ? ["All tasks are complete.", "Required artifacts exist.", "No linked validation errors are present."]
+        ? ["All required change files are present and no linked validation errors are present."]
         : readinessReasons(taskProgress, missingArtifacts, validationIssues),
     },
   };
@@ -1602,7 +1835,7 @@ function archivedChangeToView(change: IndexedArchivedChange): ChangeRecord {
     validationIssues: [],
     archiveReadiness: {
       ready: true,
-      reasons: ["Archived change."],
+      reasons: ["Archived."],
     },
   };
 }
@@ -1614,16 +1847,28 @@ function specToView(
 ): SpecRecord {
   const issues = validation?.issues.filter((issue) =>
     issue.associations.some((association) => association.kind === "spec" && association.id === spec.capability),
-  );
+  ) ?? [];
+  const content = filesByPath[spec.path]?.content;
+  const summary = summaryFromContent(content);
 
   return {
     id: spec.capability,
     capability: spec.capability,
     path: spec.path,
-    health: issues && issues.length > 0 ? "invalid" : validation ? "valid" : "stale",
-    requirements: countRequirements(filesByPath[spec.path]?.content),
+    health:
+      validation?.state === "stale"
+        ? "stale"
+        : issues.length > 0
+          ? "invalid"
+          : validation
+            ? "valid"
+            : "stale",
+    requirements: countRequirements(content),
     updatedAt: formatTime(spec.modifiedTimeMs),
-    summary: summaryFromContent(filesByPath[spec.path]?.content) ?? "Capability spec",
+    summary: summary ?? "",
+    summaryQuality: summary ? "available" : "missing",
+    validationIssues: issues,
+    requirementsPreview: extractRequirementTitles(content, 6),
   };
 }
 
@@ -1639,7 +1884,7 @@ function requiredArtifact(
     status: artifact.exists ? workflowArtifactStatus(artifact.workflowStatus) : "missing",
     note:
       artifact.workflowStatus && artifact.workflowStatus !== "done"
-        ? "Workflow status: " + artifact.workflowStatus
+        ? "Progress: " + artifact.workflowStatus
         : artifact.exists
           ? ""
           : "Missing",
@@ -1763,7 +2008,7 @@ function readinessReasons(
   }
 
   if (missingArtifacts.length > 0) {
-    reasons.push("Missing artifacts: " + missingArtifacts.map((artifact) => artifact.label).join(", ") + ".");
+    reasons.push("Missing files: " + missingArtifacts.map((artifact) => artifact.label).join(", ") + ".");
   }
 
   if (validationIssues.length > 0) {
@@ -1815,7 +2060,37 @@ function summaryFromContent(content: string | undefined): string | undefined {
     .map((candidate) => candidate.trim())
     .find((candidate) => candidate.length > 0 && !candidate.startsWith("#") && !candidate.startsWith("-"));
 
+  if (!line || isPlaceholderSummary(line)) {
+    return undefined;
+  }
+
   return line;
+}
+
+function extractRequirementTitles(content: string | undefined, limit: number): string[] {
+  if (!content) {
+    return [];
+  }
+
+  return content
+    .split(/\r?\n/)
+    .map((line) => /^### Requirement:\s*(.+)$/.exec(line.trim())?.[1])
+    .filter((line): line is string => Boolean(line))
+    .slice(0, limit);
+}
+
+function isPlaceholderSummary(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+
+  return (
+    normalized === "tbd" ||
+    normalized.startsWith("tbd ") ||
+    normalized.startsWith("tbd-") ||
+    normalized === "todo" ||
+    normalized === "n/a" ||
+    normalized.includes("placeholder") ||
+    normalized.includes("to be defined")
+  );
 }
 
 function titleize(value: string): string {
@@ -1889,9 +2164,7 @@ function readRecentRepos(): string[] {
     const raw = window.localStorage.getItem(RECENT_REPOS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
 
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string").slice(0, 5)
-      : [];
+    return normalizeRecentRepoPaths(parsed);
   } catch {
     return [];
   }

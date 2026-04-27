@@ -7,15 +7,15 @@
 ## 2. Validation and change health accuracy
 
 - [x] 2.1 Add TypeScript tests for repository validation failure without linked change issues.
-- [ ] 2.2 Separate command/parse failure diagnostics from structured validation issues in the validation model or app view model.
+- [x] 2.2 Separate command/parse failure diagnostics from structured validation issues in the validation model or app view model.
 - [x] 2.3 Update change health derivation so invalid status only comes from linked validation errors, explicit change status errors, blocked workflow status, or missing artifacts.
 - [x] 2.4 Keep repository-level validation failure or stale state visible without falsely marking every change invalid.
 
 ## 3. Hardcoded data isolation
 
-- [ ] 3.1 Remove hardcoded sample OpenSpec records from the production desktop loading path or isolate them behind an explicit browser-preview-only boundary.
-- [ ] 3.2 Add regression coverage or structural checks that prevent browser-preview data from being used as selected-repository data in Tauri runtime.
-- [ ] 3.3 Confirm recent repo state and selected repo state continue to use real repository paths only.
+- [x] 3.1 Remove hardcoded sample OpenSpec records from the production desktop loading path or isolate them behind an explicit browser-preview-only boundary.
+- [x] 3.2 Add regression coverage or structural checks that prevent browser-preview data from being used as selected-repository data in Tauri runtime.
+- [x] 3.3 Confirm recent repo state and selected repo state continue to use real repository paths only.
 
 ## 4. Verification
 

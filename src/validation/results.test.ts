@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createValidationCommandFailureResult,
   groupValidationIssues,
   markValidationStaleAfterFileChange,
   parseValidationResult,
@@ -37,6 +38,7 @@ describe("parseValidationResult", () => {
     expect(result.summary).toEqual({ total: 1, passed: 1, failed: 0 });
     expect(result.validatedAt).toBe("2026-04-27T12:00:00.000Z");
     expect(result.issues).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
   });
 
   it("parses failed items and links issues to change, spec, and file associations", () => {
@@ -114,7 +116,7 @@ describe("parseValidationResult", () => {
     ]);
   });
 
-  it("safely models unrecognized JSON as a failed validation with raw payload retained", () => {
+  it("models unrecognized JSON as a parse diagnostic instead of a validation issue", () => {
     const raw = { ok: false, details: ["unexpected shape"] };
 
     const result = parseValidationResult(raw);
@@ -122,11 +124,35 @@ describe("parseValidationResult", () => {
     expect(result.state).toBe("fail");
     expect(result.raw).toBe(raw);
     expect(result.summary).toEqual({ total: 0, passed: 0, failed: 1 });
-    expect(result.issues).toHaveLength(1);
-    expect(result.issues[0]).toMatchObject({
+    expect(result.issues).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toMatchObject({
+      kind: "parse-failure",
       message: "Validation output was not recognized.",
       severity: "error",
-      associations: [],
+    });
+  });
+
+  it("models command failures as diagnostics without linked validation issues", () => {
+    const result = createValidationCommandFailureResult({
+      stdout: "checking...",
+      stderr: "env: node: No such file or directory",
+      statusCode: 127,
+      validatedAt: "2026-04-27T12:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      state: "fail",
+      validatedAt: "2026-04-27T12:00:00.000Z",
+      summary: { total: 0, passed: 0, failed: 1 },
+      issues: [],
+      diagnostics: [
+        {
+          kind: "command-failure",
+          message: "env: node: No such file or directory",
+          statusCode: 127,
+        },
+      ],
     });
   });
 });

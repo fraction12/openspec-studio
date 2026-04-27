@@ -21,6 +21,31 @@ export interface OpenSpecFileSignature {
 
 export type ChangeHealth = "valid" | "stale" | "invalid" | "missing" | "blocked" | "ready";
 
+export type ValidationTrustKind =
+  | "not-checked"
+  | "checking"
+  | "clean"
+  | "needs-attention"
+  | "command-problem"
+  | "outdated";
+
+export interface ValidationTrustState {
+  kind: ValidationTrustKind;
+  label: string;
+  detail: string;
+  attentionKnown: boolean;
+}
+
+export interface RepositoryCandidateInput {
+  readable: boolean;
+  hasOpenSpec: boolean;
+}
+
+export interface RepositoryCandidateDecision {
+  promote: boolean;
+  preserveActiveWorkspace: boolean;
+}
+
 export interface ChangeHealthInput {
   workflowStatus: IndexedWorkflowStatusValue;
   missingArtifactCount: number;
@@ -110,7 +135,7 @@ export function deriveChangeHealth({
   validation,
   validationIssueCount,
 }: ChangeHealthInput): ChangeHealth {
-  if (validationIssueCount > 0 || workflowStatus === "error") {
+  if (workflowStatus === "error") {
     return "invalid";
   }
 
@@ -124,6 +149,14 @@ export function deriveChangeHealth({
 
   if (!validation) {
     return "stale";
+  }
+
+  if (validation.state === "stale") {
+    return "stale";
+  }
+
+  if (validationIssueCount > 0) {
+    return "invalid";
   }
 
   return validation.state === "pass" ? "valid" : "stale";
@@ -151,6 +184,150 @@ export function extractJsonPayload(output: string): unknown | undefined {
   }
 
   return undefined;
+}
+
+export function isPersistableLocalRepoPath(path: string): boolean {
+  const normalizedPath = path.trim();
+
+  return (
+    normalizedPath.startsWith("/") &&
+    !normalizedPath.includes("://") &&
+    !normalizedPath.includes("\0")
+  );
+}
+
+export function normalizeRecentRepoPaths(
+  value: unknown,
+  limit = 5,
+): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const paths: string[] = [];
+
+  for (const item of value) {
+    if (typeof item !== "string" || !isPersistableLocalRepoPath(item)) {
+      continue;
+    }
+
+    if (!paths.includes(item)) {
+      paths.push(item);
+    }
+
+    if (paths.length === limit) {
+      break;
+    }
+  }
+
+  return paths;
+}
+
+export function recentRepoSwitcherPaths(
+  currentPath: string | null | undefined,
+  recentPaths: string[],
+  limit = 5,
+): string[] {
+  return normalizeRecentRepoPaths(
+    currentPath ? [currentPath, ...recentPaths] : recentPaths,
+    limit,
+  );
+}
+
+export function decideRepositoryCandidateOpen({
+  readable,
+  hasOpenSpec,
+}: RepositoryCandidateInput): RepositoryCandidateDecision {
+  const promote = readable && hasOpenSpec;
+
+  return {
+    promote,
+    preserveActiveWorkspace: !promote,
+  };
+}
+
+export function selectVisibleItemId<T extends { id: string }>(
+  items: T[],
+  currentId: string,
+  matches: (item: T) => boolean,
+): string {
+  const visibleItems = items.filter(matches);
+
+  if (visibleItems.some((item) => item.id === currentId)) {
+    return currentId;
+  }
+
+  return visibleItems[0]?.id ?? "";
+}
+
+export function deriveValidationTrustState(
+  validation: ValidationResult | null,
+  isWorking = false,
+): ValidationTrustState {
+  if (isWorking) {
+    return {
+      kind: "checking",
+      label: "Checking files",
+      detail: "OpenSpec Studio is updating repository data.",
+      attentionKnown: false,
+    };
+  }
+
+  if (!validation) {
+    return {
+      kind: "not-checked",
+      label: "Not checked yet",
+      detail: "Run validation to know whether this snapshot needs attention.",
+      attentionKnown: false,
+    };
+  }
+
+  if (validation.state === "stale") {
+    return {
+      kind: "outdated",
+      label: "Check outdated",
+      detail: validation.staleReason?.changedPath
+        ? `Files changed after validation: ${validation.staleReason.changedPath}.`
+        : "Files changed after the last validation run.",
+      attentionKnown: false,
+    };
+  }
+
+  if (validation.diagnostics.length > 0) {
+    return {
+      kind: "command-problem",
+      label: "Validation problem",
+      detail: validation.diagnostics[0]?.message ?? "OpenSpec validation output could not be read.",
+      attentionKnown: false,
+    };
+  }
+
+  if (validation.state === "pass") {
+    return {
+      kind: "clean",
+      label: "Checked clean",
+      detail: validation.validatedAt
+        ? `Validated ${formatShortDateTime(validation.validatedAt)}.`
+        : "Validation completed for this snapshot.",
+      attentionKnown: true,
+    };
+  }
+
+  return {
+    kind: "needs-attention",
+    label: "Needs attention",
+    detail: validation.validatedAt
+      ? `Validated ${formatShortDateTime(validation.validatedAt)}.`
+      : "Validation found linked issues.",
+    attentionKnown: true,
+  };
+}
+
+function formatShortDateTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

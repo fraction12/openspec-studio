@@ -145,6 +145,28 @@ button:disabled {
   gap: 10px;
 }
 
+.repo-open-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.manual-path {
+  display: grid;
+  gap: 8px;
+}
+
+.manual-path summary {
+  width: fit-content;
+  color: #536071;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.manual-path[open] summary {
+  margin-bottom: 8px;
+}
+
 .repo-path-form label,
 .repo-path-form input {
   min-width: 0;
@@ -191,7 +213,7 @@ button:disabled {
   display: grid;
   width: 100%;
   min-width: 0;
-  gap: 2px;
+  gap: 3px;
   border: 1px solid transparent;
   border-radius: 8px;
   padding: 8px;
@@ -201,7 +223,8 @@ button:disabled {
 }
 
 .recent-repos button:hover,
-.recent-repos button:focus-visible {
+.recent-repos button:focus-visible,
+.recent-repos button.is-selected {
   border-color: #d9e3f3;
   background: #f2f6fc;
 }
@@ -222,6 +245,67 @@ button:disabled {
   color: #687383;
   font-size: 11px;
   line-height: 16px;
+}
+
+.recent-repos em {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: #145cc6;
+  background: #eaf2ff;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 15px;
+}
+
+.candidate-error {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #f0d39c;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fffaf0;
+}
+
+.candidate-error strong,
+.repo-current-name {
+  overflow: hidden;
+  color: #222b37;
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-error span,
+.candidate-error code,
+.repo-current-path {
+  overflow: hidden;
+  color: #687383;
+  font-size: 12px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-error span,
+.candidate-error code {
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.candidate-error code,
+.repo-current-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.candidate-actions,
+.repo-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .repo-list {
@@ -458,6 +542,13 @@ button:disabled {
   background: #f4f6f8;
 }
 
+.primary-button:disabled {
+  border-color: #adc7ed;
+  color: #f7fbff;
+  background: #8ab3eb;
+  box-shadow: none;
+}
+
 .link-button {
   width: fit-content;
   border: 0;
@@ -542,6 +633,7 @@ button:disabled {
   min-height: 0;
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .change-table {
@@ -594,6 +686,7 @@ button:disabled {
 }
 
 .change-table tr:hover td,
+.change-table tr:focus-within td,
 .change-table tr.is-selected td {
   background: #f4f8ff;
 }
@@ -611,6 +704,10 @@ button:disabled {
   color: inherit;
   background: transparent;
   text-align: left;
+}
+
+.change-title-button:focus-visible {
+  border-radius: 6px;
 }
 
 .change-title-button strong,
@@ -784,7 +881,7 @@ button:disabled {
 .inspector-header {
   display: grid;
   gap: 8px;
-  padding: 16px 18px 14px;
+  padding: 16px 22px 14px;
   border-bottom: 1px solid #e2e7ed;
 }
 
@@ -829,7 +926,7 @@ button:disabled {
   flex-wrap: wrap;
   gap: 4px;
   overflow: visible;
-  padding: 8px 10px;
+  padding: 8px 22px;
   border-bottom: 1px solid #e2e7ed;
   background: #fbfcfd;
 }
@@ -848,8 +945,9 @@ button:disabled {
   align-content: start;
   gap: 0;
   min-height: 0;
-  padding: 0 18px 18px;
+  padding: 0 22px 32px;
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .inspector-section,
@@ -886,11 +984,11 @@ button:disabled {
   max-height: 430px;
   overflow: auto;
   margin: 0;
-  border: 1px solid #e1e6ee;
-  border-radius: 8px;
-  padding: 14px;
+  border: 1px solid #e8edf2;
+  border-radius: 6px;
+  padding: 12px;
   color: #253142;
-  background: #ffffff;
+  background: #fcfdff;
   font-family: inherit;
   font-size: 13px;
   line-height: 20px;
@@ -1307,7 +1405,7 @@ button:disabled {
   gap: 18px;
   min-width: 0;
   border-top: 1px solid #dce1e7;
-  background: #fbfcfd;
+  background: #f7f9fb;
   padding: 7px 18px;
 }
 

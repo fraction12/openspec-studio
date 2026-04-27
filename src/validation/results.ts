@@ -39,11 +39,25 @@ export interface ValidationStaleReason {
   changedAt: string;
 }
 
+export type ValidationDiagnosticKind = "command-failure" | "parse-failure";
+
+export interface ValidationDiagnostic {
+  id: string;
+  kind: ValidationDiagnosticKind;
+  message: string;
+  severity: "error";
+  stdout?: string;
+  stderr?: string;
+  statusCode?: number | null;
+  raw?: unknown;
+}
+
 export interface ValidationResult {
   state: ValidationState;
   validatedAt: string | null;
   summary: ValidationSummary;
   issues: ValidationIssue[];
+  diagnostics: ValidationDiagnostic[];
   raw: unknown;
   previousState?: Exclude<ValidationState, "stale">;
   staleSince?: string;
@@ -53,6 +67,15 @@ export interface ValidationResult {
 export interface ParseValidationOptions {
   validatedAt?: Date | string;
   repoPath?: string;
+}
+
+export interface ValidationCommandFailureInput {
+  stdout?: string;
+  stderr?: string;
+  statusCode?: number | null;
+  message?: string;
+  validatedAt?: Date | string;
+  raw?: unknown;
 }
 
 export interface ValidationIssueGroups {
@@ -103,7 +126,43 @@ export function parseValidationResult(
     validatedAt: normalizeDate(options.validatedAt),
     summary: derivedSummary,
     issues,
+    diagnostics: [],
     raw,
+  };
+}
+
+export function createValidationCommandFailureResult({
+  stdout = "",
+  stderr = "",
+  statusCode = null,
+  message,
+  validatedAt,
+  raw,
+}: ValidationCommandFailureInput): ValidationResult {
+  const diagnosticMessage =
+    message || stderr || stdout || "OpenSpec validation command failed.";
+
+  return {
+    state: "fail",
+    validatedAt: normalizeDate(validatedAt),
+    summary: {
+      ...DEFAULT_SUMMARY,
+      failed: 1,
+    },
+    issues: [],
+    diagnostics: [
+      {
+        id: "diagnostic-1",
+        kind: "command-failure",
+        message: diagnosticMessage,
+        severity: "error",
+        stdout,
+        stderr,
+        statusCode,
+        raw,
+      },
+    ],
+    raw: raw ?? { stdout, stderr, statusCode },
   };
 }
 
@@ -321,12 +380,13 @@ function createUnrecognizedResult(
       ...DEFAULT_SUMMARY,
       failed: 1,
     },
-    issues: [
+    issues: [],
+    diagnostics: [
       {
-        id: "issue-1",
+        id: "diagnostic-1",
+        kind: "parse-failure",
         message: "Validation output was not recognized.",
         severity: "error",
-        associations: [],
         raw,
       },
     ],
