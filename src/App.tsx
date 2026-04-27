@@ -40,7 +40,7 @@ import {
 type RepoState = "ready" | "no-workspace" | "cli-failure";
 type BoardView = "changes" | "specs";
 type ChangePhase = "active" | "archive-ready" | "archived";
-type DetailTab = "proposal" | "design" | "tasks" | "spec-delta" | "status";
+type DetailTab = "proposal" | "design" | "tasks" | "spec-delta" | "status" | "archive-info";
 type Health = ChangeHealth;
 type ArtifactStatus = "present" | "missing" | "blocked";
 type LoadState = "idle" | "loading" | "loaded" | "error";
@@ -110,6 +110,7 @@ interface ChangeRecord {
   title: string;
   phase: ChangePhase;
   health: Health;
+  statusLabel: string;
   summary: string;
   capabilities: string[];
   updatedAt: string;
@@ -117,10 +118,18 @@ interface ChangeRecord {
   artifacts: Artifact[];
   deltaSpecs: string[];
   validationIssues: ValidationIssue[];
+  archiveInfo?: ArchiveInfo;
   archiveReadiness: {
     ready: boolean;
     reasons: string[];
   };
+}
+
+interface ArchiveInfo {
+  path: string;
+  archivedDate: string | null;
+  originalName: string | null;
+  files: Artifact[];
 }
 
 interface SpecRecord {
@@ -165,13 +174,18 @@ const phaseLabels: Record<ChangePhase, string> = {
   archived: "Archived",
 };
 
-const detailTabs: Array<{ id: DetailTab; label: string }> = [
+const activeDetailTabs: Array<{ id: DetailTab; label: string }> = [
   { id: "proposal", label: "Proposal" },
   { id: "design", label: "Design" },
   { id: "tasks", label: "Tasks" },
   { id: "spec-delta", label: "Spec changes" },
   { id: "status", label: "Validation" },
 ];
+
+const archiveInfoTab: { id: DetailTab; label: string } = {
+  id: "archive-info",
+  label: "Archive info",
+};
 
 function App() {
   const [recentRepos, setRecentRepos] = useState<string[]>(readRecentRepos);
@@ -271,6 +285,17 @@ function App() {
       setSelectedSpecId(nextSelectedSpecId);
     }
   }, [query, selectedSpecId, specs, view]);
+
+  useEffect(() => {
+    if (!selectedChange) {
+      return;
+    }
+
+    const tabs = detailTabsForChange(selectedChange);
+    if (!tabs.some((tab) => tab.id === detailTab)) {
+      setDetailTab(tabs[0]?.id ?? "archive-info");
+    }
+  }, [detailTab, selectedChange]);
 
   useEffect(() => {
     const path = artifactPathForTab(selectedChange, detailTab);
@@ -1195,7 +1220,7 @@ function ChangeBoard({
                     </div>
                   </td>
                   <td>
-                    <HealthPill health={change.health} label={healthLabels[change.health]} />
+                    <HealthPill health={change.health} label={change.statusLabel} />
                   </td>
                   <td>
                     <TaskProgressCell progress={change.taskProgress} />
@@ -1384,33 +1409,41 @@ function Inspector({
     );
   }
 
+  const tabs = detailTabsForChange(selectedChange);
+  const selectedDetailTab = tabs.some((tab) => tab.id === detailTab)
+    ? detailTab
+    : tabs[0]?.id ?? "archive-info";
+  const primaryArtifact =
+    selectedChange.artifacts.find((artifact) => artifact.id === "proposal" && artifact.status === "present") ??
+    selectedChange.artifacts.find((artifact) => artifact.status === "present");
+
   return (
     <aside className="inspector" aria-label="Change inspector">
       <div className="inspector-header">
         <span>Selected change</span>
         <h2>{selectedChange.title}</h2>
-        <p className="path-copy">{selectedChange.name}</p>
+        <p className="path-copy">{selectedChange.archiveInfo?.path ?? selectedChange.name}</p>
         <div className="inspector-actions">
-          <HealthPill health={selectedChange.health} label={healthLabels[selectedChange.health]} />
+          <HealthPill health={selectedChange.health} label={selectedChange.statusLabel} />
           <button
             type="button"
             className="primary-outline"
-            disabled={!selectedChange.artifacts[0]}
-            onClick={() => selectedChange.artifacts[0] && onOpenArtifact(selectedChange.artifacts[0])}
+            disabled={!primaryArtifact}
+            onClick={() => primaryArtifact && onOpenArtifact(primaryArtifact)}
           >
-            Open proposal
+            {primaryArtifact?.id === "proposal" ? "Open proposal" : "Open file"}
           </button>
         </div>
       </div>
 
       <div className="tabs" role="tablist" aria-label="Change details">
-        {detailTabs.map((tab) => (
+        {tabs.map((tab) => (
           <button
             type="button"
             key={tab.id}
             role="tab"
-            aria-selected={detailTab === tab.id}
-            className={detailTab === tab.id ? "is-active" : ""}
+            aria-selected={selectedDetailTab === tab.id}
+            className={selectedDetailTab === tab.id ? "is-active" : ""}
             onClick={() => onDetailTabChange(tab.id)}
           >
             {tab.label}
@@ -1419,7 +1452,7 @@ function Inspector({
       </div>
 
       <div className="inspector-body">
-        {renderDetailTab(selectedChange, detailTab, artifactPreview, workspace.validation, onOpenArtifact, onValidate)}
+        {renderDetailTab(selectedChange, selectedDetailTab, artifactPreview, workspace.validation, onOpenArtifact, onValidate)}
       </div>
     </aside>
   );
@@ -1433,6 +1466,10 @@ function renderDetailTab(
   onOpenArtifact: (artifact: Artifact) => void,
   onValidate: () => void,
 ) {
+  if (tab === "archive-info") {
+    return <ArchiveInfoPanel change={change} onOpenArtifact={onOpenArtifact} />;
+  }
+
   if (tab === "proposal" || tab === "design") {
     return (
       <section className="inspector-section">
@@ -1485,14 +1522,12 @@ function renderDetailTab(
   }
 
   if (tab === "spec-delta") {
-    return change.deltaSpecs.length > 0 ? (
+    const specArtifacts = change.artifacts.filter((artifact) => artifact.id.startsWith("delta-"));
+
+    return specArtifacts.length > 0 ? (
       <section className="inspector-section">
         <h3>Spec deltas</h3>
-        <ul className="detail-list">
-          {change.deltaSpecs.map((delta) => (
-            <li key={delta}>{delta}</li>
-          ))}
-        </ul>
+        <ArtifactList artifacts={specArtifacts} onOpenArtifact={onOpenArtifact} />
       </section>
     ) : (
       <EmptyState compact tone="warning" title="No spec deltas" body="No delta specs are indexed for this change." />
@@ -1536,30 +1571,7 @@ function renderDetailTab(
 
       <details className="disclosure">
         <summary>Files</summary>
-        <div className="artifact-list">
-          {change.artifacts.map((artifact) => (
-            <div className="artifact-row" key={artifact.id}>
-              <div>
-                <strong>{artifact.label}</strong>
-                <code>{artifact.path}</code>
-                {artifact.note ? <span>{artifact.note}</span> : null}
-              </div>
-              <div className="artifact-actions">
-                {artifact.status === "present" ? null : (
-                  <HealthPill health={artifactHealth(artifact.status)} label={artifact.status} />
-                )}
-                <button
-                  type="button"
-                  className="primary-outline"
-                  disabled={artifact.status !== "present"}
-                  onClick={() => onOpenArtifact(artifact)}
-                >
-                  Open
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+        <ArtifactList artifacts={change.artifacts} onOpenArtifact={onOpenArtifact} showMissing />
       </details>
 
       <details className="disclosure">
@@ -1577,6 +1589,119 @@ function renderDetailTab(
         </div>
       </details>
     </>
+  );
+}
+
+export function detailTabsForChange(change: ChangeRecord): Array<{ id: DetailTab; label: string }> {
+  if (change.phase !== "archived") {
+    return activeDetailTabs;
+  }
+
+  const tabs = activeDetailTabs.filter((tab) => {
+    if (tab.id === "status") {
+      return false;
+    }
+
+    if (tab.id === "spec-delta") {
+      return change.deltaSpecs.length > 0;
+    }
+
+    return change.artifacts.some((artifact) => artifact.id === tab.id && artifact.status === "present");
+  });
+
+  return [...tabs, archiveInfoTab];
+}
+
+function ArchiveInfoPanel({
+  change,
+  onOpenArtifact,
+}: {
+  change: ChangeRecord;
+  onOpenArtifact: (artifact: Artifact) => void;
+}) {
+  const archiveInfo = change.archiveInfo;
+
+  if (!archiveInfo) {
+    return (
+      <EmptyState
+        compact
+        tone="warning"
+        title="Archive information unavailable"
+        body="No archive metadata was derived for this change."
+      />
+    );
+  }
+
+  return (
+    <>
+      <section className="inspector-section two-column-facts">
+        <div>
+          <span>Archive folder</span>
+          <strong>{archiveInfo.path}</strong>
+        </div>
+        <div>
+          <span>Archived date</span>
+          <strong>{archiveInfo.archivedDate ?? "Unknown"}</strong>
+        </div>
+        <div>
+          <span>Original change</span>
+          <strong>{archiveInfo.originalName ?? "Unknown"}</strong>
+        </div>
+        <div>
+          <span>Files</span>
+          <strong>{archiveInfo.files.length}</strong>
+        </div>
+      </section>
+      <section className="inspector-section">
+        <h3>Archived files</h3>
+        {archiveInfo.files.length > 0 ? (
+          <ArtifactList artifacts={archiveInfo.files} onOpenArtifact={onOpenArtifact} />
+        ) : (
+          <p className="muted-copy">No archived proposal, design, task, or spec delta files were found.</p>
+        )}
+      </section>
+    </>
+  );
+}
+
+function ArtifactList({
+  artifacts,
+  onOpenArtifact,
+  showMissing = false,
+}: {
+  artifacts: Artifact[];
+  onOpenArtifact: (artifact: Artifact) => void;
+  showMissing?: boolean;
+}) {
+  const visibleArtifacts = showMissing
+    ? artifacts
+    : artifacts.filter((artifact) => artifact.status === "present");
+
+  return (
+    <div className="artifact-list">
+      {visibleArtifacts.map((artifact) => (
+        <div className="artifact-row" key={artifact.id}>
+          <div>
+            <strong>{artifact.label}</strong>
+            <code>{artifact.path}</code>
+            {artifact.note ? <span>{artifact.note}</span> : null}
+          </div>
+          <div className="artifact-actions">
+            {artifact.status === "present" ? null : (
+              <HealthPill health={artifactHealth(artifact.status)} label={artifact.status} />
+            )}
+            <button
+              type="button"
+              className="primary-outline"
+              disabled={artifact.status !== "present"}
+              onClick={() => onOpenArtifact(artifact)}
+            >
+              Open
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1829,7 +1954,7 @@ function buildWorkspaceView(
   const filesByPath = Object.fromEntries(files.map((file) => [file.path, file]));
   const changes: ChangeRecord[] = [
     ...indexed.activeChanges.map((change) => activeChangeToView(change, filesByPath, validation)),
-    ...indexed.archivedChanges.map(archivedChangeToView),
+    ...indexed.archivedChanges.map((change) => archivedChangeToView(change, filesByPath)),
   ];
 
   return {
@@ -1862,6 +1987,12 @@ function activeChangeToView(
   const taskProgress = taskProgressToView(change.taskProgress, filesByPath[change.artifacts.tasks.path]?.content);
   const validationIssues = issuesForChange(validation, change.name);
   const missingArtifacts = artifacts.filter((artifact) => artifact.status === "missing");
+  const health = deriveChangeHealth({
+    workflowStatus: change.workflowStatus.status,
+    missingArtifactCount: missingArtifacts.length,
+    validation,
+    validationIssueCount: validationIssues.length,
+  });
   const archiveReady = Boolean(
     taskProgress &&
       taskProgress.total > 0 &&
@@ -1875,12 +2006,8 @@ function activeChangeToView(
     name: change.name,
     title: titleize(change.name),
     phase: archiveReady ? "archive-ready" : "active",
-    health: deriveChangeHealth({
-      workflowStatus: change.workflowStatus.status,
-      missingArtifactCount: missingArtifacts.length,
-      validation,
-      validationIssueCount: validationIssues.length,
-    }),
+    health,
+    statusLabel: healthLabels[health],
     summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "OpenSpec change",
     capabilities: change.touchedCapabilities.map((capability) => capability.capability),
     updatedAt: formatTime(change.modifiedTimeMs),
@@ -1897,20 +2024,44 @@ function activeChangeToView(
   };
 }
 
-function archivedChangeToView(change: IndexedArchivedChange): ChangeRecord {
+export function archivedChangeToView(
+  change: IndexedArchivedChange,
+  filesByPath: Record<string, VirtualOpenSpecFileRecord>,
+): ChangeRecord {
+  const requiredArtifacts = [
+    requiredArtifact("proposal", "Proposal", change.artifacts.proposal),
+    requiredArtifact("design", "Design", change.artifacts.design),
+    requiredArtifact("tasks", "Tasks", change.artifacts.tasks),
+  ].filter((artifact) => artifact.status === "present");
+  const deltaArtifacts = change.artifacts.deltaSpecs.map((spec) => ({
+    id: "delta-" + spec.capability,
+    label: spec.capability,
+    path: spec.path,
+    status: "present" as const,
+    note: "Archived delta spec",
+  }));
+  const artifacts = [...requiredArtifacts, ...deltaArtifacts];
+
   return {
     id: change.name,
     name: change.name,
     title: titleize(change.name),
     phase: "archived",
     health: "valid",
-    summary: "Archived OpenSpec change",
-    capabilities: [],
+    statusLabel: "Archived",
+    summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "Archived OpenSpec change",
+    capabilities: change.touchedCapabilities.map((capability) => capability.capability),
     updatedAt: formatTime(change.modifiedTimeMs),
-    taskProgress: null,
-    artifacts: [],
-    deltaSpecs: [],
+    taskProgress: taskProgressToView(change.taskProgress, filesByPath[change.artifacts.tasks.path]?.content),
+    artifacts,
+    deltaSpecs: change.artifacts.deltaSpecs.map((spec) => spec.path),
     validationIssues: [],
+    archiveInfo: {
+      path: change.path,
+      archivedDate: change.archiveMetadata.archivedDate ?? null,
+      originalName: change.archiveMetadata.originalName ?? null,
+      files: artifacts,
+    },
     archiveReadiness: {
       ready: true,
       reasons: ["Archived."],
@@ -2103,11 +2254,11 @@ function artifactPathForTab(change: ChangeRecord | null, tab: DetailTab): string
   }
 
   if (tab === "proposal") {
-    return change.artifacts.find((artifact) => artifact.id === "proposal")?.path;
+    return change.artifacts.find((artifact) => artifact.id === "proposal" && artifact.status === "present")?.path;
   }
 
   if (tab === "design") {
-    return change.artifacts.find((artifact) => artifact.id === "design")?.path;
+    return change.artifacts.find((artifact) => artifact.id === "design" && artifact.status === "present")?.path;
   }
 
   return undefined;

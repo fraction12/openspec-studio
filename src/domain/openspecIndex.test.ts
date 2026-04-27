@@ -13,6 +13,7 @@ describe("indexOpenSpecWorkspace", () => {
         file("openspec/changes/archive-ready/proposal.md", 110),
         file("openspec/changes/archive/2026-04-01-old-flow/proposal.md", 10),
         file("openspec/changes/archive/2026-04-01-old-flow/tasks.md", 12),
+        file("openspec/changes/archive/2026-04-01-old-flow/specs/auth/spec.md", 11),
       ],
     });
 
@@ -26,6 +27,70 @@ describe("indexOpenSpecWorkspace", () => {
     expect(index.archivedChanges[0]?.sourceTrace).toEqual({
       source: "file-tree",
       path: "openspec/changes/archive/2026-04-01-old-flow",
+    });
+    expect(index.archivedChanges[0]?.archiveMetadata).toEqual({
+      archivedDate: "2026-04-01",
+      originalName: "old-flow",
+    });
+    expect(index.archivedChanges[0]?.artifacts.proposal.exists).toBe(true);
+    expect(index.archivedChanges[0]?.artifacts.design.exists).toBe(false);
+    expect(index.archivedChanges[0]?.artifacts.deltaSpecs).toEqual([
+      {
+        kind: "delta-spec",
+        capability: "auth",
+        exists: true,
+        path: "openspec/changes/archive/2026-04-01-old-flow/specs/auth/spec.md",
+        modifiedTimeMs: 11,
+        sourceTrace: {
+          source: "file-tree",
+          path: "openspec/changes/archive/2026-04-01-old-flow/specs/auth/spec.md",
+        },
+        modifiedTimeTrace: {
+          source: "file-record",
+          path: "openspec/changes/archive/2026-04-01-old-flow/specs/auth/spec.md",
+        },
+      },
+    ]);
+    expect(index.archivedChanges[0]?.touchedCapabilities).toEqual([
+      {
+        capability: "auth",
+        sourceTrace: {
+          source: "file-tree",
+          path: "openspec/changes/archive/2026-04-01-old-flow/specs/auth/spec.md",
+        },
+      },
+    ]);
+    expect(index.archivedChanges[0]?.taskProgress).toEqual({
+      available: true,
+      completed: 0,
+      total: 0,
+      sourceTrace: {
+        source: "markdown",
+        path: "openspec/changes/archive/2026-04-01-old-flow/tasks.md",
+      },
+    });
+  });
+
+  it("derives archived task progress from archived tasks content", () => {
+    const index = indexOpenSpecWorkspace({
+      files: [
+        file(
+          "openspec/changes/archive/manual-old-flow/tasks.md",
+          12,
+          ["- [x] Complete proposal", "- [ ] Follow-up note"].join("\n"),
+        ),
+      ],
+    });
+
+    expect(index.archivedChanges[0]?.archiveMetadata).toEqual({});
+    expect(index.archivedChanges[0]?.taskProgress).toEqual({
+      available: true,
+      completed: 1,
+      total: 2,
+      sourceTrace: {
+        source: "markdown",
+        path: "openspec/changes/archive/manual-old-flow/tasks.md",
+      },
     });
   });
 

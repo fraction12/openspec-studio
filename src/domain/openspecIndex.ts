@@ -55,9 +55,18 @@ export interface IndexedArchivedChange {
   name: string;
   path: string;
   state: "archived";
+  artifacts: IndexedChangeArtifacts;
+  touchedCapabilities: IndexedTouchedCapability[];
+  taskProgress: IndexedTaskProgress;
+  archiveMetadata: IndexedArchiveMetadata;
   sourceTrace: OpenSpecSourceTrace;
   modifiedTimeMs?: number;
   modifiedTimeTrace?: OpenSpecSourceTrace;
+}
+
+export interface IndexedArchiveMetadata {
+  archivedDate?: string;
+  originalName?: string;
 }
 
 export interface IndexedSpec {
@@ -271,11 +280,29 @@ function buildArchivedChange(
   files: NormalizedOpenSpecFileRecord[],
 ): IndexedArchivedChange {
   const path = `openspec/changes/archive/${name}`;
+  const fileByPath = new Map(
+    files
+      .filter((file) => file.kind === "file")
+      .map((file) => [file.path, file] as const),
+  );
   const modifiedTime = getModifiedTimeForPrefix(files, `${path}/`);
+  const artifacts: IndexedChangeArtifacts = {
+    proposal: buildRequiredArtifact("proposal", `${path}/proposal.md`, fileByPath),
+    design: buildRequiredArtifact("design", `${path}/design.md`, fileByPath),
+    tasks: buildRequiredArtifact("tasks", `${path}/tasks.md`, fileByPath),
+    deltaSpecs: buildDeltaSpecs(path, fileByPath),
+  };
   const change: IndexedArchivedChange = {
     name,
     path,
     state: "archived",
+    artifacts,
+    touchedCapabilities: artifacts.deltaSpecs.map((spec) => ({
+      capability: spec.capability,
+      sourceTrace: fileTreeTrace(spec.path),
+    })),
+    taskProgress: buildTaskProgress(artifacts.tasks.path, fileByPath),
+    archiveMetadata: parseArchiveMetadata(name),
     sourceTrace: fileTreeTrace(path),
   };
 
@@ -285,6 +312,19 @@ function buildArchivedChange(
   }
 
   return change;
+}
+
+function parseArchiveMetadata(name: string): IndexedArchiveMetadata {
+  const match = /^(?<date>\d{4}-\d{2}-\d{2})-(?<originalName>.+)$/.exec(name);
+
+  if (!match?.groups) {
+    return {};
+  }
+
+  return {
+    archivedDate: match.groups.date,
+    originalName: match.groups.originalName,
+  };
 }
 
 function buildSpecs(
