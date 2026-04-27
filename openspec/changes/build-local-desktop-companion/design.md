@@ -28,11 +28,13 @@ The app should therefore treat the OpenSpec CLI and files as authoritative. It s
 
 ## Decisions
 
-### 1. Build a desktop app, not a web app
+### 1. Build a Tauri desktop app with React/TypeScript
 
-Use a desktop shell for the product. The leading v1 candidate is **Tauri** because it produces a real app bundle, can read local files through explicit permissions, can run CLI commands, and avoids Electron-level bloat.
+Use **Tauri** for the desktop shell and **React/TypeScript** for the frontend. This is the v1 product and design decision.
 
-A native Swift app remains a viable later direction if the product becomes macOS-only and needs deeper native polish. For v1, Tauri provides the best speed-to-usefulness tradeoff.
+Tauri produces a real app bundle, can read local files through explicit permissions, can run CLI commands, and avoids Electron-level bloat. React/TypeScript gives the UI a fast implementation path while keeping the desktop boundary in the Tauri bridge.
+
+A native Swift app is no longer part of the v1 path. It may be reconsidered only if the product deliberately becomes macOS-only later.
 
 ### 2. Treat OpenSpec CLI output as canonical
 
@@ -137,12 +139,11 @@ Initial derived records:
 
 - **CLI JSON gaps:** Some useful state may not be exposed cleanly by OpenSpec CLI JSON. Mitigation: combine CLI calls with direct file scan and keep the source of each field clear.
 - **Framework drift:** If the app parses markdown too aggressively, it may become format-fragile. Mitigation: prefer CLI output and only parse simple stable structures like task checkboxes.
-- **Desktop shell complexity:** Tauri adds Rust/permissions complexity. Mitigation: keep bridge commands narrow and local-only.
+- **Desktop shell complexity:** Tauri adds Rust/permissions complexity. Mitigation: keep bridge commands narrow and local-only, and keep React/TypeScript focused on rendering derived OpenSpec state rather than filesystem ownership.
 - **Scope creep into editing:** Editing is tempting but can delay v1. Mitigation: open external editor first; add write flows later behind specs.
 
 ## Open Questions
 
-- Should v1 be Tauri or native Swift? Default recommendation: Tauri unless a hard macOS-only constraint is chosen.
 - Which OpenSpec CLI JSON commands are sufficient today, and where do we need small upstream additions?
 - Should the app include a timeline/recent activity view in v1 or wait until the board/detail views are stable?
 - Should archived changes be shown as a separate tab or integrated as a board lane?

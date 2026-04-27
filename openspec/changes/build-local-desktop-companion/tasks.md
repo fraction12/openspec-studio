@@ -1,6 +1,6 @@
 ## 1. Project scaffold
 
-- [ ] Choose v1 desktop shell: Tauri by default unless a Swift-only decision is made.
+- [x] Choose v1 desktop shell: Tauri with a React/TypeScript frontend.
 - [ ] Scaffold the app with a minimal desktop window and packaged launch path.
 - [ ] Add basic project scripts for development, build, lint/check, and test.
 - [ ] Document how to run the app locally and how to produce an app bundle.

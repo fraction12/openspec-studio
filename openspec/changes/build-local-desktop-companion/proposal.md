@@ -6,7 +6,7 @@ This should be a proper standalone local app, not another web dev server. The CL
 
 ## What Changes
 
-- Add a standalone desktop application, tentatively **OpenSpec Studio**, that can open any local repository containing an `openspec/` directory.
+- Add a standalone desktop application, tentatively **OpenSpec Studio**, built with Tauri and a React/TypeScript frontend, that can open any local repository containing an `openspec/` directory.
 - Provide a repo picker and recent-repos flow for switching between local projects.
 - Read OpenSpec changes, specs, artifacts, tasks, and validation state from the selected repo.
 - Show a visual change board for active and archived changes, grouped by state and health.
@@ -32,7 +32,7 @@ None. This is a new product surface.
 ## Impact
 
 - New app repository under `/Volumes/MacSSD/Projects/openspec-studio`.
-- New desktop app shell, likely Tauri for v1 unless a later design decision chooses native Swift.
+- New Tauri desktop app shell with a React/TypeScript frontend.
 - Local filesystem reads for selected repositories.
 - Integration with the installed `openspec` CLI, especially JSON commands such as `list`, `show`, `status`, and `validate`.
 - File watching for refresh after OpenSpec artifacts change.
