@@ -13,6 +13,11 @@ The system SHALL run as a standalone local desktop application without requiring
 - **THEN** it reads from local repositories and local CLI output
 - **AND** it does not require an account, cloud service, or remote database
 
+#### Scenario: Packaged app finds the installed OpenSpec CLI
+- **WHEN** the app is launched from the operating system with a limited desktop environment PATH
+- **THEN** the local bridge can still run the installed `openspec` CLI from standard local install locations
+- **AND** command arguments remain restricted to supported OpenSpec read and validation subcommands
+
 ### Requirement: Repository selection
 The system SHALL allow the user to select a local repository to inspect.
 

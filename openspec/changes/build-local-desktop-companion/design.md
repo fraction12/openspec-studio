@@ -73,7 +73,9 @@ The most useful first screen is a board/table hybrid showing every change with:
 - last modified time
 - archive readiness
 
-The app should make it obvious what needs attention before the user opens individual files.
+The app should make it obvious what needs attention before the user opens individual files, but it must use progressive disclosure rather than showing every detail at once. The board should stay calm and scannable, with dense artifact, validation, task, and archive-readiness details revealed in the selected change detail view or focused drill-down panels.
+
+Artifact previews and long task lists should stay readable inside the detail pane. Proposal and design previews should use document-style typography instead of raw monospaced code treatment, while tasks should emphasize remaining work first and tuck completed history into a lower-priority disclosure.
 
 
 ### 6. Design for a robust tool, but ship in layers
