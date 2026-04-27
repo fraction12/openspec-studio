@@ -248,6 +248,20 @@ pub fn run_openspec_command(
 }
 
 #[tauri::command]
+pub fn archive_change(
+    repo_path: String,
+    change_name: String,
+) -> Result<CommandResult, BridgeErrorDto> {
+    validate_archive_change_name(&change_name).map_err(BridgeErrorDto::from)?;
+    execute_local_command(
+        repo_path,
+        "openspec",
+        &["archive".to_string(), change_name, "--yes".to_string()],
+    )
+    .map_err(BridgeErrorDto::from)
+}
+
+#[tauri::command]
 pub fn read_openspec_artifact_file(
     repo_path: String,
     artifact_path: String,
@@ -272,6 +286,31 @@ fn validate_openspec_args(args: &[String]) -> Result<(), BridgeError> {
     if !ALLOWED_OPENSPEC_COMMANDS.contains(&command.as_str()) {
         return Err(BridgeError::InvalidCommand {
             reason: format!("unsupported subcommand '{}'", command),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_archive_change_name(change_name: &str) -> Result<(), BridgeError> {
+    let trimmed = change_name.trim();
+
+    if trimmed.is_empty() {
+        return Err(BridgeError::InvalidCommand {
+            reason: "expected a change name to archive".to_string(),
+        });
+    }
+
+    if trimmed != change_name
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains('\0')
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.starts_with('-')
+    {
+        return Err(BridgeError::InvalidCommand {
+            reason: format!("invalid archive change name '{}'", change_name),
         });
     }
 
@@ -675,6 +714,27 @@ mod tests {
         assert!(matches!(error, BridgeError::InvalidRepository { .. }));
 
         cleanup(repo);
+    }
+
+    #[test]
+    fn validate_archive_change_name_accepts_simple_change_names() {
+        validate_archive_change_name("improve-desktop-ux-uat")
+            .expect("simple change names should be valid");
+        validate_archive_change_name("2026-04-27-demo_change")
+            .expect("dated change names should be valid");
+    }
+
+    #[test]
+    fn validate_archive_change_name_rejects_path_like_or_flag_values() {
+        for change_name in ["", " ../demo", "../demo", "archive/demo", "--help", "demo/name"] {
+            assert!(
+                matches!(
+                    validate_archive_change_name(change_name),
+                    Err(BridgeError::InvalidCommand { .. })
+                ),
+                "{change_name:?} should be rejected"
+            );
+        }
     }
 
     #[test]

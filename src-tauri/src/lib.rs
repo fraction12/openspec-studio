@@ -38,6 +38,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            bridge::archive_change,
             bridge::read_openspec_artifact_file,
             bridge::list_openspec_file_records,
             bridge::pick_repository_folder,

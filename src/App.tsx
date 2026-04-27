@@ -134,6 +134,7 @@ interface SpecRecord {
   summaryQuality: "available" | "missing";
   validationIssues: ValidationIssue[];
   requirementsPreview: string[];
+  sourceContent: string;
 }
 
 interface WorkspaceView {
@@ -484,6 +485,63 @@ function App() {
     }
   }
 
+  async function archiveChange(changeName: string) {
+    if (!repo || repo.state !== "ready") {
+      setMessage("Choose a valid OpenSpec repository before archiving.");
+      return;
+    }
+
+    if (!isTauriRuntime()) {
+      setMessage("Archive requires the Tauri desktop runtime.");
+      return;
+    }
+
+    setLoadState("loading");
+    setMessage("Archiving " + changeName + "...");
+
+    try {
+      await archiveOneChange(repo.path, changeName);
+      await loadRepository(repo.path);
+      setPhase("archived");
+      setMessage("Archived " + changeName + ".");
+    } catch (error) {
+      setLoadState("loaded");
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function archiveAllChanges(changeNames: string[]) {
+    if (!repo || repo.state !== "ready") {
+      setMessage("Choose a valid OpenSpec repository before archiving.");
+      return;
+    }
+
+    if (changeNames.length === 0) {
+      setMessage("No archive-ready changes to archive.");
+      return;
+    }
+
+    if (!isTauriRuntime()) {
+      setMessage("Archive requires the Tauri desktop runtime.");
+      return;
+    }
+
+    setLoadState("loading");
+    setMessage("Archiving " + changeNames.length + " changes...");
+
+    try {
+      for (const changeName of changeNames) {
+        await archiveOneChange(repo.path, changeName);
+      }
+      await loadRepository(repo.path);
+      setPhase("archived");
+      setMessage("Archived " + changeNames.length + " changes.");
+    } catch (error) {
+      setLoadState("loaded");
+      setMessage(errorMessage(error));
+    }
+  }
+
   async function chooseRepositoryFolder() {
     if (!isTauriRuntime()) {
       setMessage("Folder selection requires the Tauri desktop runtime.");
@@ -507,6 +565,17 @@ function App() {
         message: errorMessage(error),
       });
       setMessage(errorMessage(error));
+    }
+  }
+
+  async function archiveOneChange(repoPath: string, changeName: string) {
+    const result = await invoke<CommandResultDto>("archive_change", {
+      repoPath,
+      changeName,
+    });
+
+    if (!result.success) {
+      throw new Error(result.stderr || result.stdout || "OpenSpec archive did not complete.");
     }
   }
 
@@ -705,6 +774,8 @@ function App() {
         }}
         onSelectSpec={setSelectedSpecId}
         onChooseFolder={() => void chooseRepositoryFolder()}
+        onArchiveChange={(changeName) => void archiveChange(changeName)}
+        onArchiveAll={(changeNames) => void archiveAllChanges(changeNames)}
         onValidate={() => void runValidation()}
         onReload={() => repo && void loadRepository(repo.path)}
       />
@@ -885,6 +956,8 @@ function WorkspaceMain({
   onSelectChange,
   onSelectSpec,
   onChooseFolder,
+  onArchiveChange,
+  onArchiveAll,
   onValidate,
   onReload,
 }: {
@@ -902,6 +975,8 @@ function WorkspaceMain({
   onSelectChange: (changeId: string) => void;
   onSelectSpec: (specId: string) => void;
   onChooseFolder: () => void;
+  onArchiveChange: (changeName: string) => void;
+  onArchiveAll: (changeNames: string[]) => void;
   onValidate: () => void;
   onReload: () => void;
 }) {
@@ -993,6 +1068,8 @@ function WorkspaceMain({
           onPhaseChange={onPhaseChange}
           onQueryChange={onQueryChange}
           onSelectChange={onSelectChange}
+          onArchiveChange={onArchiveChange}
+          onArchiveAll={onArchiveAll}
         />
       ) : (
         <SpecsBrowser
@@ -1015,6 +1092,8 @@ function ChangeBoard({
   onPhaseChange,
   onQueryChange,
   onSelectChange,
+  onArchiveChange,
+  onArchiveAll,
 }: {
   changes: ChangeRecord[];
   phase: ChangePhase;
@@ -1023,6 +1102,8 @@ function ChangeBoard({
   onPhaseChange: (phase: ChangePhase) => void;
   onQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
+  onArchiveChange: (changeName: string) => void;
+  onArchiveAll: (changeNames: string[]) => void;
 }) {
   const filteredChanges = useMemo(() => {
     return changes.filter((change) => matchesChangeFilters(change, phase, query));
@@ -1052,7 +1133,18 @@ function ChangeBoard({
             </button>
           ))}
         </div>
-        <SearchField label="Search changes" value={query} onChange={onQueryChange} />
+        <div className="board-actions">
+          {phase === "archive-ready" && filteredChanges.length > 0 ? (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => onArchiveAll(filteredChanges.map((change) => change.name))}
+            >
+              Archive all
+            </button>
+          ) : null}
+          <SearchField label="Search changes" value={query} onChange={onQueryChange} />
+        </div>
       </div>
 
       {filteredChanges.length === 0 ? (
@@ -1077,28 +1169,54 @@ function ChangeBoard({
                 <th scope="col">Tasks</th>
                 <th scope="col">Touched capabilities</th>
                 <th scope="col">Updated</th>
+                {phase === "archive-ready" ? <th scope="col">Action</th> : null}
               </tr>
             </thead>
             <tbody>
               {filteredChanges.map((change) => (
-                <tr key={change.id} className={selectedChange?.id === change.id ? "is-selected" : ""}>
+                <tr
+                  key={change.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-selected={selectedChange?.id === change.id}
+                  className={selectedChange?.id === change.id ? "is-selected" : ""}
+                  onClick={() => onSelectChange(change.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelectChange(change.id);
+                    }
+                  }}
+                >
                   <td>
-                    <button type="button" className="change-title-button" onClick={() => onSelectChange(change.id)}>
+                    <div className="change-title-cell">
                       <strong>{change.title}</strong>
                       <span>{change.name}</span>
-                    </button>
+                    </div>
                   </td>
                   <td>
-                    <div className="status-stack">
-                      <HealthPill health={change.health} label={healthLabels[change.health]} />
-                      <span>{phaseLabels[change.phase]}</span>
-                    </div>
+                    <HealthPill health={change.health} label={healthLabels[change.health]} />
                   </td>
                   <td>
                     <TaskProgressCell progress={change.taskProgress} />
                   </td>
                   <td className="capability-cell">{formatCapabilities(change.capabilities)}</td>
                   <td className="updated-cell">{change.updatedAt}</td>
+                  {phase === "archive-ready" ? (
+                    <td className="action-cell">
+                      <button
+                        type="button"
+                        className="primary-outline table-action"
+                        onKeyDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onArchiveChange(change.name);
+                        }}
+                      >
+                        Archive
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
@@ -1162,18 +1280,28 @@ function SpecsBrowser({
             </thead>
             <tbody>
               {filteredSpecs.map((spec) => (
-                <tr key={spec.id} className={selectedSpec?.id === spec.id ? "is-selected" : ""}>
+                <tr
+                  key={spec.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-selected={selectedSpec?.id === spec.id}
+                  className={selectedSpec?.id === spec.id ? "is-selected" : ""}
+                  onClick={() => onSelectSpec(spec.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelectSpec(spec.id);
+                    }
+                  }}
+                >
                   <td>
-                    <button type="button" className="change-title-button" onClick={() => onSelectSpec(spec.id)}>
+                    <div className="change-title-cell">
                       <strong>{spec.capability}</strong>
                       <span>{spec.path}</span>
-                    </button>
+                    </div>
                   </td>
                   <td>
-                    <div className="status-stack">
-                      <HealthPill health={spec.health} label={healthLabels[spec.health]} />
-                      <span>{spec.summaryQuality === "available" ? "Summary found" : "Summary missing"}</span>
-                    </div>
+                    <HealthPill health={spec.health} label={healthLabels[spec.health]} />
                   </td>
                   <td>{spec.requirements}</td>
                   <td className="updated-cell">{spec.updatedAt}</td>
@@ -1236,58 +1364,8 @@ function Inspector({
             </div>
             <div className="inspector-body">
               <section className="inspector-section">
-                <h3>Summary</h3>
-                <p>
-                  {selectedSpec.summaryQuality === "available"
-                    ? selectedSpec.summary
-                    : "No polished summary has been written for this spec yet."}
-                </p>
-              </section>
-              <section className="inspector-section two-column-facts">
-                <div>
-                  <span>Requirements</span>
-                  <strong>{selectedSpec.requirements}</strong>
-                </div>
-                <div>
-                  <span>Updated</span>
-                  <strong>{selectedSpec.updatedAt}</strong>
-                </div>
-                <div>
-                  <span>Summary</span>
-                  <strong>{selectedSpec.summaryQuality === "available" ? "Available" : "Missing"}</strong>
-                </div>
-                <div>
-                  <span>Messages</span>
-                  <strong>{selectedSpec.validationIssues.length}</strong>
-                </div>
-              </section>
-              <section className="inspector-section">
-                <h3>Requirements preview</h3>
-                {selectedSpec.requirementsPreview.length > 0 ? (
-                  <ul className="detail-list">
-                    {selectedSpec.requirementsPreview.map((requirement) => (
-                      <li key={requirement}>{requirement}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="muted-copy">No requirement headings were found in this spec.</p>
-                )}
-              </section>
-              <section className="inspector-section">
-                <h3>Validation messages</h3>
-                {selectedSpec.validationIssues.length > 0 ? (
-                  <ul className="message-list">
-                    {selectedSpec.validationIssues.map((issue) => (
-                      <li key={issue.id} className={"message " + issue.severity}>
-                        <strong>{issue.code ?? issue.severity}</strong>
-                        <span>{issue.message}</span>
-                        {issue.path ? <code>{issue.path}</code> : null}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="muted-copy">No validation messages are linked to this spec.</p>
-                )}
+                <h3>Spec preview</h3>
+                <MarkdownPreview content={selectedSpec.sourceContent} emptyText="No spec preview available." />
               </section>
             </div>
           </>
@@ -1869,6 +1947,7 @@ function specToView(
     summaryQuality: summary ? "available" : "missing",
     validationIssues: issues,
     requirementsPreview: extractRequirementTitles(content, 6),
+    sourceContent: content ?? "",
   };
 }
 
