@@ -6,15 +6,10 @@ TBD - created by archiving change build-local-desktop-companion. Update Purpose 
 ### Requirement: Robust expansion path
 The system SHALL preserve a product architecture that can expand beyond a single-repo read-only viewer without replacing OpenSpec as the source of truth.
 
-#### Scenario: Derived state is rebuilt
+#### Scenario: Archived state is rebuilt
 - **WHEN** app-local caches or indexes are deleted
-- **THEN** the app can rebuild its project state from local OpenSpec files and OpenSpec CLI output
-- **AND** no canonical project data is lost
-
-#### Scenario: Future workflow actions use OpenSpec primitives
-- **WHEN** the app adds guided propose, apply, archive, or validation workflows
-- **THEN** those workflows invoke or mirror OpenSpec CLI behavior
-- **AND** they do not create a competing workflow format
+- **THEN** the app rebuilds archived change detail state from `openspec/changes/archive/`
+- **AND** proposal, design, tasks, spec deltas, summary, task progress, touched capabilities, and archive metadata are derived from local OpenSpec files
 
 ### Requirement: Multi-repository workspace readiness
 The system SHALL be designed so future versions can inspect multiple local OpenSpec repositories in one workspace dashboard.
@@ -31,17 +26,10 @@ The system SHALL be designed so future versions can inspect multiple local OpenS
 ### Requirement: Search, timeline, and dependency views
 The system SHALL support future robust visualizations derived from local OpenSpec artifacts and local repo metadata.
 
-#### Scenario: User searches OpenSpec content
-- **WHEN** search is added
-- **THEN** it can search proposal, design, tasks, spec deltas, current specs, and validation messages across indexed repositories
-
-#### Scenario: User opens a timeline view
-- **WHEN** timeline view is added
-- **THEN** it can show derived activity from file modification times, git history, validation runs, and archive state
-
-#### Scenario: User opens a dependency graph
-- **WHEN** dependency graph view is added
-- **THEN** it can show relationships between changes, touched specs, capabilities, artifacts, and archive readiness
+#### Scenario: Archived artifacts are available to derived views
+- **WHEN** archived change folders contain proposal, design, task, or spec delta artifacts
+- **THEN** the app indexes those artifacts as historical read-only sources
+- **AND** future search, timeline, and dependency views can distinguish archived artifacts from active change artifacts
 
 ### Requirement: Safe artifact authoring readiness
 The system SHALL leave room for future artifact editing without making editing necessary for the first useful version.

@@ -6,20 +6,10 @@ TBD - created by archiving change build-local-desktop-companion. Update Purpose 
 ### Requirement: Change board overview
 The system SHALL provide a visual overview of OpenSpec changes for the selected repository.
 
-#### Scenario: Changes are displayed
-- **WHEN** active changes have been indexed
-- **THEN** the app displays them in a board or table overview
-- **AND** each change shows its name, artifact completeness, validation health, touched capabilities, and last modified time when available
-
-#### Scenario: Change needs attention
-- **WHEN** a change is missing artifacts, has blocked workflow status, or has validation errors
-- **THEN** the board visually marks the change as needing attention
-- **AND** the user can open the change detail to see the reason
-
-#### Scenario: Overview uses progressive disclosure
-- **WHEN** the app displays the change board
-- **THEN** the board emphasizes overview-level fields needed for scanning
-- **AND** detailed artifact, validation, task, and archive-readiness information is available after the user selects a change or opens a focused detail area
+#### Scenario: Archived changes are displayed
+- **WHEN** archived changes have been indexed
+- **THEN** the app displays them in the archived phase table
+- **AND** each archived row shows an `Archived` state, real task progress when an archived tasks artifact exists, touched capabilities when archived spec deltas exist, and last modified time when available
 
 ### Requirement: Task progress summary
 The system SHALL summarize task progress for changes with task artifacts.
@@ -37,19 +27,16 @@ The system SHALL summarize task progress for changes with task artifacts.
 ### Requirement: Change detail view
 The system SHALL provide a detail view for an individual change.
 
-#### Scenario: User opens a change
-- **WHEN** the user selects a change from the board
-- **THEN** the app shows proposal, design, tasks, and delta spec artifacts when present
-- **AND** it shows validation and workflow status for that change when available
+#### Scenario: User opens an archived change
+- **WHEN** the user selects an archived change from the board
+- **THEN** the app shows archived proposal, design, tasks, and spec delta artifacts when present
+- **AND** it provides file actions for archived artifacts that exist
+- **AND** it does not show active validation or archive-readiness controls for the archived change
 
-#### Scenario: Detail view preserves readability
-- **WHEN** the user opens proposal, design, or task details
-- **THEN** proposal and design previews use readable document-style typography rather than raw code styling
-- **AND** lengthy task lists prioritize remaining tasks while completed tasks remain available through lower-priority disclosure
-
-#### Scenario: User opens artifact externally
-- **WHEN** the user chooses to open an artifact
-- **THEN** the app opens the artifact in the user's configured editor or operating system default handler
+#### Scenario: Archived artifact is missing
+- **WHEN** an archived change does not include a proposal, design, tasks, or spec delta artifact
+- **THEN** the archived detail view omits the missing artifact tab or action
+- **AND** it does not render disabled active-change controls that imply the app failed to load data
 
 ### Requirement: Visible selection stays synchronized with board filters
 The system SHALL keep the selected change and detail inspector synchronized with the current visible board rows.
@@ -72,32 +59,23 @@ The system SHALL keep the selected change and detail inspector synchronized with
 ### Requirement: Change board avoids redundant status presentation
 The system SHALL present change state with clear hierarchy and without repeating the same state in multiple adjacent controls.
 
-#### Scenario: Change is archive-ready
-- **WHEN** the user is viewing the archive-ready phase
-- **THEN** the row does not redundantly repeat archive-ready status when the phase context already communicates it
-- **AND** the row still shows validation health, task progress, and any specific blocking reason when needed
-
-#### Scenario: Change health is unknown or stale
-- **WHEN** validation has not run or is stale
-- **THEN** the board labels the health state in user-facing language
-- **AND** the state indicates what action can restore trust
+#### Scenario: Change is archived
+- **WHEN** the user is viewing archived changes
+- **THEN** the row status uses the label `Archived`
+- **AND** the inspector presents archived state as historical context rather than active validation health
 
 ### Requirement: Change inspector follows consistent drill-down hierarchy
 The system SHALL structure change detail content so users learn more as they move from table overview to inspector tabs.
 
-#### Scenario: Change detail opens
-- **WHEN** the user selects a visible change
-- **THEN** the inspector header shows identity, health, source path, and clearly labeled file actions
-- **AND** tab content aligns to the same gutter and type scale as the header
+#### Scenario: Archived detail opens
+- **WHEN** the user selects an archived change
+- **THEN** the inspector header shows identity, archived state, source path, and a primary file action when available
+- **AND** the inspector tabs only include archived historical content and archive metadata
 
-#### Scenario: Proposal or design preview is long
-- **WHEN** proposal or design content exceeds the available inspector height
-- **THEN** the preview scrolls with stable padding and without crowding the panel edge or status band
-
-#### Scenario: Completed tasks are expanded
-- **WHEN** the user expands completed tasks
-- **THEN** task groups remain visually separated and scannable
-- **AND** the scroll position and bottom padding keep the final task group readable
+#### Scenario: Archive info is shown
+- **WHEN** the user opens archive information for an archived change
+- **THEN** the app shows the archive folder path, parsed archived date when available, original change slug when available, and available archived files
+- **AND** missing parsed metadata is presented as unknown rather than guessed
 
 ### Requirement: Board rows communicate that they are navigable
 The system SHALL make selectable board rows visually and interactively clear.
@@ -145,4 +123,67 @@ The system SHALL expose archive actions from the archive-ready phase.
 - **WHEN** an archive operation cannot complete
 - **THEN** the app preserves the current workspace view
 - **AND** it shows a clear failure message for the archive attempt
+
+### Requirement: Board presents a repo-native workbench
+The system SHALL present changes and specs as source-backed OpenSpec artifacts rather than generic dashboard records.
+
+#### Scenario: Change board renders
+- **WHEN** the user views changes
+- **THEN** the board emphasizes change name, touched capabilities, task progress, and updated time
+- **AND** controls, counts, and status labels remain visually secondary to the artifact list
+- **AND** the source path is available from the selected change inspector rather than repeated under every row title
+
+#### Scenario: Specs board renders
+- **WHEN** the user views specs
+- **THEN** the board emphasizes capability name, requirement count, and last updated time
+- **AND** the presentation supports quick scanning without duplicate summary content in the same row
+- **AND** the source path is available from the selected spec inspector rather than repeated under every row title
+
+#### Scenario: Default board width fits desktop layouts
+- **WHEN** the user views changes on a normal desktop window
+- **THEN** the default table layout fits visible overview columns without horizontal scrolling
+- **AND** archive-ready row actions remain visible without requiring horizontal scrolling
+- **AND** manual change-column resizing remains available for users who want to reveal longer titles
+
+#### Scenario: Board width is compact
+- **WHEN** the board is narrower than the table's overview columns
+- **THEN** the table preserves change/spec name, trust, tasks, capabilities, updated time, and row actions when present
+- **AND** the table scrolls horizontally instead of hiding or partially clipping columns
+
+#### Scenario: Row titles need truncation
+- **WHEN** a change or spec title is wider than its current table cell
+- **THEN** the title truncates with width-based ellipsis
+- **AND** resizing the change column reveals more of the title without relying on a fixed character cutoff
+
+### Requirement: Inspector reinforces OpenSpec artifact hierarchy
+The system SHALL make the inspector feel like a focused review surface for OpenSpec artifacts.
+
+#### Scenario: Change detail opens
+- **WHEN** a change is selected
+- **THEN** the inspector presents source path, phase, compact trust state, and artifact tabs with consistent alignment
+- **AND** proposal, design, tasks, spec deltas, archive information, and validation are shown only when relevant to the selected change
+
+#### Scenario: Artifact tab renders
+- **WHEN** an artifact tab is selected
+- **THEN** the content area prioritizes the selected artifact's real source text
+- **AND** supporting metadata appears as low-emphasis context instead of repeated headline content
+
+### Requirement: Footer presents repo-operational facts
+The system SHALL use the footer for concise repository facts derived from current OpenSpec and Git state.
+
+#### Scenario: Workspace footer renders
+- **WHEN** a repository is loaded
+- **THEN** the footer shows the last validation date/time when known
+- **AND** it shows the latest indexed OpenSpec change by modified time
+- **AND** it shows whether `openspec/` has uncommitted Git changes
+- **AND** transient load or action messages remain available without replacing those facts
+
+### Requirement: Workbench empty states stay practical
+The system SHALL use factual, action-oriented empty states that match OpenSpec's lightweight tone.
+
+#### Scenario: No rows match
+- **WHEN** a filter or search produces no changes or specs
+- **THEN** the empty state explains the current condition in concise language
+- **AND** it offers the next practical action when one exists
+- **AND** it avoids promotional or decorative copy
 
