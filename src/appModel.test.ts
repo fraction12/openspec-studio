@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildOpenSpecFileSignature,
+  deriveChangeHealth,
   extractJsonPayload,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
@@ -116,5 +117,41 @@ describe("buildOpenSpecFileSignature", () => {
       latestPath: "openspec/changes/demo/proposal.md",
       latestModifiedTimeMs: 30,
     });
+  });
+});
+
+describe("deriveChangeHealth", () => {
+  it("keeps repo-level validation failure separate from per-change health", () => {
+    expect(
+      deriveChangeHealth({
+        workflowStatus: "in-progress",
+        missingArtifactCount: 0,
+        validation: {
+          state: "fail",
+          validatedAt: "2026-04-27T12:00:00.000Z",
+          summary: { total: 3, passed: 2, failed: 1 },
+          issues: [],
+          raw: { valid: false },
+        },
+        validationIssueCount: 0,
+      }),
+    ).toBe("stale");
+  });
+
+  it("marks a change invalid only when linked evidence exists", () => {
+    expect(
+      deriveChangeHealth({
+        workflowStatus: "in-progress",
+        missingArtifactCount: 0,
+        validation: {
+          state: "fail",
+          validatedAt: "2026-04-27T12:00:00.000Z",
+          summary: { total: 3, passed: 2, failed: 1 },
+          issues: [],
+          raw: { valid: false },
+        },
+        validationIssueCount: 1,
+      }),
+    ).toBe("invalid");
   });
 });

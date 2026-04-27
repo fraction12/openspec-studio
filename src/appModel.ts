@@ -1,7 +1,9 @@
 import type {
+  IndexedWorkflowStatusValue,
   VirtualOpenSpecChangeStatusRecord,
   VirtualOpenSpecFileRecord,
 } from "./domain/openspecIndex";
+import type { ValidationResult } from "./validation/results";
 
 export interface BridgeFileRecord {
   path: string;
@@ -15,6 +17,15 @@ export interface OpenSpecFileSignature {
   fingerprint: string;
   latestPath: string | null;
   latestModifiedTimeMs: number | null;
+}
+
+export type ChangeHealth = "valid" | "stale" | "invalid" | "missing" | "blocked" | "ready";
+
+export interface ChangeHealthInput {
+  workflowStatus: IndexedWorkflowStatusValue;
+  missingArtifactCount: number;
+  validation: ValidationResult | null;
+  validationIssueCount: number;
 }
 
 export function toVirtualFileRecords(
@@ -91,6 +102,31 @@ export function buildOpenSpecFileSignature(
     latestPath,
     latestModifiedTimeMs,
   };
+}
+
+export function deriveChangeHealth({
+  workflowStatus,
+  missingArtifactCount,
+  validation,
+  validationIssueCount,
+}: ChangeHealthInput): ChangeHealth {
+  if (validationIssueCount > 0 || workflowStatus === "error") {
+    return "invalid";
+  }
+
+  if (workflowStatus === "blocked") {
+    return "blocked";
+  }
+
+  if (missingArtifactCount > 0) {
+    return "missing";
+  }
+
+  if (!validation) {
+    return "stale";
+  }
+
+  return validation.state === "pass" ? "valid" : "stale";
 }
 
 export function extractJsonPayload(output: string): unknown | undefined {

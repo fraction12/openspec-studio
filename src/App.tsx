@@ -5,9 +5,11 @@ import "./App.css";
 
 import {
   buildOpenSpecFileSignature,
+  deriveChangeHealth,
   extractJsonPayload,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
+  type ChangeHealth,
   type BridgeFileRecord,
   type OpenSpecFileSignature,
 } from "./appModel";
@@ -17,7 +19,6 @@ import {
   type IndexedArchivedChange,
   type IndexedSpec,
   type IndexedTaskProgress,
-  type IndexedWorkflowStatusValue,
   type VirtualOpenSpecChangeStatusRecord,
   type VirtualOpenSpecFileRecord,
 } from "./domain/openspecIndex";
@@ -32,7 +33,7 @@ type RepoState = "ready" | "no-workspace" | "cli-failure";
 type BoardView = "changes" | "specs";
 type ChangePhase = "active" | "archive-ready" | "archived";
 type DetailTab = "proposal" | "design" | "tasks" | "spec-delta" | "status";
-type Health = "valid" | "stale" | "invalid" | "missing" | "blocked" | "ready";
+type Health = ChangeHealth;
 type ArtifactStatus = "present" | "missing" | "blocked";
 type LoadState = "idle" | "loading" | "loaded" | "error";
 
@@ -70,10 +71,21 @@ interface Artifact {
   note: string;
 }
 
+interface TaskItem {
+  label: string;
+  done: boolean;
+}
+
+interface TaskGroup {
+  title: string;
+  items: TaskItem[];
+}
+
 interface TaskProgress {
   done: number;
   total: number;
-  items: Array<{ label: string; done: boolean }>;
+  items: TaskItem[];
+  groups: TaskGroup[];
 }
 
 interface ChangeRecord {
@@ -238,6 +250,10 @@ function App() {
     null;
   const selectedSpec =
     specs.find((spec) => spec.id === selectedSpecId) ?? specs[0] ?? null;
+  const selectedChangeFilteredOut =
+    view === "changes" && selectedChange ? !matchesChangeFilters(selectedChange, phase, query) : false;
+  const selectedSpecFilteredOut =
+    view === "specs" && selectedSpec ? !matchesSpecFilters(selectedSpec, query) : false;
 
   useEffect(() => {
     const path = artifactPathForTab(selectedChange, detailTab);
@@ -585,6 +601,8 @@ function App() {
         view={view}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
+        selectedChangeFilteredOut={selectedChangeFilteredOut}
+        selectedSpecFilteredOut={selectedSpecFilteredOut}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
         onDetailTabChange={setDetailTab}
@@ -614,6 +632,8 @@ function Sidebar({
   onLoadRepo: () => void;
   onOpenRecent: (path: string) => void;
 }) {
+  const visibleRecentRepos = recentRepos.filter((path) => path !== repo?.path);
+
   return (
     <aside className="repo-rail" aria-label="Repository navigation">
       <div className="brand">
@@ -650,25 +670,10 @@ function Sidebar({
       </section>
 
       <section className="rail-section">
-        <div className="rail-heading">Selected repo</div>
-        {repo ? (
-          <div className="current-repo">
-            <div>
-              <strong>{repo.name}</strong>
-              <span>{repo.path}</span>
-            </div>
-            <HealthPill health={repoHealth(repo)} label={repo.summary} />
-          </div>
-        ) : (
-          <EmptyState compact title="No repo selected" body="Enter a local path to inspect an OpenSpec workspace." />
-        )}
-      </section>
-
-      <section className="rail-section">
         <div className="rail-heading">Recent repos</div>
-        {recentRepos.length > 0 ? (
+        {visibleRecentRepos.length > 0 ? (
           <div className="recent-repos">
-            {recentRepos.map((path) => (
+            {visibleRecentRepos.map((path) => (
               <button type="button" key={path} onClick={() => onOpenRecent(path)}>
                 <strong>{repoNameFromPath(path)}</strong>
                 <span>{path}</span>
@@ -676,18 +681,19 @@ function Sidebar({
             ))}
           </div>
         ) : (
-          <EmptyState compact title="No recents" body="Opened repositories will appear here." />
+          <EmptyState compact title="No other recents" body="Opened repositories will appear here." />
         )}
       </section>
 
       <section className="rail-section rail-section-fill">
-        <div className="rail-heading">Data hierarchy</div>
-        <ol className="rail-steps">
-          <li>Repository</li>
-          <li>Changes or specs</li>
-          <li>Selected detail</li>
-          <li>Artifact or validation message</li>
-        </ol>
+        <div className="rail-heading">Workspace</div>
+        {repo ? (
+          <div className="rail-status">
+            <HealthPill health={repoHealth(repo)} label={repo.summary} />
+          </div>
+        ) : (
+          <EmptyState compact title="No repo selected" body="Enter a local path to inspect an OpenSpec workspace." />
+        )}
       </section>
     </aside>
   );
@@ -793,7 +799,7 @@ function WorkspaceMain({
             Refresh
           </button>
           <button type="button" className="primary-button" onClick={onValidate} disabled={loadState === "loading"}>
-            Run validation
+            Validate workspace
           </button>
         </div>
       </header>
@@ -839,17 +845,7 @@ function ChangeBoard({
   onSelectChange: (changeId: string) => void;
 }) {
   const filteredChanges = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    return changes.filter((change) => {
-      return (
-        change.phase === phase &&
-        (normalizedQuery.length === 0 ||
-          change.title.toLowerCase().includes(normalizedQuery) ||
-          change.name.toLowerCase().includes(normalizedQuery) ||
-          change.capabilities.some((capability) => capability.toLowerCase().includes(normalizedQuery)))
-      );
-    });
+    return changes.filter((change) => matchesChangeFilters(change, phase, query));
   }, [changes, phase, query]);
   const phaseCounts = useMemo(
     () => ({
@@ -876,17 +872,20 @@ function ChangeBoard({
             </button>
           ))}
         </div>
-        <label className="search-field">
-          <span className="sr-only">Search changes</span>
-          <input value={query} onChange={(event) => onQueryChange(event.currentTarget.value)} placeholder="Search changes" />
-        </label>
+        <SearchField label="Search changes" value={query} onChange={onQueryChange} />
       </div>
 
       {filteredChanges.length === 0 ? (
         <EmptyState
           compact
           title={changes.length === 0 ? "No changes indexed" : "No matching changes"}
-          body={changes.length === 0 ? "No OpenSpec changes were discovered." : "Try another phase or search."}
+          body={
+            changes.length === 0
+              ? "Checked openspec/changes/ and no changes were discovered."
+              : "The current phase and search do not match any indexed changes."
+          }
+          actionLabel={query ? "Clear search" : undefined}
+          onAction={query ? () => onQueryChange("") : undefined}
         />
       ) : (
         <div className="table-scroll">
@@ -944,14 +943,7 @@ function SpecsBrowser({
   onSelectSpec: (specId: string) => void;
 }) {
   const filteredSpecs = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    return specs.filter(
-      (spec) =>
-        normalizedQuery.length === 0 ||
-        spec.capability.toLowerCase().includes(normalizedQuery) ||
-        spec.summary.toLowerCase().includes(normalizedQuery),
-    );
+    return specs.filter((spec) => matchesSpecFilters(spec, query));
   }, [query, specs]);
 
   return (
@@ -961,14 +953,22 @@ function SpecsBrowser({
           <h2>Specs</h2>
           <p>Capability specs appear here after repository indexing.</p>
         </div>
-        <label className="search-field">
-          <span className="sr-only">Search specs</span>
-          <input value={query} onChange={(event) => onQueryChange(event.currentTarget.value)} placeholder="Search specs" />
-        </label>
+        <SearchField label="Search specs" value={query} onChange={onQueryChange} />
       </div>
 
       {filteredSpecs.length === 0 ? (
-        <EmptyState compact tone="warning" title="No specs indexed" body="No specs were found under openspec/specs." />
+        <EmptyState
+          compact
+          tone="warning"
+          title={specs.length === 0 ? "No specs indexed" : "No matching specs"}
+          body={
+            specs.length === 0
+              ? "Checked openspec/specs/ and no base specs were found."
+              : "The current search does not match any indexed specs."
+          }
+          actionLabel={query ? "Clear search" : undefined}
+          onAction={query ? () => onQueryChange("") : undefined}
+        />
       ) : (
         <div className="table-scroll">
           <table className="change-table">
@@ -1010,6 +1010,8 @@ function Inspector({
   view,
   selectedChange,
   selectedSpec,
+  selectedChangeFilteredOut,
+  selectedSpecFilteredOut,
   detailTab,
   artifactPreview,
   onDetailTabChange,
@@ -1021,6 +1023,8 @@ function Inspector({
   view: BoardView;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
+  selectedChangeFilteredOut: boolean;
+  selectedSpecFilteredOut: boolean;
   detailTab: DetailTab;
   artifactPreview: string;
   onDetailTabChange: (tab: DetailTab) => void;
@@ -1043,7 +1047,10 @@ function Inspector({
             <div className="inspector-header">
               <span>Capability</span>
               <h2>{selectedSpec.capability}</h2>
-              <p>{selectedSpec.path}</p>
+              <p className="path-copy">{selectedSpec.path}</p>
+              {selectedSpecFilteredOut ? (
+                <p className="context-note">This selected spec is hidden by the current search.</p>
+              ) : null}
               <div className="inspector-actions">
                 <HealthPill health={selectedSpec.health} label={healthLabels[selectedSpec.health]} />
                 <button type="button" className="primary-outline" onClick={() => onOpenArtifact(selectedSpec)}>
@@ -1084,9 +1091,12 @@ function Inspector({
   return (
     <aside className="inspector" aria-label="Change inspector">
       <div className="inspector-header">
-        <span>{selectedChange.name}</span>
+        <span>Selected change</span>
         <h2>{selectedChange.title}</h2>
-        <p>{selectedChange.summary}</p>
+        <p className="path-copy">{selectedChange.name}</p>
+        {selectedChangeFilteredOut ? (
+          <p className="context-note">This selected change is hidden by the current phase or search.</p>
+        ) : null}
         <div className="inspector-actions">
           <HealthPill health={selectedChange.health} label={healthLabels[selectedChange.health]} />
           <button type="button" className="primary-outline" onClick={() => onOpenArtifact(selectedChange.artifacts[0])}>
@@ -1140,22 +1150,20 @@ function renderDetailTab(
       );
     }
 
-    const remainingTasks = change.taskProgress.items.filter((item) => !item.done);
     const completedTasks = change.taskProgress.items.filter((item) => item.done);
+    const remainingGroups = filterTaskGroups(change.taskProgress.groups, false);
+    const completedGroups = filterTaskGroups(change.taskProgress.groups, true);
+    const remainingCount = remainingGroups.reduce((total, group) => total + group.items.length, 0);
 
     return (
       <>
-        <section className="inspector-section progress-section">
-          <h3>Task progress</h3>
-          <TaskProgressCell progress={change.taskProgress} expanded />
-        </section>
         <section className="inspector-section">
           <div className="section-title-row">
             <h3>Remaining tasks</h3>
-            <span>{remainingTasks.length}</span>
+            <span>{remainingCount}</span>
           </div>
-          {remainingTasks.length > 0 ? (
-            <TaskList items={remainingTasks} />
+          {remainingCount > 0 ? (
+            <TaskGroups groups={remainingGroups} />
           ) : (
             <p className="muted-copy">No remaining tasks. This change is ready for final checks.</p>
           )}
@@ -1164,8 +1172,15 @@ function renderDetailTab(
           <summary>
             Completed tasks <span>{completedTasks.length}</span>
           </summary>
-          <TaskList items={completedTasks} compact />
+          <TaskGroups groups={completedGroups} compact />
         </details>
+        <section className="inspector-section progress-section">
+          <div className="section-title-row">
+            <h3>Task completion</h3>
+            <span>{remainingCount} left</span>
+          </div>
+          <TaskProgressCell progress={change.taskProgress} expanded />
+        </section>
       </>
     );
   }
@@ -1203,7 +1218,7 @@ function renderDetailTab(
           </ul>
         )}
         <button type="button" className="primary-outline full-width-action" onClick={onValidate}>
-          Refresh validation
+          Validate workspace
         </button>
       </details>
 
@@ -1214,11 +1229,13 @@ function renderDetailTab(
             <div className="artifact-row" key={artifact.id}>
               <div>
                 <strong>{artifact.label}</strong>
-                <span>{artifact.note}</span>
                 <code>{artifact.path}</code>
+                {artifact.note ? <span>{artifact.note}</span> : null}
               </div>
               <div className="artifact-actions">
-                <HealthPill health={artifactHealth(artifact.status)} label={artifact.status} />
+                {artifact.status === "present" ? null : (
+                  <HealthPill health={artifactHealth(artifact.status)} label={artifact.status} />
+                )}
                 <button
                   type="button"
                   className="primary-outline"
@@ -1251,11 +1268,46 @@ function renderDetailTab(
   );
 }
 
+function SearchField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="search-field">
+      <span className="sr-only">{label}</span>
+      <input value={value} onChange={(event) => onChange(event.currentTarget.value)} placeholder={label} />
+      {value ? (
+        <button type="button" aria-label={"Clear " + label.toLowerCase()} onClick={() => onChange("")}>
+          Clear
+        </button>
+      ) : null}
+    </label>
+  );
+}
+
+function TaskGroups({ groups, compact = false }: { groups: TaskGroup[]; compact?: boolean }) {
+  return (
+    <div className={compact ? "task-groups compact" : "task-groups"}>
+      {groups.map((group) => (
+        <section key={group.title} className="task-group">
+          <h4>{group.title}</h4>
+          <TaskList items={group.items} compact={compact} />
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function TaskList({
   items,
   compact = false,
 }: {
-  items: Array<{ label: string; done: boolean }>;
+  items: TaskItem[];
   compact?: boolean;
 }) {
   return (
@@ -1427,6 +1479,7 @@ function StatusBand({
   message: string;
 }) {
   const attentionCount = workspace?.changes.filter((change) => ["invalid", "missing", "blocked"].includes(change.health)).length ?? 0;
+  const attentionLabel = attentionCount === 1 ? "1 change" : attentionCount + " changes";
   const validationLabel = workspace?.validation
     ? workspace.validation.state === "pass"
       ? "Validation clean"
@@ -1438,8 +1491,8 @@ function StatusBand({
   return (
     <footer className="status-band" aria-label="Validation status">
       <div className="status-band-item">
-        <span>Repository</span>
-        <strong>{repo?.name ?? "None selected"}</strong>
+        <span>Workspace</span>
+        <strong>{repo?.summary ?? "No repo selected"}</strong>
       </div>
       <div className="status-band-item">
         <span>Validation</span>
@@ -1447,7 +1500,7 @@ function StatusBand({
       </div>
       <div className="status-band-item">
         <span>Attention</span>
-        <strong>{attentionCount} changes</strong>
+        <strong>{attentionLabel}</strong>
       </div>
       <div className="status-band-toast" aria-live="polite">
         {loadState === "loading" ? "Working..." : message}
@@ -1511,7 +1564,12 @@ function activeChangeToView(
     name: change.name,
     title: titleize(change.name),
     phase: archiveReady ? "archive-ready" : "active",
-    health: healthForChange(change.workflowStatus.status, missingArtifacts.length, validation, validationIssues.length),
+    health: deriveChangeHealth({
+      workflowStatus: change.workflowStatus.status,
+      missingArtifactCount: missingArtifacts.length,
+      validation,
+      validationIssueCount: validationIssues.length,
+    }),
     summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "OpenSpec change",
     capabilities: change.touchedCapabilities.map((capability) => capability.capability),
     updatedAt: formatTime(change.modifiedTimeMs),
@@ -1579,7 +1637,12 @@ function requiredArtifact(
     label,
     path: artifact.path,
     status: artifact.exists ? workflowArtifactStatus(artifact.workflowStatus) : "missing",
-    note: artifact.workflowStatus ? "Workflow status: " + artifact.workflowStatus : artifact.exists ? "Found on disk" : "Missing",
+    note:
+      artifact.workflowStatus && artifact.workflowStatus !== "done"
+        ? "Workflow status: " + artifact.workflowStatus
+        : artifact.exists
+          ? ""
+          : "Missing",
   };
 }
 
@@ -1589,31 +1652,6 @@ function workflowArtifactStatus(status: string | undefined): ArtifactStatus {
   }
 
   return "present";
-}
-
-function healthForChange(
-  workflowStatus: IndexedWorkflowStatusValue,
-  missingArtifactCount: number,
-  validation: ValidationResult | null,
-  validationIssueCount: number,
-): Health {
-  if (validationIssueCount > 0 || workflowStatus === "error") {
-    return "invalid";
-  }
-
-  if (workflowStatus === "blocked") {
-    return "blocked";
-  }
-
-  if (missingArtifactCount > 0) {
-    return "missing";
-  }
-
-  if (!validation) {
-    return "stale";
-  }
-
-  return validation.state === "pass" ? "valid" : validation.state === "fail" ? "invalid" : "stale";
 }
 
 function taskProgressToView(
@@ -1627,23 +1665,80 @@ function taskProgressToView(
   return {
     done: progress.completed,
     total: progress.total,
-    items: parseTaskItems(content),
+    ...parseTaskProgressContent(content),
   };
 }
 
-function parseTaskItems(content: string | undefined): Array<{ label: string; done: boolean }> {
+function parseTaskProgressContent(content: string | undefined): { items: TaskItem[]; groups: TaskGroup[] } {
   if (!content) {
-    return [];
+    return { items: [], groups: [] };
   }
 
-  return content
-    .split(/\r?\n/)
-    .map((line) => /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(line))
-    .filter((match): match is RegExpExecArray => Boolean(match))
-    .map((match) => ({
-      done: match[1]?.toLowerCase() === "x",
-      label: match[2] ?? "",
-    }));
+  const groups: TaskGroup[] = [];
+  let currentGroup: TaskGroup = { title: "Tasks", items: [] };
+
+  for (const line of content.split(/\r?\n/)) {
+    const heading = /^\s*#{1,6}\s+(.+)$/.exec(line);
+    if (heading) {
+      if (currentGroup.items.length > 0 || currentGroup.title !== "Tasks") {
+        groups.push(currentGroup);
+      }
+      currentGroup = { title: cleanMarkdownText(heading[1] ?? "Tasks"), items: [] };
+      continue;
+    }
+
+    const task = /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(line);
+    if (!task) {
+      continue;
+    }
+
+    currentGroup.items.push({
+      done: task[1]?.toLowerCase() === "x",
+      label: task[2] ?? "",
+    });
+  }
+
+  if (currentGroup.items.length > 0 || groups.length === 0) {
+    groups.push(currentGroup);
+  }
+
+  const populatedGroups = groups.filter((group) => group.items.length > 0);
+
+  return {
+    items: populatedGroups.flatMap((group) => group.items),
+    groups: populatedGroups,
+  };
+}
+
+function filterTaskGroups(groups: TaskGroup[], done: boolean): TaskGroup[] {
+  return groups
+    .map((group) => ({
+      title: group.title,
+      items: group.items.filter((item) => item.done === done),
+    }))
+    .filter((group) => group.items.length > 0);
+}
+
+function matchesChangeFilters(change: ChangeRecord, phase: ChangePhase, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return (
+    change.phase === phase &&
+    (normalizedQuery.length === 0 ||
+      change.title.toLowerCase().includes(normalizedQuery) ||
+      change.name.toLowerCase().includes(normalizedQuery) ||
+      change.capabilities.some((capability) => capability.toLowerCase().includes(normalizedQuery)))
+  );
+}
+
+function matchesSpecFilters(spec: SpecRecord, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return (
+    normalizedQuery.length === 0 ||
+    spec.capability.toLowerCase().includes(normalizedQuery) ||
+    spec.summary.toLowerCase().includes(normalizedQuery)
+  );
 }
 
 function issuesForChange(validation: ValidationResult | null, changeName: string): ValidationIssue[] {

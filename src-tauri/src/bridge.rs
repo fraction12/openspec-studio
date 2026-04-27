@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    ffi::{OsStr, OsString},
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -7,6 +8,13 @@ use std::{
 };
 
 const ALLOWED_OPENSPEC_COMMANDS: &[&str] = &["list", "show", "status", "validate"];
+const STANDARD_COMMAND_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+    "/usr/bin",
+    "/bin",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepositoryValidation {
@@ -295,11 +303,14 @@ fn run_command_with_fallbacks(
     let mut not_found = false;
 
     for candidate in candidates {
-        match Command::new(&candidate)
-            .args(args)
-            .current_dir(canonical_repo)
-            .output()
-        {
+        let mut command = Command::new(&candidate);
+        command.args(args).current_dir(canonical_repo);
+
+        if let Some(path) = child_path_for_candidate(&candidate) {
+            command.env("PATH", path);
+        }
+
+        match command.output() {
             Ok(output) => return Ok(output),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 not_found = true;
@@ -335,13 +346,7 @@ fn command_candidates(program: &str) -> Vec<PathBuf> {
         })
         .unwrap_or_default();
 
-    for path in [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/opt/local/bin",
-        "/usr/bin",
-        "/bin",
-    ] {
+    for path in STANDARD_COMMAND_DIRS {
         let candidate = Path::new(path).join(program);
 
         if !candidates.contains(&candidate) {
@@ -350,6 +355,42 @@ fn command_candidates(program: &str) -> Vec<PathBuf> {
     }
 
     candidates
+}
+
+fn child_path_for_candidate(candidate: &Path) -> Option<OsString> {
+    std::env::join_paths(child_path_entries(
+        candidate,
+        std::env::var_os("PATH").as_deref(),
+    ))
+    .ok()
+}
+
+fn child_path_entries(candidate: &Path, existing_path: Option<&OsStr>) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+
+    if let Some(parent) = candidate.parent() {
+        push_unique_path(&mut entries, parent.to_path_buf());
+    }
+
+    for path in STANDARD_COMMAND_DIRS {
+        push_unique_path(&mut entries, PathBuf::from(path));
+    }
+
+    if let Some(existing_path) = existing_path {
+        for path in std::env::split_paths(existing_path) {
+            push_unique_path(&mut entries, path);
+        }
+    }
+
+    entries
+}
+
+fn push_unique_path(entries: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.as_os_str().is_empty() || entries.contains(&path) {
+        return;
+    }
+
+    entries.push(path);
 }
 
 fn normalize_relative_path(path: &Path) -> String {
@@ -433,6 +474,7 @@ mod tests {
     use super::*;
     use std::{
         fs,
+        os::unix::fs::PermissionsExt,
         path::PathBuf,
         process,
         time::{SystemTime, UNIX_EPOCH},
@@ -537,10 +579,52 @@ mod tests {
     }
 
     #[test]
+    fn child_path_entries_include_candidate_dir_before_limited_desktop_path() {
+        let entries = child_path_entries(
+            Path::new("/opt/homebrew/bin/openspec"),
+            Some(OsStr::new("/usr/bin:/bin")),
+        );
+
+        assert_eq!(entries.first(), Some(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(entries.contains(&PathBuf::from("/usr/local/bin")));
+        assert!(entries.contains(&PathBuf::from("/usr/bin")));
+        assert!(entries.contains(&PathBuf::from("/bin")));
+    }
+
+    #[test]
     fn command_candidates_preserve_explicit_program_paths() {
         let program = "/tmp/custom-openspec";
 
         assert_eq!(command_candidates(program), vec![PathBuf::from(program)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_local_command_adds_candidate_dir_for_launcher_dependencies() {
+        let repo = temp_repo("launcher-path", true);
+        let bin_dir = repo.join("bin");
+        let openspec_path = bin_dir.join("openspec");
+        let node_path = bin_dir.join("node");
+        fs::create_dir_all(&bin_dir).expect("bin dir should be created");
+        fs::write(
+            &openspec_path,
+            "#!/usr/bin/env node\nconsole.log('launcher dependency resolved')\n",
+        )
+        .expect("openspec launcher should be written");
+        fs::write(&node_path, "#!/bin/sh\necho launcher dependency resolved\n")
+            .expect("node shim should be written");
+        fs::set_permissions(&openspec_path, fs::Permissions::from_mode(0o755))
+            .expect("openspec launcher should be executable");
+        fs::set_permissions(&node_path, fs::Permissions::from_mode(0o755))
+            .expect("node shim should be executable");
+
+        let result = execute_local_command(&repo, &path_to_string(&openspec_path), &[])
+            .expect("launcher should resolve node from its own directory");
+
+        assert!(result.success);
+        assert_eq!(result.stdout.trim(), "launcher dependency resolved");
+
+        cleanup(repo);
     }
 
     #[test]
