@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenSpec Studio Native Workbench Mockup</title>
+    <style>
+      :root {
+        --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        --page: #f7f7f5;
+        --surface: #fbfbfa;
+        --surface-soft: #f4f4f1;
+        --surface-selected: #f0f1ec;
+        --ink: #151713;
+        --ink-soft: #30342e;
+        --muted: #6d726a;
+        --border: #deded8;
+        --border-strong: #d2d3cc;
+        --accent: #111827;
+        --ok-bg: #eef7ed;
+        --ok-border: #cce4c9;
+        --ok: #276c37;
+        --warn-bg: #fff7e5;
+        --warn-border: #ead79c;
+        --warn: #7b5516;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: var(--page);
+        color: var(--ink);
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 250px minmax(560px, 1fr) minmax(520px, 42vw);
+        height: 100vh;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      .rail {
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+        border-right: 1px solid var(--border);
+        background: var(--surface-soft);
+        padding: 28px 22px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .mark {
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border-radius: 7px;
+        background: var(--accent);
+        color: white;
+        font: 700 14px/1 var(--font-mono);
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+
+      .brand strong {
+        display: block;
+        font-size: 18px;
+        line-height: 22px;
+      }
+
+      .brand span,
+      .path,
+      .eyebrow {
+        color: var(--muted);
+      }
+
+      .brand span {
+        font-size: 12px;
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 760;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .repo-card,
+      .recent-item {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        padding: 14px;
+      }
+
+      .repo-card {
+        display: grid;
+        gap: 8px;
+      }
+
+      .path {
+        overflow: hidden;
+        font: 11px/1.45 var(--font-mono);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .recent-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .recent-item {
+        background: transparent;
+      }
+
+      .recent-item.current {
+        background: #efefeb;
+        border-color: var(--border-strong);
+      }
+
+      .rail-action {
+        margin-top: auto;
+        height: 44px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        font-size: 12px;
+        font-weight: 740;
+      }
+
+      .board,
+      .inspector {
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .board {
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 26px 30px 20px;
+      }
+
+      .seg,
+      .button,
+      .phase,
+      .search {
+        height: 34px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--ink-soft);
+        font-size: 12px;
+        font-weight: 730;
+      }
+
+      .seg {
+        padding: 0 24px;
+      }
+
+      .seg.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: white;
+      }
+
+      .button {
+        margin-left: auto;
+        padding: 0 18px;
+      }
+
+      .filters {
+        display: flex;
+        gap: 8px;
+        padding: 0 30px 20px;
+      }
+
+      .phase {
+        padding: 0 18px;
+        color: var(--muted);
+      }
+
+      .phase.active {
+        background: var(--surface-soft);
+        color: var(--ink-soft);
+      }
+
+      .search {
+        margin-left: auto;
+        min-width: 190px;
+        padding: 0 14px;
+        font-weight: 400;
+      }
+
+      table {
+        align-self: start;
+        width: calc(100% - 44px);
+        margin: 0 22px;
+        border-collapse: separate;
+        border-spacing: 0 8px;
+      }
+
+      th {
+        padding: 0 8px 8px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 760;
+        text-align: left;
+      }
+
+      td {
+        border-top: 1px solid transparent;
+        border-bottom: 1px solid transparent;
+        height: 68px;
+        padding: 14px 8px;
+        font-size: 13px;
+        vertical-align: middle;
+      }
+
+      tr.selected td {
+        border-color: var(--border-strong);
+        background: var(--surface-selected);
+      }
+
+      tr.selected td:first-child {
+        border-left: 1px solid var(--border-strong);
+        border-radius: 10px 0 0 10px;
+        padding-left: 16px;
+      }
+
+      tr.selected td:last-child {
+        border-right: 1px solid var(--border-strong);
+        border-radius: 0 10px 10px 0;
+      }
+
+      .title {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 14px;
+        font-weight: 760;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 86px;
+        height: 24px;
+        border: 1px solid var(--ok-border);
+        border-radius: 999px;
+        background: var(--ok-bg);
+        color: var(--ok);
+        font-size: 11px;
+        font-weight: 760;
+        justify-content: center;
+      }
+
+      .pill.warn {
+        min-width: 118px;
+        border-color: var(--warn-border);
+        background: var(--warn-bg);
+        color: var(--warn);
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .inspector {
+        border-left: 1px solid var(--border);
+        background: white;
+      }
+
+      .inspector-head {
+        padding: 30px 32px 26px;
+      }
+
+      .selected-label {
+        display: inline-flex;
+        height: 24px;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface-soft);
+        padding: 0 16px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 760;
+      }
+
+      .inspector h2 {
+        margin-top: 24px;
+        font-size: 23px;
+        line-height: 30px;
+      }
+
+      .head-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 26px;
+        border-top: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+        padding: 15px 32px 0;
+      }
+
+      .tab {
+        padding-bottom: 12px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 720;
+      }
+
+      .tab.active {
+        border-bottom: 2px solid var(--accent);
+        color: var(--ink);
+      }
+
+      .doc {
+        margin: 28px 32px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        background: var(--surface);
+      }
+
+      .doc-path {
+        border-bottom: 1px solid var(--border);
+        background: var(--surface-soft);
+        padding: 14px 22px;
+        color: var(--muted);
+        font: 12px/1.4 var(--font-mono);
+      }
+
+      .doc-body {
+        padding: 30px 22px 34px;
+        color: #3c4038;
+        font-size: 14px;
+        line-height: 1.58;
+      }
+
+      .doc-body h3 {
+        margin: 0 0 12px;
+        color: var(--ink);
+        font-size: 20px;
+        line-height: 26px;
+      }
+
+      .doc-body h3 + p {
+        margin-bottom: 28px;
+      }
+
+      .code {
+        margin-top: 26px;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #d7dce2;
+        font: 12px/1.75 var(--font-mono);
+        padding: 18px 22px;
+      }
+
+      .add {
+        color: #a8f0c6;
+      }
+
+      .remove {
+        color: #f4c7c3;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="mark">OS</div>
+          <div>
+            <strong>openspec-studio</strong>
+            <span>native workbench</span>
+          </div>
+        </div>
+        <section>
+          <p class="eyebrow">Workspace</p>
+          <div class="repo-card">
+            <strong>openspec-studio</strong>
+            <span class="path">/Projects/openspec-studio</span>
+          </div>
+        </section>
+        <section>
+          <p class="eyebrow">Recent repos</p>
+          <div class="recent-list">
+            <div class="recent-item current">
+              <strong>openspec-studio</strong>
+              <span class="path">current repo</span>
+            </div>
+            <div class="recent-item">
+              <strong>agentplan</strong>
+              <span class="path">/Projects/agentplan</span>
+            </div>
+          </div>
+        </section>
+        <button class="rail-action">Select repo folder</button>
+      </aside>
+      <section class="board">
+        <div class="toolbar">
+          <button class="seg active">Changes</button>
+          <button class="seg">Specs</button>
+          <button class="button">Refresh files</button>
+        </div>
+        <div class="filters">
+          <button class="phase active">Active 7</button>
+          <button class="phase">Archive ready 0</button>
+          <button class="phase">Archived 5</button>
+          <input class="search" placeholder="Search changes" />
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Change</th>
+              <th>State</th>
+              <th>Tasks</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="selected">
+              <td>
+                <span class="title">Align OpenSpec Native Visual Language</span>
+                <span class="path">openspec/changes/align-openspec-native-visual-language</span>
+              </td>
+              <td><span class="pill"><span class="dot"></span>Checked</span></td>
+              <td><strong>0/12</strong></td>
+              <td>Apr 27, 6:12 PM</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="title">Fix Archived Change Details</span>
+                <span class="path">openspec/changes/fix-archived-change-details</span>
+              </td>
+              <td><span class="pill"><span class="dot"></span>Checked</span></td>
+              <td><strong>8/8</strong></td>
+              <td>Apr 27, 5:59 PM</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="title">Improve CLI JSON Contracts</span>
+                <span class="path">openspec/changes/improve-cli-json-contracts</span>
+              </td>
+              <td><span class="pill warn"><span class="dot"></span>Check needed</span></td>
+              <td><strong>2/7</strong></td>
+              <td>Apr 27, 4:05 PM</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <aside class="inspector">
+        <div class="inspector-head">
+          <span class="selected-label">Selected change</span>
+          <h2>Align OpenSpec Native Visual Language</h2>
+          <p class="path">openspec/changes/align-openspec-native-visual-language</p>
+          <div class="head-actions">
+            <span class="pill"><span class="dot"></span>Checked</span>
+            <button class="phase">Open proposal</button>
+          </div>
+        </div>
+        <nav class="tabs">
+          <span class="tab active">Proposal</span>
+          <span class="tab">Design</span>
+          <span class="tab">Tasks</span>
+          <span class="tab">Spec changes</span>
+        </nav>
+        <article class="doc">
+          <div class="doc-path">proposal.md</div>
+          <div class="doc-body">
+            <h3>Why</h3>
+            <p>OpenSpec Studio should feel like a native companion to OpenSpec rather than a generic dashboard wrapped around OpenSpec data.</p>
+            <h3>What Changes</h3>
+            <ul>
+              <li>Artifact-first layout with source paths and markdown previews up front.</li>
+              <li>Quiet status pills that read as trust cues, not dashboard badges.</li>
+              <li>Document and code surfaces styled like OpenSpec examples.</li>
+            </ul>
+            <pre class="code"><span class="add">+ Requirement: OpenSpec-native visual language</span>
+The system SHALL express a restrained, text-first visual language.
+<span class="remove">- Dashboard-style noise and repeated status language</span>
+Source text remains the center of review.</pre>
+          </div>
+        </article>
+      </aside>
+    </main>
+  </body>
+</html>

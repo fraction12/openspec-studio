@@ -7,7 +7,6 @@ import "./App.css";
 import {
   buildOpenSpecFileSignature,
   deriveChangeHealth,
-  deriveValidationTrustState,
   decideRepositoryCandidateOpen,
   extractJsonPayload,
   isPersistableLocalRepoPath,
@@ -63,6 +62,14 @@ interface CommandResultDto {
   success: boolean;
 }
 
+interface OpenSpecGitStatusDto {
+  available: boolean;
+  dirty_count?: number;
+  dirtyCount?: number;
+  entries: string[];
+  message?: string | null;
+}
+
 interface RepositoryView {
   id: string;
   name: string;
@@ -114,6 +121,7 @@ interface ChangeRecord {
   summary: string;
   capabilities: string[];
   updatedAt: string;
+  modifiedTimeMs: number | null;
   taskProgress: TaskProgress | null;
   artifacts: Artifact[];
   deltaSpecs: string[];
@@ -139,6 +147,7 @@ interface SpecRecord {
   health: Health;
   requirements: number;
   updatedAt: string;
+  modifiedTimeMs: number | null;
   summary: string;
   summaryQuality: "available" | "missing";
   validationIssues: ValidationIssue[];
@@ -155,9 +164,23 @@ interface WorkspaceView {
   validation: ValidationResult | null;
 }
 
+interface OpenSpecGitStatus {
+  state: "unknown" | "loading" | "clean" | "dirty" | "unavailable";
+  dirtyCount: number;
+  entries: string[];
+  message: string;
+}
+
 const BROWSER_PREVIEW_REPO_PATH = "browser-preview://openspec-studio";
 const RECENT_REPOS_STORAGE_KEY = "openspec-studio.recent-repos";
 const AUTO_REFRESH_INTERVAL_MS = 15_000;
+
+const unknownGitStatus: OpenSpecGitStatus = {
+  state: "unknown",
+  dirtyCount: 0,
+  entries: [],
+  message: "Git status has not been checked.",
+};
 
 const healthLabels: Record<Health, string> = {
   valid: "Checked",
@@ -179,7 +202,7 @@ const activeDetailTabs: Array<{ id: DetailTab; label: string }> = [
   { id: "design", label: "Design" },
   { id: "tasks", label: "Tasks" },
   { id: "spec-delta", label: "Spec changes" },
-  { id: "status", label: "Validation" },
+  { id: "status", label: "Checks" },
 ];
 
 const archiveInfoTab: { id: DetailTab; label: string } = {
@@ -200,6 +223,7 @@ function App() {
   const [selectedSpecId, setSelectedSpecId] = useState("");
   const [detailTab, setDetailTab] = useState<DetailTab>("proposal");
   const [artifactPreview, setArtifactPreview] = useState("");
+  const [gitStatus, setGitStatus] = useState<OpenSpecGitStatus>(unknownGitStatus);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [message, setMessage] = useState("Loading local workspace...");
 
@@ -366,6 +390,12 @@ function App() {
 
       setRepo(previewRepo);
       setWorkspace(nextWorkspace);
+      setGitStatus({
+        state: "unavailable",
+        dirtyCount: 0,
+        entries: [],
+        message: "Git status requires the Tauri desktop runtime.",
+      });
       selectFirstItems(nextWorkspace);
       setLoadState("loaded");
       setMessage("Browser preview loaded without repository data. Run the Tauri app to inspect local files.");
@@ -390,11 +420,13 @@ function App() {
       };
 
       setRepoPathInput(validation.path);
+      setGitStatus(hasOpenSpec ? { ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." } : unknownGitStatus);
 
       if (!candidateDecision.promote) {
         if (!repo) {
           setRepo(nextRepo);
           setWorkspace(null);
+          setGitStatus(unknownGitStatus);
           setSelectedChangeId("");
           setSelectedSpecId("");
         }
@@ -432,6 +464,7 @@ function App() {
       setRepo(nextRepo);
       setWorkspace(nextWorkspace);
       setCandidateError(null);
+      void loadGitStatus(validation.path);
       rememberRecentRepo(validation.path);
       if (isSameRepo) {
         keepSelectionInWorkspace(nextWorkspace);
@@ -449,6 +482,7 @@ function App() {
       });
       if (!repo) {
         setWorkspace(null);
+        setGitStatus(unknownGitStatus);
       }
       setLoadState(repo ? "loaded" : "error");
       setMessage(errorMessage(error));
@@ -604,6 +638,52 @@ function App() {
     }
   }
 
+  async function loadGitStatus(repoPath: string) {
+    if (!isTauriRuntime()) {
+      setGitStatus({
+        state: "unavailable",
+        dirtyCount: 0,
+        entries: [],
+        message: "Git status requires the Tauri desktop runtime.",
+      });
+      return;
+    }
+
+    setGitStatus({ ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." });
+
+    try {
+      const status = await invoke<OpenSpecGitStatusDto>("get_openspec_git_status", { repoPath });
+      const dirtyCount = status.dirty_count ?? status.dirtyCount ?? status.entries.length;
+
+      if (!status.available) {
+        setGitStatus({
+          state: "unavailable",
+          dirtyCount: 0,
+          entries: [],
+          message: status.message ?? "Git status is unavailable for this repository.",
+        });
+        return;
+      }
+
+      setGitStatus({
+        state: dirtyCount > 0 ? "dirty" : "clean",
+        dirtyCount,
+        entries: status.entries,
+        message:
+          dirtyCount > 0
+            ? dirtyCount + " uncommitted OpenSpec " + (dirtyCount === 1 ? "path" : "paths")
+            : "No uncommitted OpenSpec paths",
+      });
+    } catch (error) {
+      setGitStatus({
+        state: "unavailable",
+        dirtyCount: 0,
+        entries: [],
+        message: errorMessage(error),
+      });
+    }
+  }
+
   async function openArtifact(artifact: Artifact | SpecRecord) {
     if (!repo) {
       return;
@@ -621,37 +701,6 @@ function App() {
       setMessage("Opened " + artifact.path);
     } catch (error) {
       setMessage(errorMessage(error));
-    }
-  }
-
-  async function revealRepository() {
-    if (!repo) {
-      return;
-    }
-
-    if (!isTauriRuntime()) {
-      setMessage("Reveal requested: " + repo.path);
-      return;
-    }
-
-    try {
-      await openPath(repo.path);
-      setMessage("Opened repository folder in Finder.");
-    } catch (error) {
-      setMessage(errorMessage(error));
-    }
-  }
-
-  async function copyRepositoryPath() {
-    if (!repo) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(repo.path);
-      setMessage("Repository path copied.");
-    } catch {
-      setMessage(repo.path);
     }
   }
 
@@ -701,6 +750,7 @@ function App() {
       const nextSignature = buildOpenSpecFileSignature(fileRecords);
 
       if (nextSignature.fingerprint === workspace?.fileSignature.fingerprint) {
+        void loadGitStatus(repoPath);
         return;
       }
 
@@ -719,6 +769,7 @@ function App() {
 
       setWorkspace(nextWorkspace);
       keepSelectionInWorkspace(nextWorkspace);
+      void loadGitStatus(repoPath);
       setMessage("OpenSpec files changed. Local files refreshed.");
     } catch (error) {
       setMessage(errorMessage(error));
@@ -777,8 +828,6 @@ function App() {
         onOpenRecent={(path) => void loadRepository(path)}
         onRetryCandidate={(path) => void loadRepository(path)}
         onReturnToActive={() => setCandidateError(null)}
-        onRevealRepo={() => void revealRepository()}
-        onCopyRepoPath={() => void copyRepositoryPath()}
       />
 
       <WorkspaceMain
@@ -818,7 +867,7 @@ function App() {
         onValidate={() => void runValidation()}
       />
 
-      <StatusBand repo={repo} workspace={workspace} loadState={loadState} message={message} />
+      <StatusBand repo={repo} workspace={workspace} gitStatus={gitStatus} loadState={loadState} message={message} />
     </div>
   );
 }
@@ -835,8 +884,6 @@ function Sidebar({
   onOpenRecent,
   onRetryCandidate,
   onReturnToActive,
-  onRevealRepo,
-  onCopyRepoPath,
 }: {
   repo: RepositoryView | null;
   recentRepos: string[];
@@ -849,8 +896,6 @@ function Sidebar({
   onOpenRecent: (path: string) => void;
   onRetryCandidate: (path: string) => void;
   onReturnToActive: () => void;
-  onRevealRepo: () => void;
-  onCopyRepoPath: () => void;
 }) {
   const switcherRepos = recentRepoSwitcherPaths(repo?.path, recentRepos);
 
@@ -867,7 +912,7 @@ function Sidebar({
       </div>
 
       <section className="rail-section">
-        <div className="rail-heading">Local repository</div>
+        <div className="rail-heading">Open repository</div>
         <div className="repo-open-stack">
           <button type="button" className="primary-button full-width-action" onClick={onChooseFolder} disabled={loadState === "loading"}>
             {loadState === "loading" ? "Opening..." : "Choose folder"}
@@ -920,7 +965,7 @@ function Sidebar({
       </section>
 
       <section className="rail-section">
-        <div className="rail-heading">Repositories</div>
+        <div className="rail-heading">Recent sources</div>
         {switcherRepos.length > 0 ? (
           <div className="recent-repos repo-switcher">
             {switcherRepos.map((path) => (
@@ -942,26 +987,6 @@ function Sidebar({
         )}
       </section>
 
-      <section className="rail-section rail-section-fill">
-        <div className="rail-heading">Workspace</div>
-        {repo ? (
-          <div className="rail-status">
-            <strong className="repo-current-name">{repo.name}</strong>
-            <span className="repo-current-path" title={repo.path}>{repo.path}</span>
-            <HealthPill health={repoHealth(repo)} label={repo.summary} />
-            <div className="repo-file-actions">
-              <button type="button" className="primary-outline" onClick={onCopyRepoPath}>
-                Copy path
-              </button>
-              <button type="button" className="primary-outline" onClick={onRevealRepo}>
-                Reveal
-              </button>
-            </div>
-          </div>
-        ) : (
-          <EmptyState compact title="No repo selected" body="Choose a local folder to inspect its OpenSpec workspace." />
-        )}
-      </section>
     </aside>
   );
 }
@@ -1010,7 +1035,7 @@ function WorkspaceMain({
       <main className="workspace-main">
         <EmptyState
           title="Choose a repository"
-          body="OpenSpec Studio reads local repositories and does not create files when you select a folder."
+          body="Open a local repository to inspect OpenSpec proposals, tasks, specs, and archive records."
           actionLabel="Choose folder"
           onAction={onChooseFolder}
         />
@@ -1050,7 +1075,7 @@ function WorkspaceMain({
     <main className="workspace-main">
       <header className="workspace-header">
         <div className="workspace-title">
-          <span>{repo.branch}</span>
+          <span>OpenSpec workbench / {repo.branch}</span>
           <h1>{repo.name}</h1>
           <p>{repo.path}</p>
         </div>
@@ -1130,6 +1155,7 @@ function ChangeBoard({
   onArchiveChange: (changeName: string) => void;
   onArchiveAll: (changeNames: string[]) => void;
 }) {
+  const [changeColumnWidth, setChangeColumnWidth] = useState(170);
   const filteredChanges = useMemo(() => {
     return changes.filter((change) => matchesChangeFilters(change, phase, query));
   }, [changes, phase, query]);
@@ -1141,10 +1167,23 @@ function ChangeBoard({
     }),
     [changes],
   );
+  function startChangeColumnResize(startX: number) {
+    const startWidth = changeColumnWidth;
+    const handleMouseMove = (event: MouseEvent) => {
+      setChangeColumnWidth(clampNumber(startWidth + event.clientX - startX, 160, 560));
+    };
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }
 
   return (
-    <section className="board-panel" aria-label="Change board">
-      <div className="board-toolbar">
+    <section className="board-panel artifact-board change-board" aria-label="Change board">
+      <div className="board-toolbar board-toolbar-compact">
         <div className="segmented quiet" aria-label="Change phase">
           {(Object.keys(phaseLabels) as ChangePhase[]).map((phaseKey) => (
             <button
@@ -1186,13 +1225,41 @@ function ChangeBoard({
         />
       ) : (
         <div className="table-scroll">
-          <table className="change-table">
+          <table
+            className={"change-table" + (phase === "archive-ready" ? " has-actions" : "")}
+          >
+            <colgroup>
+              <col style={{ width: changeColumnWidth }} />
+              <col className="trust-col" />
+              <col className="tasks-col" />
+              <col className="capabilities-col" />
+              <col className="updated-col" />
+              {phase === "archive-ready" ? <col className="action-col" /> : null}
+            </colgroup>
             <thead>
               <tr>
-                <th scope="col">Change</th>
-                <th scope="col">Status</th>
+                <th scope="col" className="resizable-heading">
+                  <span>Change</span>
+                  <button
+                    type="button"
+                    className="column-resize-handle"
+                    aria-label="Resize change column"
+                    title="Drag to resize change column"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      startChangeColumnResize(event.clientX);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setChangeColumnWidth(360);
+                    }}
+                  />
+                </th>
+                <th scope="col">Trust</th>
                 <th scope="col">Tasks</th>
-                <th scope="col">Touched capabilities</th>
+                <th scope="col">Capabilities</th>
                 <th scope="col">Updated</th>
                 {phase === "archive-ready" ? <th scope="col">Action</th> : null}
               </tr>
@@ -1214,9 +1281,8 @@ function ChangeBoard({
                   }}
                 >
                   <td>
-                    <div className="change-title-cell">
-                      <strong>{change.title}</strong>
-                      <span>{change.name}</span>
+                    <div className="change-title-cell artifact-title-cell">
+                      <strong title={change.title}>{change.title}</strong>
                     </div>
                   </td>
                   <td>
@@ -1270,11 +1336,11 @@ function SpecsBrowser({
   }, [query, specs]);
 
   return (
-    <section className="board-panel" aria-label="Specs browser">
-      <div className="board-toolbar">
+    <section className="board-panel artifact-board specs-board" aria-label="Specs board">
+      <div className="board-toolbar board-toolbar-compact">
         <div>
           <h2>Specs</h2>
-          <p>{specs.length} capabilities indexed from openspec/specs/.</p>
+          <p>{specs.length} source files indexed from openspec/specs/.</p>
         </div>
         <SearchField label="Search specs" value={query} onChange={onQueryChange} />
       </div>
@@ -1294,10 +1360,16 @@ function SpecsBrowser({
         />
       ) : (
         <div className="table-scroll">
-          <table className="change-table">
+          <table className="change-table specs-table">
+            <colgroup>
+              <col />
+              <col className="spec-trust-col" />
+              <col className="spec-requirements-col" />
+              <col className="spec-updated-col" />
+            </colgroup>
             <thead>
               <tr>
-                <th scope="col">Capability</th>
+                <th scope="col">Spec</th>
                 <th scope="col">Trust</th>
                 <th scope="col">Requirements</th>
                 <th scope="col">Updated</th>
@@ -1320,9 +1392,8 @@ function SpecsBrowser({
                   }}
                 >
                   <td>
-                    <div className="change-title-cell">
-                      <strong>{spec.capability}</strong>
-                      <span>{spec.path}</span>
+                    <div className="change-title-cell artifact-title-cell">
+                      <strong title={spec.capability}>{spec.capability}</strong>
                     </div>
                   </td>
                   <td>
@@ -1365,19 +1436,19 @@ function Inspector({
 }) {
   if (!repo || !workspace) {
     return (
-      <aside className="inspector" aria-label="Inspector">
-        <EmptyState compact title="Inspector" body="Select a valid OpenSpec repository to drill into details." />
+      <aside className="inspector artifact-inspector" aria-label="Artifact inspector">
+        <EmptyState compact title="Artifact inspector" body="Select a valid OpenSpec repository to inspect source artifacts." />
       </aside>
     );
   }
 
   if (view === "specs") {
     return (
-      <aside className="inspector" aria-label="Spec inspector">
+      <aside className="inspector artifact-inspector spec-inspector" aria-label="Base spec inspector">
         {selectedSpec ? (
           <>
             <div className="inspector-header">
-              <span>Capability</span>
+              <span>Base spec</span>
               <h2>{selectedSpec.capability}</h2>
               <p className="path-copy">{selectedSpec.path}</p>
               <div className="inspector-actions">
@@ -1388,8 +1459,8 @@ function Inspector({
               </div>
             </div>
             <div className="inspector-body">
-              <section className="inspector-section">
-                <h3>Spec preview</h3>
+              <section className="inspector-section artifact-preview-section">
+                <h3>Source preview</h3>
                 <MarkdownPreview content={selectedSpec.sourceContent} emptyText="No spec preview available." />
               </section>
             </div>
@@ -1403,7 +1474,7 @@ function Inspector({
 
   if (!selectedChange) {
     return (
-      <aside className="inspector" aria-label="Change inspector">
+      <aside className="inspector artifact-inspector change-inspector" aria-label="Change artifact inspector">
         <EmptyState compact title="No change selected" body="Choose a change to reveal artifacts and validation details." />
       </aside>
     );
@@ -1418,11 +1489,11 @@ function Inspector({
     selectedChange.artifacts.find((artifact) => artifact.status === "present");
 
   return (
-    <aside className="inspector" aria-label="Change inspector">
+    <aside className="inspector artifact-inspector change-inspector" aria-label="Change artifact inspector">
       <div className="inspector-header">
-        <span>Selected change</span>
+        <span>{phaseLabels[selectedChange.phase]} change</span>
         <h2>{selectedChange.title}</h2>
-        <p className="path-copy">{selectedChange.archiveInfo?.path ?? selectedChange.name}</p>
+        <p className="path-copy">{changeSourcePath(selectedChange)}</p>
         <div className="inspector-actions">
           <HealthPill health={selectedChange.health} label={selectedChange.statusLabel} />
           <button
@@ -1436,7 +1507,7 @@ function Inspector({
         </div>
       </div>
 
-      <div className="tabs" role="tablist" aria-label="Change details">
+      <div className="tabs artifact-tabs" role="tablist" aria-label="Change artifacts">
         {tabs.map((tab) => (
           <button
             type="button"
@@ -1451,7 +1522,7 @@ function Inspector({
         ))}
       </div>
 
-      <div className="inspector-body">
+      <div className="inspector-body artifact-inspector-body">
         {renderDetailTab(selectedChange, selectedDetailTab, artifactPreview, workspace.validation, onOpenArtifact, onValidate)}
       </div>
     </aside>
@@ -1472,9 +1543,9 @@ function renderDetailTab(
 
   if (tab === "proposal" || tab === "design") {
     return (
-      <section className="inspector-section">
-        <h3>{tab === "proposal" ? "Proposal preview" : "Design preview"}</h3>
-        <MarkdownPreview content={artifactPreview} emptyText="No preview available." />
+      <section className="inspector-section artifact-preview-section">
+        <h3>{tab === "proposal" ? "proposal.md" : "design.md"}</h3>
+        <MarkdownPreview content={artifactPreview} emptyText="No artifact preview available." />
       </section>
     );
   }
@@ -1493,9 +1564,9 @@ function renderDetailTab(
 
     return (
       <>
-        <section className="inspector-section">
+        <section className="inspector-section artifact-task-section">
           <div className="section-title-row">
-            <h3>Remaining tasks</h3>
+            <h3>Open tasks</h3>
             <span>{remainingCount}</span>
           </div>
           {remainingCount > 0 ? (
@@ -1510,9 +1581,9 @@ function renderDetailTab(
           </summary>
           <TaskGroups groups={completedGroups} compact />
         </details>
-        <section className="inspector-section progress-section">
+        <section className="inspector-section progress-section artifact-progress-section">
           <div className="section-title-row">
-            <h3>Task completion</h3>
+            <h3>tasks.md progress</h3>
             <span>{remainingCount} left</span>
           </div>
           <TaskProgressCell progress={change.taskProgress} expanded />
@@ -1525,8 +1596,8 @@ function renderDetailTab(
     const specArtifacts = change.artifacts.filter((artifact) => artifact.id.startsWith("delta-"));
 
     return specArtifacts.length > 0 ? (
-      <section className="inspector-section">
-        <h3>Spec deltas</h3>
+      <section className="inspector-section artifact-delta-section">
+        <h3>Delta specs</h3>
         <ArtifactList artifacts={specArtifacts} onOpenArtifact={onOpenArtifact} />
       </section>
     ) : (
@@ -1538,7 +1609,7 @@ function renderDetailTab(
     <>
       {validation?.diagnostics.length ? (
         <details className="disclosure" open>
-          <summary>Validation command output</summary>
+          <summary>OpenSpec command output</summary>
           <ul className="message-list">
             {validation.diagnostics.map((diagnostic) => (
               <li key={diagnostic.id} className="message error">
@@ -1550,9 +1621,9 @@ function renderDetailTab(
         </details>
       ) : null}
       <details className="disclosure" open>
-        <summary>Linked validation messages</summary>
+        <summary>Linked check messages</summary>
         {change.validationIssues.length === 0 ? (
-          <p className="muted-copy">No validation messages are linked to this change.</p>
+          <p className="muted-copy">No check messages are linked to this change.</p>
         ) : (
           <ul className="message-list">
             {change.validationIssues.map((issue) => (
@@ -1570,7 +1641,7 @@ function renderDetailTab(
       </details>
 
       <details className="disclosure">
-        <summary>Files</summary>
+        <summary>Artifact files</summary>
         <ArtifactList artifacts={change.artifacts} onOpenArtifact={onOpenArtifact} showMissing />
       </details>
 
@@ -1907,36 +1978,36 @@ function cleanMarkdownText(text: string): string {
 function StatusBand({
   repo,
   workspace,
+  gitStatus,
   loadState,
   message,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
+  gitStatus: OpenSpecGitStatus;
   loadState: LoadState;
   message: string;
 }) {
-  const trust = deriveValidationTrustState(workspace?.validation ?? null, loadState === "loading");
-  const attentionCount =
-    workspace?.changes.filter((change) => ["invalid", "missing", "blocked"].includes(change.health)).length ?? 0;
-  const attentionLabel = trust.attentionKnown
-    ? attentionCount === 1
-      ? "1 change"
-      : attentionCount + " changes"
-    : "Unknown";
+  const latestChange = latestOpenSpecChange(workspace?.changes ?? []);
+  const lastValidation = formatValidationTimestamp(workspace?.validation?.validatedAt ?? null);
+  const gitLabel = gitStatusLabel(gitStatus);
+  const gitTitle = gitStatus.entries.length > 0 ? gitStatus.entries.join("\n") : gitStatus.message;
 
   return (
     <footer className="status-band" aria-label="Workspace status">
       <div className="status-band-item">
-        <span>Workspace</span>
-        <strong>{repo?.summary ?? "No repo selected"}</strong>
+        <span>Last validation</span>
+        <strong>{repo ? lastValidation : "No repo selected"}</strong>
       </div>
       <div className="status-band-item">
-        <span>Validation check</span>
-        <strong title={trust.detail}>{trust.label}</strong>
+        <span>Latest change</span>
+        <strong title={latestChange?.title ?? "No OpenSpec changes indexed"}>
+          {latestChange ? latestChange.title + " · " + latestChange.updatedAt : "None indexed"}
+        </strong>
       </div>
       <div className="status-band-item">
-        <span>Attention</span>
-        <strong>{attentionLabel}</strong>
+        <span>OpenSpec Git</span>
+        <strong title={gitTitle}>{gitLabel}</strong>
       </div>
       <div className="status-band-toast" aria-live="polite">
         {loadState === "loading" ? "Working..." : message}
@@ -2011,6 +2082,7 @@ function activeChangeToView(
     summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "OpenSpec change",
     capabilities: change.touchedCapabilities.map((capability) => capability.capability),
     updatedAt: formatTime(change.modifiedTimeMs),
+    modifiedTimeMs: change.modifiedTimeMs ?? null,
     taskProgress,
     artifacts,
     deltaSpecs: change.artifacts.deltaSpecs.map((spec) => spec.path),
@@ -2052,6 +2124,7 @@ export function archivedChangeToView(
     summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "Archived OpenSpec change",
     capabilities: change.touchedCapabilities.map((capability) => capability.capability),
     updatedAt: formatTime(change.modifiedTimeMs),
+    modifiedTimeMs: change.modifiedTimeMs ?? null,
     taskProgress: taskProgressToView(change.taskProgress, filesByPath[change.artifacts.tasks.path]?.content),
     artifacts,
     deltaSpecs: change.artifacts.deltaSpecs.map((spec) => spec.path),
@@ -2094,6 +2167,7 @@ function specToView(
             : "stale",
     requirements: countRequirements(content),
     updatedAt: formatTime(spec.modifiedTimeMs),
+    modifiedTimeMs: spec.modifiedTimeMs ?? null,
     summary: summary ?? "",
     summaryQuality: summary ? "available" : "missing",
     validationIssues: issues,
@@ -2264,14 +2338,6 @@ function artifactPathForTab(change: ChangeRecord | null, tab: DetailTab): string
   return undefined;
 }
 
-function repoHealth(repo: RepositoryView): Health {
-  if (repo.state === "ready") {
-    return "valid";
-  }
-
-  return repo.state === "cli-failure" ? "invalid" : "missing";
-}
-
 function artifactHealth(status: ArtifactStatus): Health {
   if (status === "present") {
     return "valid";
@@ -2337,10 +2403,62 @@ function formatTime(modifiedTimeMs: number | undefined): string {
     return "Unknown";
   }
 
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(modifiedTimeMs));
+  const date = new Date(modifiedTimeMs);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const year = String(date.getFullYear()).slice(-2);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+
+  return month + "/" + day + "/" + year + " @ " + hours + ":" + minutes;
+}
+
+function formatValidationTimestamp(value: string | null): string {
+  if (!value) {
+    return "Not run";
+  }
+
+  const time = Date.parse(value);
+
+  if (Number.isNaN(time)) {
+    return "Unknown";
+  }
+
+  return formatTime(time);
+}
+
+function latestOpenSpecChange(changes: ChangeRecord[]): ChangeRecord | null {
+  return changes.reduce<ChangeRecord | null>((latest, change) => {
+    if (!change.modifiedTimeMs) {
+      return latest;
+    }
+
+    if (!latest?.modifiedTimeMs || change.modifiedTimeMs > latest.modifiedTimeMs) {
+      return change;
+    }
+
+    return latest;
+  }, null);
+}
+
+function gitStatusLabel(status: OpenSpecGitStatus): string {
+  if (status.state === "loading") {
+    return "Checking...";
+  }
+
+  if (status.state === "clean") {
+    return "Clean";
+  }
+
+  if (status.state === "dirty") {
+    return status.dirtyCount + " uncommitted";
+  }
+
+  if (status.state === "unavailable") {
+    return "Unavailable";
+  }
+
+  return "Not checked";
 }
 
 function formatCapabilities(capabilities: string[]): string {
@@ -2353,6 +2471,14 @@ function formatCapabilities(capabilities: string[]): string {
   }
 
   return capabilities.slice(0, 2).join(", ") + " +" + (capabilities.length - 2);
+}
+
+function changeSourcePath(change: ChangeRecord): string {
+  return change.archiveInfo?.path ?? "openspec/changes/" + change.name + "/";
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function absoluteArtifactPath(repoPath: string, artifactPath: string): string {

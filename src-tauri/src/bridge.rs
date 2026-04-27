@@ -48,6 +48,14 @@ pub struct OpenSpecFileRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenSpecGitStatus {
+    pub available: bool,
+    pub dirty_count: usize,
+    pub entries: Vec<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgeErrorDto {
     pub code: String,
     pub message: String,
@@ -196,6 +204,44 @@ pub fn list_openspec_files(
     Ok(records)
 }
 
+pub fn inspect_openspec_git_status(
+    repo_path: impl AsRef<Path>,
+) -> Result<OpenSpecGitStatus, BridgeError> {
+    let (canonical_repo, _) = require_openspec_repo(repo_path.as_ref())?;
+    let args = vec![
+        "status".to_string(),
+        "--porcelain".to_string(),
+        "--".to_string(),
+        "openspec".to_string(),
+    ];
+
+    match run_command_with_fallbacks(&canonical_repo, "git", &args) {
+        Ok(output) if output.status.success() => {
+            let entries = parse_git_status_entries(&String::from_utf8_lossy(&output.stdout));
+
+            Ok(OpenSpecGitStatus {
+                available: true,
+                dirty_count: entries.len(),
+                entries,
+                message: None,
+            })
+        }
+        Ok(output) => Ok(OpenSpecGitStatus {
+            available: false,
+            dirty_count: 0,
+            entries: Vec::new(),
+            message: Some(first_non_empty_output(&output.stderr, &output.stdout)),
+        }),
+        Err(BridgeError::CommandNotFound { .. }) => Ok(OpenSpecGitStatus {
+            available: false,
+            dirty_count: 0,
+            entries: Vec::new(),
+            message: Some("Git was not found on PATH".to_string()),
+        }),
+        Err(error) => Err(error),
+    }
+}
+
 #[tauri::command]
 pub fn validate_repo(repo_path: String) -> Result<RepositoryValidation, BridgeErrorDto> {
     validate_repository(repo_path).map_err(BridgeErrorDto::from)
@@ -274,6 +320,11 @@ pub fn list_openspec_file_records(
     repo_path: String,
 ) -> Result<Vec<OpenSpecFileRecord>, BridgeErrorDto> {
     list_openspec_files(repo_path).map_err(BridgeErrorDto::from)
+}
+
+#[tauri::command]
+pub fn get_openspec_git_status(repo_path: String) -> Result<OpenSpecGitStatus, BridgeErrorDto> {
+    inspect_openspec_git_status(repo_path).map_err(BridgeErrorDto::from)
 }
 
 fn validate_openspec_args(args: &[String]) -> Result<(), BridgeError> {
@@ -474,6 +525,29 @@ fn normalize_relative_path(path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn parse_git_status_entries(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn first_non_empty_output(stderr: &[u8], stdout: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+
+    "Git status is unavailable for this repository".to_string()
 }
 
 fn collect_openspec_files(
@@ -802,5 +876,16 @@ mod tests {
         }));
 
         cleanup(repo);
+    }
+
+    #[test]
+    fn parse_git_status_entries_ignores_blank_lines() {
+        assert_eq!(
+            parse_git_status_entries(" M openspec/changes/demo/tasks.md\n\n?? openspec/specs/demo/spec.md\n"),
+            vec![
+                "M openspec/changes/demo/tasks.md".to_string(),
+                "?? openspec/specs/demo/spec.md".to_string(),
+            ]
+        );
     }
 }
