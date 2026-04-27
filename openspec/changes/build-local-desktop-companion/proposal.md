@@ -14,6 +14,7 @@ This should be a proper standalone local app, not another web dev server. The CL
 - Surface validation errors and missing/incomplete artifacts without replacing the OpenSpec CLI.
 - Prefer direct file reads plus `openspec` CLI JSON commands for compatibility with the existing format.
 - Keep the app local-first: no cloud sync, no accounts, no daemon requirement, and no `npm run dev` workflow for normal use.
+- Establish an expansion path for robust tooling: multi-repo workspaces, timeline/activity views, dependency graphs, guided archive/apply flows, artifact editing, search, and cross-repo health reporting after the read-mostly v1 is stable.
 
 ## Capabilities
 
@@ -22,6 +23,7 @@ This should be a proper standalone local app, not another web dev server. The CL
 - `repo-discovery`: detection and indexing of a selected repo's OpenSpec workspace, including specs, changes, artifacts, tasks, and archive folders.
 - `change-board`: visual overview of changes, artifact completeness, touched capabilities, task progress, and archive readiness.
 - `validation-dashboard`: validation execution, result parsing, error display, and stale-state refresh behavior.
+- `workspace-intelligence`: future robust views across repos, changes, specs, timelines, dependencies, search, and guided workflows.
 
 ### Modified Capabilities
 
@@ -35,3 +37,4 @@ None. This is a new product surface.
 - Integration with the installed `openspec` CLI, especially JSON commands such as `list`, `show`, `status`, and `validate`.
 - File watching for refresh after OpenSpec artifacts change.
 - No changes to the OpenSpec file format or CLI behavior are required for the initial version.
+- Future phases may identify upstream OpenSpec CLI JSON gaps and propose small additions there rather than hard-coding fragile parsers in the app.

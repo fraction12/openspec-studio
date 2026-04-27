@@ -41,3 +41,15 @@
 - [ ] Add visual treatment for missing artifacts, blocked artifacts, invalid changes, and archive-ready changes.
 - [ ] Add README screenshots or a short usage walkthrough once UI exists.
 - [ ] Run validation/build checks and record the result before first commit.
+
+
+## 7. Robust tooling roadmap
+
+- [ ] Define the post-v1 workflow layer for guided propose/apply/archive operations backed by OpenSpec CLI commands.
+- [ ] Define multi-repo workspace support for viewing several local OpenSpec repos in one dashboard.
+- [ ] Define cross-repo search over changes, specs, proposals, designs, tasks, and validation errors.
+- [ ] Define timeline/activity view using file modification times, git history, and OpenSpec archive state.
+- [ ] Define dependency graph view connecting changes to touched specs/capabilities and archive readiness.
+- [ ] Define safe artifact authoring/editing flows, including markdown preview and task checkbox updates.
+- [ ] Identify OpenSpec CLI JSON gaps needed for robust app behavior and capture upstream change proposals separately.
+- [ ] Keep all robust features source-of-truth compatible: derived state must be rebuildable from OpenSpec files and CLI output.
