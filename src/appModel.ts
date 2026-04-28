@@ -35,6 +35,45 @@ export type ValidationTrustKind =
   | "command-problem"
   | "outdated";
 
+export type OpenSpecOperationKind =
+  | "validation"
+  | "archive"
+  | "status"
+  | "artifact-read"
+  | "repository-read";
+
+export interface OpenSpecOperationIssue {
+  id: string;
+  kind: OpenSpecOperationKind;
+  title: string;
+  message: string;
+  occurredAt: string;
+  repoPath?: string;
+  target?: string;
+  statusCode?: number | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+export interface CommandLikeResult {
+  stdout?: string;
+  stderr?: string;
+  status_code?: number | null;
+  statusCode?: number | null;
+  success?: boolean;
+}
+
+export interface OpenSpecOperationIssueInput {
+  kind: OpenSpecOperationKind;
+  title: string;
+  message?: string;
+  fallbackMessage: string;
+  repoPath?: string;
+  target?: string;
+  command?: CommandLikeResult | null;
+  occurredAt?: Date | string;
+}
+
 export interface ValidationTrustState {
   kind: ValidationTrustKind;
   label: string;
@@ -249,6 +288,44 @@ export function extractJsonPayload(output: string): unknown | undefined {
   return undefined;
 }
 
+export function createOpenSpecOperationIssue({
+  kind,
+  title,
+  message,
+  fallbackMessage,
+  repoPath,
+  target,
+  command,
+  occurredAt = new Date(),
+}: OpenSpecOperationIssueInput): OpenSpecOperationIssue {
+  const stdout = normalizeOptionalText(command?.stdout);
+  const stderr = normalizeOptionalText(command?.stderr);
+  const statusCode = command?.status_code ?? command?.statusCode ?? null;
+  const resolvedMessage = normalizeOptionalText(message) ?? stderr ?? stdout ?? fallbackMessage;
+  const timestamp = typeof occurredAt === "string" ? occurredAt : occurredAt.toISOString();
+  const idParts = [kind, repoPath, target, timestamp, resolvedMessage].filter(Boolean);
+
+  return {
+    id: idParts.join("|"),
+    kind,
+    title,
+    message: resolvedMessage,
+    occurredAt: timestamp,
+    repoPath,
+    target,
+    statusCode,
+    stdout,
+    stderr,
+  };
+}
+
+export function sameOpenSpecOperationScope(
+  left: OpenSpecOperationIssue,
+  right: OpenSpecOperationIssue,
+): boolean {
+  return left.kind === right.kind && left.repoPath === right.repoPath && left.target === right.target;
+}
+
 export function isPersistableLocalRepoPath(path: string): boolean {
   const normalizedPath = path.trim();
 
@@ -399,6 +476,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function normalizeOptionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function readBoolean(value: unknown): boolean | undefined {

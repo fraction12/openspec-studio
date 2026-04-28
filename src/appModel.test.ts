@@ -4,6 +4,7 @@ import {
   activeChangeNamesFromFileRecords,
   buildVirtualFilesByPath,
   buildOpenSpecFileSignature,
+  createOpenSpecOperationIssue,
   decideRepositoryCandidateOpen,
   deriveChangeHealth,
   deriveValidationTrustState,
@@ -11,10 +12,63 @@ import {
   isPersistableLocalRepoPath,
   normalizeRecentRepoPaths,
   recentRepoSwitcherPaths,
+  sameOpenSpecOperationScope,
   selectVisibleItemId,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
 } from "./appModel";
+
+describe("OpenSpec operation issues", () => {
+  it("keeps command output and status details for failed operations", () => {
+    expect(
+      createOpenSpecOperationIssue({
+        kind: "archive",
+        title: "Archive failed",
+        fallbackMessage: "OpenSpec archive did not complete.",
+        repoPath: "/repo",
+        target: "fix-demo",
+        occurredAt: "2026-04-28T12:00:00.000Z",
+        command: {
+          stdout: "Task status: complete",
+          stderr: "MODIFIED failed for header",
+          status_code: 1,
+        },
+      }),
+    ).toEqual({
+      id: "archive|/repo|fix-demo|2026-04-28T12:00:00.000Z|MODIFIED failed for header",
+      kind: "archive",
+      title: "Archive failed",
+      message: "MODIFIED failed for header",
+      occurredAt: "2026-04-28T12:00:00.000Z",
+      repoPath: "/repo",
+      target: "fix-demo",
+      statusCode: 1,
+      stdout: "Task status: complete",
+      stderr: "MODIFIED failed for header",
+    });
+  });
+
+  it("compares issues by operation scope for replacement", () => {
+    const first = createOpenSpecOperationIssue({
+      kind: "status",
+      title: "Status failed",
+      fallbackMessage: "Status failed.",
+      repoPath: "/repo",
+      target: "demo",
+      occurredAt: "2026-04-28T12:00:00.000Z",
+    });
+    const second = createOpenSpecOperationIssue({
+      kind: "status",
+      title: "Status failed",
+      fallbackMessage: "Status failed again.",
+      repoPath: "/repo",
+      target: "demo",
+      occurredAt: "2026-04-28T12:05:00.000Z",
+    });
+
+    expect(sameOpenSpecOperationScope(first, second)).toBe(true);
+  });
+});
 
 describe("toVirtualFileRecords", () => {
   it("normalizes bridge file records into indexer records", () => {

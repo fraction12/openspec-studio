@@ -10,15 +10,18 @@ import {
   buildOpenSpecFileSignature,
   deriveChangeHealth,
   decideRepositoryCandidateOpen,
+  createOpenSpecOperationIssue,
   extractJsonPayload,
   isPersistableLocalRepoPath,
   normalizeRecentRepoPaths,
   recentRepoSwitcherPaths,
   selectVisibleItemId,
+  sameOpenSpecOperationScope,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
   type ChangeHealth,
   type BridgeFileRecord,
+  type OpenSpecOperationIssue,
   type OpenSpecFileSignature,
 } from "./appModel";
 import {
@@ -212,6 +215,7 @@ const BROWSER_PREVIEW_REPO_PATH = "browser-preview://openspec-studio";
 const RECENT_REPOS_STORAGE_KEY = "openspec-studio.recent-repos";
 const AUTO_REFRESH_INTERVAL_MS = 15_000;
 const STATUS_COMMAND_CONCURRENCY = 4;
+const MAX_OPERATION_ISSUES = 6;
 const STATUS_CACHE_LIMIT = 300;
 const MARKDOWN_BLOCK_CACHE_LIMIT = 40;
 const ROW_RENDER_BATCH_SIZE = 250;
@@ -269,6 +273,7 @@ function App() {
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [message, setMessage] = useState("Loading local workspace...");
+  const [operationIssues, setOperationIssues] = useState<OpenSpecOperationIssue[]>([]);
   const repoLoadGenerationRef = useRef(0);
   const refreshGenerationRef = useRef(0);
   const gitStatusGenerationRef = useRef(0);
@@ -288,6 +293,21 @@ function App() {
   repoRef.current = repo;
   gitStatusRef.current = gitStatus;
   chooseRepositoryFolderRef.current = chooseRepositoryFolder;
+
+  function recordOperationIssue(issue: OpenSpecOperationIssue) {
+    setOperationIssues((current) => [
+      issue,
+      ...current.filter((existing) => !sameOpenSpecOperationScope(existing, issue)),
+    ].slice(0, MAX_OPERATION_ISSUES));
+  }
+
+  function clearOperationIssues(predicate: (issue: OpenSpecOperationIssue) => boolean) {
+    setOperationIssues((current) => current.filter((issue) => !predicate(issue)));
+  }
+
+  function dismissOperationIssue(issueId: string) {
+    setOperationIssues((current) => current.filter((issue) => issue.id !== issueId));
+  }
 
   useEffect(() => {
     const lastRepoPath = recentRepos[0];
@@ -420,10 +440,23 @@ function App() {
       .then((artifact) => {
         if (artifactPreviewGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
           setArtifactPreview(artifact.contents);
+          clearOperationIssues(
+            (issue) => issue.kind === "artifact-read" && issue.repoPath === repoPath && issue.target === path,
+          );
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (artifactPreviewGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
+          recordOperationIssue(
+            createOpenSpecOperationIssue({
+              kind: "artifact-read",
+              title: "Artifact read failed",
+              message: errorMessage(error),
+              fallbackMessage: "OpenSpec artifact could not be read.",
+              repoPath,
+              target: path,
+            }),
+          );
           setArtifactPreview("");
         }
       });
@@ -572,6 +605,9 @@ function App() {
       setRepo(nextRepo);
       setWorkspace(nextWorkspace);
       setCandidateError(null);
+      clearOperationIssues(
+        (issue) => issue.kind === "repository-read" && issue.repoPath === validation.path,
+      );
       void loadGitStatus(validation.path);
       rememberRecentRepo(validation.path);
       if (isSameRepo) {
@@ -592,6 +628,16 @@ function App() {
         title: "Repository unavailable",
         message: errorMessage(error),
       });
+      recordOperationIssue(
+        createOpenSpecOperationIssue({
+          kind: "repository-read",
+          title: "Repository read failed",
+          message: errorMessage(error),
+          fallbackMessage: "OpenSpec repository files could not be read.",
+          repoPath: candidatePath,
+          target: "openspec",
+        }),
+      );
       if (!repo) {
         workspaceRef.current = null;
         setWorkspace(null);
@@ -625,6 +671,7 @@ function App() {
       }
 
       applyValidationResult(result);
+      recordValidationOperationResult(repoPath, result);
       setLoadState("loaded");
       setMessage(
         result.diagnostics[0]?.message ??
@@ -636,6 +683,16 @@ function App() {
       }
 
       setLoadState("error");
+      recordOperationIssue(
+        createOpenSpecOperationIssue({
+          kind: "validation",
+          title: "Validation failed",
+          message: errorMessage(error),
+          fallbackMessage: "OpenSpec validation did not complete cleanly.",
+          repoPath,
+          target: "validate --all",
+        }),
+      );
       setMessage(errorMessage(error));
     }
   }
@@ -665,6 +722,7 @@ function App() {
     try {
       const validation = await runValidationCommand(repoPath);
       applyValidationResult(validation);
+      recordValidationOperationResult(repoPath, validation);
 
       if (!canArchiveAfterValidation(validation)) {
         setLoadState("loaded");
@@ -724,6 +782,7 @@ function App() {
     try {
       const validation = await runValidationCommand(repoPath);
       applyValidationResult(validation);
+      recordValidationOperationResult(repoPath, validation);
 
       if (!canArchiveAfterValidation(validation)) {
         setLoadState("loaded");
@@ -788,13 +847,46 @@ function App() {
   }
 
   async function archiveOneChange(repoPath: string, changeName: string) {
-    const result = await invoke<CommandResultDto>("archive_change", {
-      repoPath,
-      changeName,
-    });
+    let recordedCommandFailure = false;
 
-    if (!result.success) {
-      throw new Error(result.stderr || result.stdout || "OpenSpec archive did not complete.");
+    try {
+      const result = await invoke<CommandResultDto>("archive_change", {
+        repoPath,
+        changeName,
+      });
+
+      if (!result.success) {
+        recordOperationIssue(
+          createOpenSpecOperationIssue({
+            kind: "archive",
+            title: "Archive failed",
+            fallbackMessage: "OpenSpec archive did not complete.",
+            repoPath,
+            target: changeName,
+            command: result,
+          }),
+        );
+        recordedCommandFailure = true;
+        throw new Error(result.stderr || result.stdout || "OpenSpec archive did not complete.");
+      }
+
+      clearOperationIssues(
+        (issue) => issue.kind === "archive" && issue.repoPath === repoPath && issue.target === changeName,
+      );
+    } catch (error) {
+      if (!recordedCommandFailure) {
+        recordOperationIssue(
+          createOpenSpecOperationIssue({
+            kind: "archive",
+            title: "Archive failed",
+            message: errorMessage(error),
+            fallbackMessage: "OpenSpec archive did not complete.",
+            repoPath,
+            target: changeName,
+          }),
+        );
+      }
+      throw error;
     }
   }
 
@@ -837,6 +929,32 @@ function App() {
 
     workspaceRef.current = nextWorkspace;
     setWorkspace(nextWorkspace);
+  }
+
+  function recordValidationOperationResult(repoPath: string, result: ValidationResult) {
+    if (result.diagnostics.length === 0) {
+      clearOperationIssues((issue) => issue.kind === "validation" && issue.repoPath === repoPath);
+      return;
+    }
+
+    const diagnostic = result.diagnostics[0];
+    recordOperationIssue(
+      createOpenSpecOperationIssue({
+        kind: "validation",
+        title: "Validation failed",
+        message: diagnostic?.message,
+        fallbackMessage: "OpenSpec validation did not complete cleanly.",
+        repoPath,
+        target: "validate --all",
+        command: diagnostic
+          ? {
+              stdout: diagnostic.stdout,
+              stderr: diagnostic.stderr,
+              statusCode: diagnostic.statusCode,
+            }
+          : null,
+      }),
+    );
   }
 
   async function loadGitStatus(repoPath: string, options: { quiet?: boolean } = {}) {
@@ -956,7 +1074,7 @@ function App() {
         });
         const rawJson = extractJsonPayload(command.stdout);
 
-        if (!rawJson) {
+        if (!command.success || !rawJson) {
           record = toVirtualChangeStatusRecord(
             {
               changeName,
@@ -967,13 +1085,36 @@ function App() {
             },
             changeName,
           );
+          recordOperationIssue(
+            createOpenSpecOperationIssue({
+              kind: "status",
+              title: "Change status failed",
+              fallbackMessage: "OpenSpec change status output was not recognized.",
+              repoPath,
+              target: changeName,
+              command,
+            }),
+          );
         } else {
           record = toVirtualChangeStatusRecord(rawJson, changeName);
+          clearOperationIssues(
+            (issue) => issue.kind === "status" && issue.repoPath === repoPath && issue.target === changeName,
+          );
         }
       } catch (error) {
         record = toVirtualChangeStatusRecord(
           { changeName, error: errorMessage(error) },
           changeName,
+        );
+        recordOperationIssue(
+          createOpenSpecOperationIssue({
+            kind: "status",
+            title: "Change status failed",
+            message: errorMessage(error),
+            fallbackMessage: "OpenSpec change status could not be loaded.",
+            repoPath,
+            target: changeName,
+          }),
         );
       }
 
@@ -1039,10 +1180,23 @@ function App() {
       workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
       keepSelectionInWorkspace(nextWorkspace);
+      clearOperationIssues(
+        (issue) => issue.kind === "repository-read" && issue.repoPath === repoPath,
+      );
       void loadGitStatus(repoPath, { quiet: true });
       setMessage("OpenSpec files changed. Local files refreshed.");
     } catch (error) {
       if (refreshGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
+        recordOperationIssue(
+          createOpenSpecOperationIssue({
+            kind: "repository-read",
+            title: "Repository refresh failed",
+            message: errorMessage(error),
+            fallbackMessage: "OpenSpec repository files could not be refreshed.",
+            repoPath,
+            target: "openspec",
+          }),
+        );
         setMessage(errorMessage(error));
       }
     } finally {
@@ -1142,12 +1296,21 @@ function App() {
         selectedSpec={selectedSpec}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
+        operationIssues={operationIssues}
         onDetailTabChange={setDetailTab}
         onOpenArtifact={(artifact) => void openArtifact(artifact)}
         onValidate={() => void runValidation()}
       />
 
-      <StatusBand repo={repo} workspace={workspace} gitStatus={gitStatus} loadState={loadState} message={message} />
+      <StatusBand
+        repo={repo}
+        workspace={workspace}
+        gitStatus={gitStatus}
+        loadState={loadState}
+        message={message}
+        operationIssues={operationIssues}
+        onDismissIssue={dismissOperationIssue}
+      />
     </div>
   );
 }
@@ -1978,6 +2141,7 @@ function Inspector({
   selectedSpec,
   detailTab,
   artifactPreview,
+  operationIssues,
   onDetailTabChange,
   onOpenArtifact,
   onValidate,
@@ -1989,6 +2153,7 @@ function Inspector({
   selectedSpec: SpecRecord | null;
   detailTab: DetailTab;
   artifactPreview: string;
+  operationIssues: OpenSpecOperationIssue[];
   onDetailTabChange: (tab: DetailTab) => void;
   onOpenArtifact: (artifact: Artifact | SpecRecord) => void;
   onValidate: () => void;
@@ -2005,6 +2170,13 @@ function Inspector({
         : { items: [], groups: [] },
     [selectedChange?.taskProgress, selectedDetailTab],
   );
+  const selectedChangeIssues = selectedChange
+    ? operationIssues.filter((issue) => issue.target === selectedChange.name)
+    : [];
+  const selectedArtifactPath = selectedChange ? artifactPathForTab(selectedChange, selectedDetailTab) : undefined;
+  const selectedArtifactIssue = selectedArtifactPath
+    ? operationIssues.find((issue) => issue.kind === "artifact-read" && issue.target === selectedArtifactPath)
+    : undefined;
 
   if (!repo || !workspace) {
     return (
@@ -2090,7 +2262,22 @@ function Inspector({
       </div>
 
       <div className="inspector-body artifact-inspector-body">
-        {renderDetailTab(selectedChange, selectedDetailTab, artifactPreview, workspace.validation, selectedTaskDetail, onOpenArtifact, onValidate)}
+        {selectedChangeIssues.length > 0 ? (
+          <section className="inspector-section operation-context-section">
+            <h3>OpenSpec issues</h3>
+            <OperationIssueList issues={selectedChangeIssues} />
+          </section>
+        ) : null}
+        {renderDetailTab(
+          selectedChange,
+          selectedDetailTab,
+          artifactPreview,
+          workspace.validation,
+          selectedTaskDetail,
+          onOpenArtifact,
+          onValidate,
+          selectedArtifactIssue,
+        )}
       </div>
     </aside>
   );
@@ -2104,6 +2291,7 @@ function renderDetailTab(
   taskDetail: { items: TaskItem[]; groups: TaskGroup[] },
   onOpenArtifact: (artifact: Artifact) => void,
   onValidate: () => void,
+  artifactIssue?: OpenSpecOperationIssue,
 ) {
   if (tab === "archive-info") {
     return <ArchiveInfoPanel change={change} onOpenArtifact={onOpenArtifact} />;
@@ -2113,6 +2301,7 @@ function renderDetailTab(
     return (
       <section className="inspector-section artifact-preview-section">
         <h3>{tab === "proposal" ? "proposal.md" : "design.md"}</h3>
+        {artifactIssue ? <OperationIssueCallout issue={artifactIssue} /> : null}
         <MarkdownPreview content={artifactPreview} emptyText="No artifact preview available." />
       </section>
     );
@@ -2574,12 +2763,16 @@ function StatusBand({
   gitStatus,
   loadState,
   message,
+  operationIssues,
+  onDismissIssue,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
   gitStatus: OpenSpecGitStatus;
   loadState: LoadState;
   message: string;
+  operationIssues: OpenSpecOperationIssue[];
+  onDismissIssue: (issueId: string) => void;
 }) {
   const latestChange = latestOpenSpecChange(workspace?.changes ?? []);
   const lastValidation = formatValidationTimestamp(workspace?.validation?.validatedAt ?? null);
@@ -2605,7 +2798,101 @@ function StatusBand({
       <div className="status-band-toast" aria-live="polite">
         {loadState === "loading" ? "Working..." : message}
       </div>
+      {operationIssues.length > 0 ? (
+        <OpenSpecIssuePanel issues={operationIssues} onDismissIssue={onDismissIssue} />
+      ) : null}
     </footer>
+  );
+}
+
+function OpenSpecIssuePanel({
+  issues,
+  onDismissIssue,
+}: {
+  issues: OpenSpecOperationIssue[];
+  onDismissIssue: (issueId: string) => void;
+}) {
+  const latest = issues[0];
+
+  if (!latest) {
+    return null;
+  }
+
+  return (
+    <details className="status-band-issues">
+      <summary>
+        <span>OpenSpec issue</span>
+        <strong>{issues.length === 1 ? latest.title : issues.length + " issues"}</strong>
+      </summary>
+      <OperationIssueList issues={issues} onDismissIssue={onDismissIssue} />
+    </details>
+  );
+}
+
+function OperationIssueList({
+  issues,
+  onDismissIssue,
+}: {
+  issues: OpenSpecOperationIssue[];
+  onDismissIssue?: (issueId: string) => void;
+}) {
+  return (
+    <ul className="operation-issue-list">
+      {issues.map((issue) => (
+        <li key={issue.id}>
+          <OperationIssueCallout issue={issue} onDismissIssue={onDismissIssue} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function OperationIssueCallout({
+  issue,
+  onDismissIssue,
+}: {
+  issue: OpenSpecOperationIssue;
+  onDismissIssue?: (issueId: string) => void;
+}) {
+  const hasRawOutput = Boolean(issue.stdout || issue.stderr);
+
+  return (
+    <article className="operation-issue-callout">
+      <div className="operation-issue-header">
+        <div>
+          <strong>{issue.title}</strong>
+          <span>{formatIssueTimestamp(issue.occurredAt)}</span>
+        </div>
+        {onDismissIssue ? (
+          <button type="button" className="link-button" onClick={() => onDismissIssue(issue.id)}>
+            Dismiss
+          </button>
+        ) : null}
+      </div>
+      <p>{issue.message}</p>
+      <div className="operation-issue-meta">
+        <span>{operationKindLabel(issue.kind)}</span>
+        {issue.target ? <code>{issue.target}</code> : null}
+        {issue.statusCode !== undefined && issue.statusCode !== null ? <span>exit {issue.statusCode}</span> : null}
+      </div>
+      {hasRawOutput ? (
+        <details className="operation-output">
+          <summary>OpenSpec output</summary>
+          {issue.stderr ? (
+            <>
+              <span>stderr</span>
+              <pre>{issue.stderr}</pre>
+            </>
+          ) : null}
+          {issue.stdout ? (
+            <>
+              <span>stdout</span>
+              <pre>{issue.stdout}</pre>
+            </>
+          ) : null}
+        </details>
+      ) : null}
+    </article>
   );
 }
 
@@ -3097,6 +3384,28 @@ function formatValidationTimestamp(value: string | null): string {
   }
 
   return formatTime(time);
+}
+
+function formatIssueTimestamp(value: string): string {
+  const time = Date.parse(value);
+
+  if (Number.isNaN(time)) {
+    return "Unknown";
+  }
+
+  return formatTime(time);
+}
+
+function operationKindLabel(kind: OpenSpecOperationIssue["kind"]): string {
+  const labels: Record<OpenSpecOperationIssue["kind"], string> = {
+    validation: "validation",
+    archive: "archive",
+    status: "change status",
+    "artifact-read": "artifact read",
+    "repository-read": "repository read",
+  };
+
+  return labels[kind];
 }
 
 function latestOpenSpecChange(changes: ChangeRecord[]): ChangeRecord | null {
