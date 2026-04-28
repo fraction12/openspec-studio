@@ -13,8 +13,6 @@ import {
   createOpenSpecOperationIssue,
   extractJsonPayload,
   isPersistableLocalRepoPath,
-  normalizeRecentRepoPaths,
-  recentRepoSwitcherPaths,
   selectVisibleItemId,
   sameOpenSpecOperationScope,
   toVirtualChangeStatusRecord,
@@ -40,6 +38,21 @@ import {
   type ValidationIssue,
   type ValidationResult,
 } from "./validation/results";
+import {
+  createDefaultPersistedAppState,
+  directionFromSortPreference,
+  loadPersistedAppState,
+  normalizePersistedAppState,
+  rememberPersistedRepo,
+  savePersistedAppState,
+  sortPreferenceFromDirection,
+  updatePersistedRepoSelection,
+  updatePersistedRepoSort,
+  updatePersistedValidationSnapshot,
+  validationFromPersistedSnapshot,
+  type PersistedAppState,
+  type PersistedRecentRepo,
+} from "./persistence";
 
 type RepoState = "ready" | "no-workspace" | "cli-failure";
 type BoardView = "changes" | "specs";
@@ -224,7 +237,6 @@ interface BoardTableResizeConfig {
 }
 
 const BROWSER_PREVIEW_REPO_PATH = "browser-preview://openspec-studio";
-const RECENT_REPOS_STORAGE_KEY = "openspec-studio.recent-repos";
 const AUTO_REFRESH_INTERVAL_MS = 15_000;
 const STATUS_COMMAND_CONCURRENCY = 4;
 const MAX_OPERATION_ISSUES = 6;
@@ -268,7 +280,9 @@ const archiveInfoTab: { id: DetailTab; label: string } = {
 };
 
 function App() {
-  const [recentRepos, setRecentRepos] = useState<string[]>(readRecentRepos);
+  const [persistedAppState, setPersistedAppState] = useState<PersistedAppState>(
+    createDefaultPersistedAppState,
+  );
   const [repoPathInput, setRepoPathInput] = useState("");
   const [repo, setRepo] = useState<RepositoryView | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceView | null>(null);
@@ -292,15 +306,21 @@ function App() {
   const artifactPreviewGenerationRef = useRef(0);
   const validationGenerationRef = useRef(0);
   const archiveInFlightRef = useRef(false);
+  const persistenceReadyRef = useRef(false);
   const chooseRepositoryFolderRef = useRef<() => Promise<void>>(async () => undefined);
   const statusCacheRef = useRef<Map<string, StatusCacheEntry>>(new Map());
   const backgroundRefreshInFlightRef = useRef<Set<string>>(new Set());
+  const persistedAppStateRef = useRef<PersistedAppState>(persistedAppState);
   const workspaceRef = useRef<WorkspaceView | null>(workspace);
   const repoRef = useRef<RepositoryView | null>(repo);
   const gitStatusRef = useRef<OpenSpecGitStatus>(gitStatus);
   const deferredChangesQuery = useDeferredValue(changesQuery);
   const deferredSpecsQuery = useDeferredValue(specsQuery);
 
+  const recentRepos = persistedAppState.recentRepos;
+  const activeRepoState = repo?.path ? persistedAppState.repoStateByPath[repo.path] : undefined;
+
+  persistedAppStateRef.current = persistedAppState;
   workspaceRef.current = workspace;
   repoRef.current = repo;
   gitStatusRef.current = gitStatus;
@@ -321,17 +341,50 @@ function App() {
     setOperationIssues((current) => current.filter((issue) => issue.id !== issueId));
   }
 
-  useEffect(() => {
-    const lastRepoPath = recentRepos[0];
+  async function initializeAppPersistence() {
+    let initialState = createDefaultPersistedAppState();
+
+    if (isTauriRuntime()) {
+      try {
+        initialState = await loadPersistedAppState();
+      } catch (error) {
+        console.warn("OpenSpec Studio persistence could not be loaded.", error);
+      }
+    }
+
+    persistenceReadyRef.current = true;
+    persistedAppStateRef.current = initialState;
+    setPersistedAppState(initialState);
+
+    const lastRepoPath = initialState.lastRepoPath ?? initialState.recentRepos[0]?.path;
 
     if (lastRepoPath) {
       setRepoPathInput(lastRepoPath);
-      void loadRepository(lastRepoPath);
+      await loadRepository(lastRepoPath);
       return;
     }
 
     setLoadState("loaded");
     setMessage("Choose an OpenSpec repository folder to begin.");
+  }
+
+  function updatePersistedState(updater: (state: PersistedAppState) => PersistedAppState) {
+    const nextState = normalizePersistedAppState(updater(persistedAppStateRef.current));
+
+    persistedAppStateRef.current = nextState;
+    setPersistedAppState(nextState);
+
+    if (!persistenceReadyRef.current || !isTauriRuntime()) {
+      return;
+    }
+
+    void savePersistedAppState(nextState).catch((error) => {
+      console.warn("OpenSpec Studio persistence could not be saved.", error);
+    });
+  }
+
+  useEffect(() => {
+    void initializeAppPersistence();
   }, []);
 
   useEffect(() => {
@@ -373,6 +426,8 @@ function App() {
 
   const changes = workspace?.changes ?? [];
   const specs = workspace?.specs ?? [];
+  const changeSortDirection = directionFromSortPreference(activeRepoState?.changeSort);
+  const specSortDirection = directionFromSortPreference(activeRepoState?.specSort);
   const selectedChange =
     changes.find(
       (change) =>
@@ -423,6 +478,19 @@ function App() {
       setDetailTab(tabs[0]?.id ?? "archive-info");
     }
   }, [detailTab, selectedChange]);
+
+  useEffect(() => {
+    if (!repo || repo.state !== "ready" || !workspace) {
+      return;
+    }
+
+    updatePersistedState((current) =>
+      updatePersistedRepoSelection(current, repo.path, {
+        changeId: selectedChangeId,
+        specId: selectedSpecId,
+      }),
+    );
+  }, [repo?.path, repo?.state, selectedChangeId, selectedSpecId, workspace?.fileSignature.fingerprint]);
 
   useEffect(() => {
     const requestId = ++artifactPreviewGenerationRef.current;
@@ -602,12 +670,14 @@ function App() {
 
       const fileSignature = buildOpenSpecFileSignature(fileRecords);
       const indexed = indexOpenSpecWorkspace({ files: fileRecords, changeStatuses });
+      const persistedRepoState = persistedAppStateRef.current.repoStateByPath[validation.path];
+      const restoredValidation = isSameRepo
+        ? validationForFileRecords(workspaceRef.current?.validation ?? null, workspaceRef.current?.fileSignature, fileSignature)
+        : validationFromPersistedSnapshot(persistedRepoState?.lastValidation, fileSignature);
       const nextWorkspace = buildWorkspaceView(
         indexed,
         fileRecords,
-        isSameRepo
-          ? validationForFileRecords(workspaceRef.current?.validation ?? null, workspaceRef.current?.fileSignature, fileSignature)
-          : null,
+        restoredValidation,
         changeStatuses,
         fileSignature,
       );
@@ -621,11 +691,11 @@ function App() {
         (issue) => issue.kind === "repository-read" && issue.repoPath === validation.path,
       );
       void loadGitStatus(validation.path);
-      rememberRecentRepo(validation.path);
+      rememberRecentRepo(validation.path, validation.name);
       if (isSameRepo) {
         keepSelectionInWorkspace(nextWorkspace);
       } else {
-        selectFirstItems(nextWorkspace);
+        restorePersistedSelection(nextWorkspace, persistedRepoState);
       }
       setLoadState("loaded");
       setMessage("Refreshed files: " + nextWorkspace.changes.length + " changes and " + nextWorkspace.specs.length + " specs.");
@@ -684,6 +754,7 @@ function App() {
 
       applyValidationResult(result);
       recordValidationOperationResult(repoPath, result);
+      rememberValidationSnapshot(repoPath, result);
       setLoadState("loaded");
       setMessage(
         result.diagnostics[0]?.message ??
@@ -735,6 +806,7 @@ function App() {
       const validation = await runValidationCommand(repoPath);
       applyValidationResult(validation);
       recordValidationOperationResult(repoPath, validation);
+      rememberValidationSnapshot(repoPath, validation);
 
       if (!canArchiveAfterValidation(validation)) {
         setLoadState("loaded");
@@ -795,6 +867,7 @@ function App() {
       const validation = await runValidationCommand(repoPath);
       applyValidationResult(validation);
       recordValidationOperationResult(repoPath, validation);
+      rememberValidationSnapshot(repoPath, validation);
 
       if (!canArchiveAfterValidation(validation)) {
         setLoadState("loaded");
@@ -966,6 +1039,18 @@ function App() {
             }
           : null,
       }),
+    );
+  }
+
+  function rememberValidationSnapshot(repoPath: string, result: ValidationResult) {
+    const fileSignature = workspaceRef.current?.fileSignature;
+
+    if (!fileSignature) {
+      return;
+    }
+
+    updatePersistedState((current) =>
+      updatePersistedValidationSnapshot(current, repoPath, result, fileSignature),
     );
   }
 
@@ -1216,25 +1301,41 @@ function App() {
     }
   }
 
-  function rememberRecentRepo(repoPath: string) {
+  function rememberRecentRepo(repoPath: string, repoName: string) {
     if (!isPersistableLocalRepoPath(repoPath)) {
       return;
     }
 
-    setRecentRepos((current) => {
-      const next = normalizeRecentRepoPaths([
-        repoPath,
-        ...current.filter((path) => path !== repoPath),
-      ]);
-      writeRecentRepos(next);
-      return next;
-    });
+    updatePersistedState((current) =>
+      rememberPersistedRepo(current, { path: repoPath, name: repoName }),
+    );
   }
 
   function selectFirstItems(nextWorkspace: WorkspaceView) {
     const firstChange = nextWorkspace.changes.find((change) => change.phase === "active") ?? nextWorkspace.changes[0];
     setSelectedChangeId(firstChange?.id ?? "");
     setSelectedSpecId(nextWorkspace.specs[0]?.id ?? "");
+    setDetailTab("proposal");
+    setView("changes");
+    setPhase("active");
+    setChangesQuery("");
+    setSpecsQuery("");
+  }
+
+  function restorePersistedSelection(
+    nextWorkspace: WorkspaceView,
+    persistedRepoState: PersistedAppState["repoStateByPath"][string] | undefined,
+  ) {
+    const persistedChange = nextWorkspace.changes.find(
+      (change) => change.id === persistedRepoState?.lastSelectedChange,
+    );
+    const persistedSpec = nextWorkspace.specs.find(
+      (spec) => spec.id === persistedRepoState?.lastSelectedSpec,
+    );
+    const firstChange = nextWorkspace.changes.find((change) => change.phase === "active") ?? nextWorkspace.changes[0];
+
+    setSelectedChangeId(persistedChange?.id ?? firstChange?.id ?? "");
+    setSelectedSpecId(persistedSpec?.id ?? nextWorkspace.specs[0]?.id ?? "");
     setDetailTab("proposal");
     setView("changes");
     setPhase("active");
@@ -1282,6 +1383,8 @@ function App() {
         specsFilterQuery={deferredSpecsQuery}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
+        changeSortDirection={changeSortDirection}
+        specSortDirection={specSortDirection}
         loadState={loadState}
         archiveBusy={archiveBusy}
         onViewChange={setView}
@@ -1293,6 +1396,20 @@ function App() {
           setDetailTab("proposal");
         }}
         onSelectSpec={setSelectedSpecId}
+        onChangeSortDirection={(direction) =>
+          updatePersistedState((current) =>
+            updatePersistedRepoSort(current, repo?.path ?? "", {
+              changeSort: sortPreferenceFromDirection(direction),
+            }),
+          )
+        }
+        onSpecSortDirection={(direction) =>
+          updatePersistedState((current) =>
+            updatePersistedRepoSort(current, repo?.path ?? "", {
+              specSort: sortPreferenceFromDirection(direction),
+            }),
+          )
+        }
         onChooseFolder={() => void chooseRepositoryFolder()}
         onArchiveChange={(changeName) => void archiveChange(changeName)}
         onArchiveAll={(changeNames) => void archiveAllChanges(changeNames)}
@@ -1341,7 +1458,7 @@ function Sidebar({
   onReturnToActive,
 }: {
   repo: RepositoryView | null;
-  recentRepos: string[];
+  recentRepos: PersistedRecentRepo[];
   candidateError: CandidateRepoError | null;
   repoPathInput: string;
   loadState: LoadState;
@@ -1352,7 +1469,7 @@ function Sidebar({
   onRetryCandidate: (path: string) => void;
   onReturnToActive: () => void;
 }) {
-  const switcherRepos = recentRepoSwitcherPaths(repo?.path, recentRepos);
+  const switcherRepos = recentRepoSwitcherRepos(repo, recentRepos);
 
   return (
     <aside className="repo-rail" aria-label="Repository navigation">
@@ -1421,17 +1538,17 @@ function Sidebar({
         <div className="rail-heading">Recent sources</div>
         {switcherRepos.length > 0 ? (
           <div className="recent-repos repo-switcher">
-            {switcherRepos.map((path) => (
+            {switcherRepos.map((recent) => (
               <button
                 type="button"
-                key={path}
-                className={path === repo?.path ? "is-selected" : ""}
-                aria-current={path === repo?.path ? "true" : undefined}
-                onClick={() => onOpenRecent(path)}
+                key={recent.path}
+                className={recent.path === repo?.path ? "is-selected" : ""}
+                aria-current={recent.path === repo?.path ? "true" : undefined}
+                onClick={() => onOpenRecent(recent.path)}
               >
-                <strong>{repoNameFromPath(path)}</strong>
-                <span>{path}</span>
-                {path === repo?.path ? <em>Current</em> : null}
+                <strong>{recent.name}</strong>
+                <span>{recent.path}</span>
+                {recent.path === repo?.path ? <em>Current</em> : null}
               </button>
             ))}
           </div>
@@ -1455,6 +1572,8 @@ function WorkspaceMain({
   specsFilterQuery,
   selectedChange,
   selectedSpec,
+  changeSortDirection,
+  specSortDirection,
   loadState,
   archiveBusy,
   onViewChange,
@@ -1463,6 +1582,8 @@ function WorkspaceMain({
   onSpecsQueryChange,
   onSelectChange,
   onSelectSpec,
+  onChangeSortDirection,
+  onSpecSortDirection,
   onChooseFolder,
   onArchiveChange,
   onArchiveAll,
@@ -1479,6 +1600,8 @@ function WorkspaceMain({
   specsFilterQuery: string;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
+  changeSortDirection: BoardTableSortDirection;
+  specSortDirection: BoardTableSortDirection;
   loadState: LoadState;
   archiveBusy: boolean;
   onViewChange: (view: BoardView) => void;
@@ -1487,6 +1610,8 @@ function WorkspaceMain({
   onSpecsQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
   onSelectSpec: (specId: string) => void;
+  onChangeSortDirection: (direction: BoardTableSortDirection) => void;
+  onSpecSortDirection: (direction: BoardTableSortDirection) => void;
   onChooseFolder: () => void;
   onArchiveChange: (changeName: string) => void;
   onArchiveAll: (changeNames: string[]) => void;
@@ -1577,10 +1702,12 @@ function WorkspaceMain({
           query={changesQuery}
           filterQuery={changesFilterQuery}
           selectedChange={selectedChange}
+          sortDirection={changeSortDirection}
           archiveBusy={archiveBusy}
           onPhaseChange={onPhaseChange}
           onQueryChange={onChangesQueryChange}
           onSelectChange={onSelectChange}
+          onSortDirectionChange={onChangeSortDirection}
           onArchiveChange={onArchiveChange}
           onArchiveAll={onArchiveAll}
         />
@@ -1590,8 +1717,10 @@ function WorkspaceMain({
           selectedSpec={selectedSpec}
           query={specsQuery}
           filterQuery={specsFilterQuery}
+          sortDirection={specSortDirection}
           onQueryChange={onSpecsQueryChange}
           onSelectSpec={onSelectSpec}
+          onSortDirectionChange={onSpecSortDirection}
         />
       )}
     </main>
@@ -1604,10 +1733,12 @@ function ChangeBoard({
   query,
   filterQuery,
   selectedChange,
+  sortDirection,
   archiveBusy,
   onPhaseChange,
   onQueryChange,
   onSelectChange,
+  onSortDirectionChange,
   onArchiveChange,
   onArchiveAll,
 }: {
@@ -1616,10 +1747,12 @@ function ChangeBoard({
   query: string;
   filterQuery: string;
   selectedChange: ChangeRecord | null;
+  sortDirection: BoardTableSortDirection;
   archiveBusy: boolean;
   onPhaseChange: (phase: ChangePhase) => void;
   onQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
+  onSortDirectionChange: (direction: BoardTableSortDirection) => void;
   onArchiveChange: (changeName: string) => void;
   onArchiveAll: (changeNames: string[]) => void;
 }) {
@@ -1752,6 +1885,12 @@ function ChangeBoard({
           columns={columns}
           selectedId={selectedChange?.id ?? ""}
           onSelect={onSelectChange}
+          sortState={{ columnId: "updated", direction: sortDirection }}
+          onSortStateChange={(state) => {
+            if (state?.columnId === "updated") {
+              onSortDirectionChange(state.direction);
+            }
+          }}
           tableClassName={phase === "archive-ready" ? "has-actions" : ""}
           resetKey={phase + "\n" + filterQuery}
           itemLabel="changes"
@@ -1776,15 +1915,19 @@ function SpecsBrowser({
   selectedSpec,
   query,
   filterQuery,
+  sortDirection,
   onQueryChange,
   onSelectSpec,
+  onSortDirectionChange,
 }: {
   specs: SpecRecord[];
   selectedSpec: SpecRecord | null;
   query: string;
   filterQuery: string;
+  sortDirection: BoardTableSortDirection;
   onQueryChange: (query: string) => void;
   onSelectSpec: (specId: string) => void;
+  onSortDirectionChange: (direction: BoardTableSortDirection) => void;
 }) {
   const filteredSpecs = useMemo(() => {
     return specs.filter((spec) => matchesSpecFilters(spec, filterQuery));
@@ -1856,6 +1999,12 @@ function SpecsBrowser({
           columns={columns}
           selectedId={selectedSpec?.id ?? ""}
           onSelect={onSelectSpec}
+          sortState={{ columnId: "updated", direction: sortDirection }}
+          onSortStateChange={(state) => {
+            if (state?.columnId === "updated") {
+              onSortDirectionChange(state.direction);
+            }
+          }}
           tableClassName="specs-table"
           resetKey={filterQuery}
           itemLabel="specs"
@@ -1880,6 +2029,8 @@ function BoardTable<T extends { id: string }>({
   columns,
   selectedId,
   onSelect,
+  sortState: controlledSortState,
+  onSortStateChange,
   tableClassName,
   resetKey,
   itemLabel,
@@ -1889,6 +2040,8 @@ function BoardTable<T extends { id: string }>({
   columns: BoardTableColumn<T>[];
   selectedId: string;
   onSelect: (id: string) => void;
+  sortState?: BoardTableSortState | null;
+  onSortStateChange?: (state: BoardTableSortState | null) => void;
   tableClassName?: string;
   resetKey: string;
   itemLabel: string;
@@ -1897,10 +2050,13 @@ function BoardTable<T extends { id: string }>({
   const [rowLimit, setRowLimit] = useState(ROW_RENDER_BATCH_SIZE);
   const [resizedWidth, setResizedWidth] = useState(resize?.defaultWidth ?? 0);
   const [focusRowId, setFocusRowId] = useState(selectedId || rows[0]?.id || "");
-  const [sortState, setSortState] = useState<BoardTableSortState | null>(() => defaultBoardTableSort(columns));
+  const [internalSortState, setInternalSortState] = useState<BoardTableSortState | null>(() =>
+    defaultBoardTableSort(columns),
+  );
+  const activeSortState = controlledSortState !== undefined ? controlledSortState : internalSortState;
   const tableRef = useRef<HTMLTableElement | null>(null);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
-  const sortedRows = useMemo(() => sortBoardRows(rows, columns, sortState), [columns, rows, sortState]);
+  const sortedRows = useMemo(() => sortBoardRows(rows, columns, activeSortState), [columns, rows, activeSortState]);
   const bounded = useMemo(
     () => boundedRows(sortedRows, selectedId, rowLimit),
     [rowLimit, selectedId, sortedRows],
@@ -1911,14 +2067,18 @@ function BoardTable<T extends { id: string }>({
   }, [resetKey]);
 
   useEffect(() => {
-    setSortState((current) => {
+    if (controlledSortState !== undefined) {
+      return;
+    }
+
+    setInternalSortState((current) => {
       if (current && columns.some((column) => column.id === current.columnId && column.sortable)) {
         return current;
       }
 
       return defaultBoardTableSort(columns);
     });
-  }, [columns]);
+  }, [columns, controlledSortState]);
 
   useEffect(() => {
     if (selectedId && bounded.rows.some((row) => row.id === selectedId)) {
@@ -2044,13 +2204,19 @@ function BoardTable<T extends { id: string }>({
       return;
     }
 
-    setSortState((current) => ({
+    const nextSortState = {
       columnId: column.id,
       direction:
-        current?.columnId === column.id
-          ? nextTableSortDirection(current.direction)
+        activeSortState?.columnId === column.id
+          ? nextTableSortDirection(activeSortState.direction)
           : column.sortable?.defaultDirection ?? "desc",
-    }));
+    };
+
+    if (controlledSortState === undefined) {
+      setInternalSortState(nextSortState);
+    }
+
+    onSortStateChange?.(nextSortState);
   }
 
   return (
@@ -2082,7 +2248,7 @@ function BoardTable<T extends { id: string }>({
                 key={column.id}
                 role="columnheader"
                 scope="col"
-                aria-sort={sortAriaValue(column, sortState)}
+                aria-sort={sortAriaValue(column, activeSortState)}
                 className={[
                   resize?.columnId === column.id ? "resizable-heading" : "",
                   column.sortable ? "sortable-heading" : "",
@@ -2094,15 +2260,15 @@ function BoardTable<T extends { id: string }>({
                   <button
                     type="button"
                     className="table-sort-button"
-                    aria-label={sortButtonLabel(column, sortState)}
+                    aria-label={sortButtonLabel(column, activeSortState)}
                     onClick={() => toggleColumnSort(column)}
                   >
                     <span>{column.label}</span>
                     <span
                       className={[
                         "sort-icon",
-                        sortState?.columnId === column.id ? "is-active" : "",
-                        sortState?.columnId === column.id ? "is-" + sortState.direction : "",
+                        activeSortState?.columnId === column.id ? "is-active" : "",
+                        activeSortState?.columnId === column.id ? "is-" + activeSortState.direction : "",
                       ]
                         .filter(Boolean)
                         .join(" ")}
@@ -3746,27 +3912,23 @@ function validationForFileRecords(
   );
 }
 
-function repoNameFromPath(path: string): string {
-  return path.split("/").filter(Boolean).pop() ?? path;
-}
+function recentRepoSwitcherRepos(
+  repo: RepositoryView | null,
+  recentRepos: PersistedRecentRepo[],
+): PersistedRecentRepo[] {
+  const currentRepo =
+    repo && isPersistableLocalRepoPath(repo.path)
+      ? [{ path: repo.path, name: repo.name, lastOpenedAt: Date.now() }]
+      : [];
+  const repos: PersistedRecentRepo[] = [];
 
-function readRecentRepos(): string[] {
-  try {
-    const raw = window.localStorage.getItem(RECENT_REPOS_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-
-    return normalizeRecentRepoPaths(parsed);
-  } catch {
-    return [];
+  for (const recent of [...currentRepo, ...recentRepos]) {
+    if (!repos.some((candidate) => candidate.path === recent.path)) {
+      repos.push(recent);
+    }
   }
-}
 
-function writeRecentRepos(paths: string[]) {
-  try {
-    window.localStorage.setItem(RECENT_REPOS_STORAGE_KEY, JSON.stringify(paths));
-  } catch {
-    // Recent repos are a convenience. Indexing must keep working without storage.
-  }
+  return repos;
 }
 
 function isTauriRuntime(): boolean {

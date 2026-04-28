@@ -4,7 +4,13 @@ Add minimal app-local persistence for convenience state only. OpenSpec files and
 
 ## Storage Choice
 
-Use a small JSON-backed Tauri persistence mechanism for v1, preferably the Tauri store plugin or an equivalent app-data JSON file managed by the backend.
+Use the Tauri Store plugin for v1. It gives the app a versioned JSON store in the platform app-data directory without adding a custom persistence bridge or a database dependency.
+
+Why Tauri Store instead of a custom JSON file:
+- it is the maintained Tauri path for app-local key-value persistence
+- it stores data in the app data directory consistently across platforms
+- it keeps persistence access scoped through Tauri capabilities
+- it avoids inventing a custom bridge while the data model is still small
 
 Why not SQLite yet:
 - the data is small
