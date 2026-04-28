@@ -1,65 +1,226 @@
-# OpenSpec Studio
+<p align="center">
+  <a href="https://github.com/fraction12/openspec-studio">
+    <picture>
+      <source srcset="public/openspec-studio-logo.svg">
+      <img src="public/openspec-studio-logo.svg" alt="OpenSpec Studio logo" width="180">
+    </picture>
+  </a>
+</p>
 
-A local-first desktop companion for OpenSpec.
+<p align="center">
+  <strong>A local-first desktop window into your OpenSpec workspace.</strong>
+</p>
 
-OpenSpec Studio points at a local repository, reads its `openspec/` workspace, and gives a visual overview of changes, specs, artifacts, validation state, and archive readiness without replacing the OpenSpec CLI.
+<p align="center">
+  <a href="https://github.com/fraction12/openspec-studio"><img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange?style=flat-square" /></a>
+  <a href="https://github.com/Fission-AI/OpenSpec"><img alt="Built for OpenSpec" src="https://img.shields.io/badge/built%20for-OpenSpec-blue?style=flat-square" /></a>
+  <a href="https://tauri.app"><img alt="Tauri v2" src="https://img.shields.io/badge/Tauri-v2-24c8db?style=flat-square&logo=tauri" /></a>
+</p>
 
-## Development
+<details>
+<summary><strong>OpenSpec, but visible.</strong></summary>
 
-OpenSpec Studio is a Tauri v2 desktop app with a React/TypeScript frontend.
+OpenSpec Studio is not a replacement for OpenSpec. It is a quiet desktop companion that points at a local repo, reads its `openspec/` directory, and turns proposals, specs, tasks, validation, archive readiness, and source artifacts into a fast inspection surface.
 
-### Prerequisites
+</details>
+<p></p>
 
-- Node.js `^20.19.0` or `>=22.12.0`, plus npm
-- Rust and Cargo
-- The `openspec` CLI available on your `PATH` for repository validation features
+Our philosophy:
 
-### Install
-
-```sh
-npm install
+```text
+→ window not wizard
+→ local not hosted
+→ source truth not app database
+→ inspection before authoring
+→ native enough to stay open all day
 ```
 
-### Run Locally
+> [!NOTE]
+> OpenSpec Studio is early alpha. It is useful today as a local inspection workbench, but OpenSpec files and the OpenSpec CLI remain the source of truth.
 
-Run the desktop app in development mode:
+<p align="center">
+  Built for <a href="https://github.com/Fission-AI/OpenSpec">OpenSpec</a> — spec-driven development for AI coding assistants.
+</p>
 
-```sh
+<!-- TODO: Add screenshot/GIF of opening a repo, inspecting a change, running validation, and archiving. -->
+
+## See it in action
+
+```text
+Open a repo
+  → Studio finds openspec/
+  → indexes active changes, specs, archived changes, and artifact files
+  → shows what is proposed, blocked, invalid, stale, or ready to archive
+
+Select a change
+  → read proposal.md, design.md, tasks.md, and spec deltas side-by-side
+  → preview artifact contents without leaving the app
+  → open the real source file when you need to edit
+
+Run validation
+  → Studio calls the OpenSpec CLI
+  → parses structured validation output
+  → keeps the UI honest about what needs attention
+
+Archive when ready
+  → Studio validates first
+  → calls the OpenSpec archive flow
+  → reloads from disk so the app never becomes the source of truth
+```
+
+<details>
+<summary><strong>Current surfaces</strong></summary>
+
+- Change board for active, archive-ready, archived, blocked, missing, stale, and invalid work
+- Specs overview for capability-level inspection
+- Artifact inspector for proposals, designs, tasks, and spec deltas
+- Validation dashboard backed by the OpenSpec CLI
+- Archive actions with validation-first guardrails
+- OpenSpec git-status awareness for local workspace changes
+- Fast sortable tables and keyboard-friendly row navigation
+
+</details>
+
+## Quick Start
+
+**Requires:**
+
+- Node.js `^20.19.0` or `>=22.12.0`
+- Rust and Cargo
+- OpenSpec CLI on your `PATH`
+
+Install or update OpenSpec first:
+
+```bash
+npm install -g @fission-ai/openspec@latest
+```
+
+Clone and run Studio:
+
+```bash
+git clone https://github.com/fraction12/openspec-studio.git
+cd openspec-studio
+npm install
 npm run tauri:dev
 ```
 
-For frontend-only iteration:
+Then open any local repo that contains an `openspec/` directory.
 
-```sh
+> [!TIP]
+> Studio is meant to stay open beside your editor and agent. Let the agent write specs; use Studio to inspect what exists, what changed, and what is safe to archive.
+
+## Docs
+
+→ **[OpenSpec](https://github.com/Fission-AI/OpenSpec)**: the upstream spec framework<br>
+→ **[OpenSpec CLI](https://github.com/Fission-AI/OpenSpec/blob/main/docs/cli.md)**: command reference<br>
+→ **[OpenSpec Workflows](https://github.com/Fission-AI/OpenSpec/blob/main/docs/workflows.md)**: propose/apply/archive patterns<br>
+→ **[`openspec/`](openspec/)**: this app's own product specs and change history
+
+## Why OpenSpec Studio?
+
+OpenSpec is deliberately file-first and CLI-first. That is exactly right for agent workflows, but once a project has several changes and specs, you need a better way to see the state of the room.
+
+- **See the whole workspace** — scan changes, specs, validation, archive readiness, and artifacts from one native window
+- **Trust the source** — every view is derived from local OpenSpec files and CLI output
+- **Move faster** — jump from a change to its proposal, design, tasks, spec deltas, and source files
+- **Stay safe** — validation and archive flows keep guardrails visible instead of hiding them in terminal output
+- **Keep agents honest** — review what your coding assistant actually changed before you let it continue
+
+### How we compare
+
+**vs. OpenSpec CLI** — The CLI remains canonical. Studio gives you a visual read model over the same files and commands.
+
+**vs. editing Markdown directly** — Markdown stays editable in your editor. Studio adds navigation, status, validation context, and archive readiness.
+
+**vs. a hosted dashboard** — Studio is local-first. Your repo contents stay on your machine.
+
+## Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run the desktop app:
+
+```bash
+npm run tauri:dev
+```
+
+Run frontend-only development:
+
+```bash
 npm run dev
 ```
 
-### Usage Walkthrough
+Run checks:
 
-1. Open a local repository that contains an `openspec/` directory.
-2. Scan the change board for active, archive-ready, archived, missing, blocked, stale, or invalid work.
-3. Select a change to drill into proposal, design, tasks, spec deltas, artifacts, and validation messages.
-4. Switch to the Specs view when you want a capability-level overview.
-5. Run validation from the toolbar to refresh OpenSpec health, then open artifacts in your editor when you need to inspect or change source files.
-
-### Checks
-
-```sh
+```bash
+npm test
 npm run check
-npm run test
-cd src-tauri && cargo check
-```
-
-### Build
-
-Build the frontend:
-
-```sh
 npm run build
+cd src-tauri && cargo check
+openspec validate --all
 ```
 
 Build the desktop app bundle:
 
-```sh
+```bash
 npm run tauri:build
 ```
+
+## Project Status
+
+OpenSpec Studio is alpha software. The current product direction is intentionally narrow:
+
+```text
+OpenSpec Studio = a beautiful local inspection surface for OpenSpec state.
+```
+
+Near-term focus:
+
+- read-only clarity for changes, specs, archive, validation, tasks, and artifacts
+- lightweight app-local persistence for recent repos and UI continuity
+- better CLI JSON contracts where Studio needs less fragile parsing
+- read-only graph/timeline ideas only if they improve inspection
+
+Not the focus yet:
+
+- replacing OpenSpec
+- becoming the main spec writer
+- hosted sync
+- broad artifact editing
+- guided operator workflows
+- heavy app-owned databases
+
+## Security & Local File Access
+
+Studio reads local repositories you explicitly choose. It can:
+
+- inspect files under `openspec/`
+- run narrowly allowed OpenSpec CLI commands
+- run Git status against the selected repo
+- open artifact files in your system editor
+- archive OpenSpec changes after validation checks
+
+It should not treat persisted app state as source truth. If cached data and files disagree, files win.
+
+## Contributing
+
+This repo dogfoods OpenSpec. For larger changes, add or update an OpenSpec change under `openspec/changes/` before implementation.
+
+Small fixes can be direct PRs. Larger features should explain:
+
+- why the change matters
+- which capability/spec it touches
+- what is intentionally out of scope
+- how it preserves OpenSpec files and CLI output as source truth
+
+AI-generated code is welcome if it is reviewed, tested, and clearly verified.
+
+## License
+
+No license has been selected yet.
+
+Until a license is added, this repository is source-available only and not legally reusable as open source.
