@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { archivedChangeToView, buildWorkspaceView, detailTabsForChange } from "./App";
+import {
+  archivedChangeToView,
+  buildWorkspaceView,
+  detailTabsForChange,
+  nextTableSortDirection,
+  sortRowsByUpdatedTime,
+} from "./App";
 import type { IndexedArchivedChange, VirtualOpenSpecFileRecord } from "./domain/openspecIndex";
 import { indexOpenSpecWorkspace } from "./domain/openspecIndex";
 import type { ValidationResult } from "./validation/results";
@@ -231,6 +237,38 @@ describe("active archive readiness view model", () => {
     expect(change?.archiveReadiness).toMatchObject({ ready: true });
     expect(change?.health).toBe("stale");
     expect(spec?.health).toBe("invalid");
+  });
+});
+
+describe("board table sorting", () => {
+  const rows = [
+    { id: "older", modifiedTimeMs: 20 },
+    { id: "unknown", modifiedTimeMs: null },
+    { id: "newest", modifiedTimeMs: 40 },
+    { id: "oldest", modifiedTimeMs: 10 },
+    { id: "also-older", modifiedTimeMs: 20 },
+  ];
+
+  it("defaults updated-time ordering to newest first with unknown values last", () => {
+    expect(sortRowsByUpdatedTime(rows, "desc").map((row) => row.id)).toEqual([
+      "newest",
+      "older",
+      "also-older",
+      "oldest",
+      "unknown",
+    ]);
+  });
+
+  it("toggles updated-time ordering to oldest first with stable ties", () => {
+    expect(nextTableSortDirection("desc")).toBe("asc");
+    expect(nextTableSortDirection("asc")).toBe("desc");
+    expect(sortRowsByUpdatedTime(rows, "asc").map((row) => row.id)).toEqual([
+      "oldest",
+      "older",
+      "also-older",
+      "newest",
+      "unknown",
+    ]);
   });
 });
 

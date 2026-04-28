@@ -49,6 +49,7 @@ type Health = ChangeHealth;
 type ArtifactStatus = "present" | "missing" | "blocked";
 type LoadState = "idle" | "loading" | "loaded" | "error";
 type CandidateErrorKind = "missing" | "no-workspace" | "unavailable";
+export type BoardTableSortDirection = "asc" | "desc";
 
 interface RepositoryValidationDto {
   path: string;
@@ -192,12 +193,23 @@ interface BoundedRows<T> {
   hiddenCount: number;
 }
 
+interface BoardTableSortConfig<T> {
+  defaultDirection?: BoardTableSortDirection;
+  getValue: (row: T) => number | null | undefined;
+}
+
 interface BoardTableColumn<T> {
   id: string;
   label: string;
   colClassName?: string;
   cellClassName?: string;
+  sortable?: BoardTableSortConfig<T>;
   render: (row: T) => ReactNode;
+}
+
+interface BoardTableSortState {
+  columnId: string;
+  direction: BoardTableSortDirection;
 }
 
 interface BoardTableResizeConfig {
@@ -1657,6 +1669,10 @@ function ChangeBoard({
         label: "Updated",
         colClassName: "updated-col",
         cellClassName: "updated-cell",
+        sortable: {
+          defaultDirection: "desc",
+          getValue: (change) => change.modifiedTimeMs,
+        },
         render: (change) => change.updatedAt,
       },
     ];
@@ -1801,6 +1817,10 @@ function SpecsBrowser({
         label: "Updated",
         colClassName: "spec-updated-col",
         cellClassName: "updated-cell",
+        sortable: {
+          defaultDirection: "desc",
+          getValue: (spec) => spec.modifiedTimeMs,
+        },
         render: (spec) => spec.updatedAt,
       },
     ],
@@ -1877,16 +1897,28 @@ function BoardTable<T extends { id: string }>({
   const [rowLimit, setRowLimit] = useState(ROW_RENDER_BATCH_SIZE);
   const [resizedWidth, setResizedWidth] = useState(resize?.defaultWidth ?? 0);
   const [focusRowId, setFocusRowId] = useState(selectedId || rows[0]?.id || "");
+  const [sortState, setSortState] = useState<BoardTableSortState | null>(() => defaultBoardTableSort(columns));
   const tableRef = useRef<HTMLTableElement | null>(null);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
+  const sortedRows = useMemo(() => sortBoardRows(rows, columns, sortState), [columns, rows, sortState]);
   const bounded = useMemo(
-    () => boundedRows(rows, selectedId, rowLimit),
-    [rowLimit, rows, selectedId],
+    () => boundedRows(sortedRows, selectedId, rowLimit),
+    [rowLimit, selectedId, sortedRows],
   );
 
   useEffect(() => {
     setRowLimit(ROW_RENDER_BATCH_SIZE);
   }, [resetKey]);
+
+  useEffect(() => {
+    setSortState((current) => {
+      if (current && columns.some((column) => column.id === current.columnId && column.sortable)) {
+        return current;
+      }
+
+      return defaultBoardTableSort(columns);
+    });
+  }, [columns]);
 
   useEffect(() => {
     if (selectedId && bounded.rows.some((row) => row.id === selectedId)) {
@@ -2007,13 +2039,27 @@ function BoardTable<T extends { id: string }>({
     }
   }
 
+  function toggleColumnSort(column: BoardTableColumn<T>) {
+    if (!column.sortable) {
+      return;
+    }
+
+    setSortState((current) => ({
+      columnId: column.id,
+      direction:
+        current?.columnId === column.id
+          ? nextTableSortDirection(current.direction)
+          : column.sortable?.defaultDirection ?? "desc",
+    }));
+  }
+
   return (
     <div className="table-scroll">
       <table
         ref={tableRef}
         role="grid"
         aria-label={itemLabel + " table"}
-        aria-rowcount={rows.length}
+        aria-rowcount={sortedRows.length}
         className={["change-table", tableClassName].filter(Boolean).join(" ")}
       >
         <colgroup>
@@ -2036,9 +2082,36 @@ function BoardTable<T extends { id: string }>({
                 key={column.id}
                 role="columnheader"
                 scope="col"
-                className={resize?.columnId === column.id ? "resizable-heading" : undefined}
+                aria-sort={sortAriaValue(column, sortState)}
+                className={[
+                  resize?.columnId === column.id ? "resizable-heading" : "",
+                  column.sortable ? "sortable-heading" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
               >
-                <span>{column.label}</span>
+                {column.sortable ? (
+                  <button
+                    type="button"
+                    className="table-sort-button"
+                    aria-label={sortButtonLabel(column, sortState)}
+                    onClick={() => toggleColumnSort(column)}
+                  >
+                    <span>{column.label}</span>
+                    <span
+                      className={[
+                        "sort-icon",
+                        sortState?.columnId === column.id ? "is-active" : "",
+                        sortState?.columnId === column.id ? "is-" + sortState.direction : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      aria-hidden="true"
+                    />
+                  </button>
+                ) : (
+                  <span>{column.label}</span>
+                )}
                 {resize?.columnId === column.id ? (
                   <button
                     type="button"
@@ -2118,7 +2191,7 @@ function BoardTable<T extends { id: string }>({
       {bounded.hiddenCount > 0 ? (
         <div className="bounded-row-notice">
           <span>
-            Showing {bounded.rows.length} of {rows.length} matching {itemLabel}.
+            Showing {bounded.rows.length} of {sortedRows.length} matching {itemLabel}.
           </span>
           <button
             type="button"
@@ -3520,6 +3593,105 @@ function areGitStatusesEqual(left: OpenSpecGitStatus, right: OpenSpecGitStatus):
     left.entries.length === right.entries.length &&
     left.entries.every((entry, index) => entry === right.entries[index])
   );
+}
+
+function defaultBoardTableSort<T>(columns: BoardTableColumn<T>[]): BoardTableSortState | null {
+  const column = columns.find((candidate) => candidate.sortable);
+
+  if (!column?.sortable) {
+    return null;
+  }
+
+  return {
+    columnId: column.id,
+    direction: column.sortable.defaultDirection ?? "desc",
+  };
+}
+
+function sortBoardRows<T extends { id: string }>(
+  rows: T[],
+  columns: BoardTableColumn<T>[],
+  sortState: BoardTableSortState | null,
+): T[] {
+  if (!sortState) {
+    return rows;
+  }
+
+  const column = columns.find((candidate) => candidate.id === sortState.columnId);
+
+  if (!column?.sortable) {
+    return rows;
+  }
+
+  return sortRowsByNumericValue(rows, sortState.direction, column.sortable.getValue);
+}
+
+export function sortRowsByUpdatedTime<T extends { modifiedTimeMs?: number | null }>(
+  rows: T[],
+  direction: BoardTableSortDirection,
+): T[] {
+  return sortRowsByNumericValue(rows, direction, (row) => row.modifiedTimeMs);
+}
+
+function sortRowsByNumericValue<T>(
+  rows: T[],
+  direction: BoardTableSortDirection,
+  getValue: (row: T) => number | null | undefined,
+): T[] {
+  return rows
+    .map((row, index) => ({ index, row, value: getValue(row) }))
+    .sort((left, right) => {
+      const leftKnown = typeof left.value === "number" && Number.isFinite(left.value);
+      const rightKnown = typeof right.value === "number" && Number.isFinite(right.value);
+
+      if (!leftKnown && !rightKnown) {
+        return left.index - right.index;
+      }
+
+      if (!leftKnown) {
+        return 1;
+      }
+
+      if (!rightKnown) {
+        return -1;
+      }
+
+      const diff = left.value! - right.value!;
+
+      if (diff === 0) {
+        return left.index - right.index;
+      }
+
+      return direction === "asc" ? diff : -diff;
+    })
+    .map(({ row }) => row);
+}
+
+export function nextTableSortDirection(direction: BoardTableSortDirection): BoardTableSortDirection {
+  return direction === "desc" ? "asc" : "desc";
+}
+
+function sortAriaValue<T>(column: BoardTableColumn<T>, sortState: BoardTableSortState | null) {
+  if (!column.sortable) {
+    return undefined;
+  }
+
+  if (sortState?.columnId !== column.id) {
+    return "none" as const;
+  }
+
+  return sortState.direction === "desc" ? "descending" : "ascending";
+}
+
+function sortButtonLabel<T>(column: BoardTableColumn<T>, sortState: BoardTableSortState | null): string {
+  if (sortState?.columnId !== column.id) {
+    return "Sort by " + column.label;
+  }
+
+  const current = sortState.direction === "desc" ? "newest first" : "oldest first";
+  const next = nextTableSortDirection(sortState.direction) === "desc" ? "newest first" : "oldest first";
+
+  return column.label + ": sorted " + current + ". Activate to sort " + next + ".";
 }
 
 function boundedRows<T extends { id: string }>(
