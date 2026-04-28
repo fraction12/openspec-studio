@@ -619,41 +619,12 @@ function App() {
     const repoPath = repo.path;
 
     try {
-      const command = await invoke<CommandResultDto>("run_openspec_command", {
-        repoPath,
-        args: ["validate", "--all", "--json"],
-      });
+      const result = await runValidationCommand(repoPath);
       if (validationGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
         return;
       }
 
-      const rawJson = extractJsonPayload(command.stdout);
-      const result =
-        rawJson !== undefined
-          ? parseValidationResult(rawJson, {
-              validatedAt: new Date(),
-              repoPath,
-            })
-          : command.success
-            ? parseValidationResult(command.stdout || command, {
-                validatedAt: new Date(),
-                repoPath,
-              })
-            : createValidationCommandFailureResult({
-                stdout: command.stdout,
-                stderr: command.stderr,
-                statusCode: command.status_code ?? command.statusCode ?? null,
-                validatedAt: new Date(),
-                raw: command,
-              });
-      const activeWorkspace = workspaceRef.current;
-      const records = Object.values(activeWorkspace?.filesByPath ?? {});
-      const changeStatuses = activeWorkspace?.changeStatuses ?? [];
-      const indexed = indexOpenSpecWorkspace({ files: records, changeStatuses });
-      const nextWorkspace = buildWorkspaceView(indexed, records, result, changeStatuses);
-
-      workspaceRef.current = nextWorkspace;
-      setWorkspace(nextWorkspace);
+      applyValidationResult(result);
       setLoadState("loaded");
       setMessage(
         result.diagnostics[0]?.message ??
@@ -688,10 +659,20 @@ function App() {
     archiveInFlightRef.current = true;
     setArchiveBusy(true);
     setLoadState("loading");
-    setMessage("Archiving " + changeName + "...");
+    setMessage("Validating before archiving " + changeName + "...");
     const repoPath = repo.path;
 
     try {
+      const validation = await runValidationCommand(repoPath);
+      applyValidationResult(validation);
+
+      if (!canArchiveAfterValidation(validation)) {
+        setLoadState("loaded");
+        setMessage(archiveValidationFailureMessage(validation));
+        return;
+      }
+
+      setMessage("Archiving " + changeName + "...");
       await archiveOneChange(repoPath, changeName);
       await loadRepository(repoPath);
       setPhase("archived");
@@ -736,11 +717,21 @@ function App() {
     archiveInFlightRef.current = true;
     setArchiveBusy(true);
     setLoadState("loading");
-    setMessage("Archiving " + uniqueChangeNames.length + " changes...");
+    setMessage("Validating before archiving " + uniqueChangeNames.length + " changes...");
     const repoPath = repo.path;
     let archivedCount = 0;
 
     try {
+      const validation = await runValidationCommand(repoPath);
+      applyValidationResult(validation);
+
+      if (!canArchiveAfterValidation(validation)) {
+        setLoadState("loaded");
+        setMessage(archiveValidationFailureMessage(validation));
+        return;
+      }
+
+      setMessage("Archiving " + uniqueChangeNames.length + " changes...");
       for (const changeName of uniqueChangeNames) {
         await archiveOneChange(repoPath, changeName);
         archivedCount += 1;
@@ -805,6 +796,47 @@ function App() {
     if (!result.success) {
       throw new Error(result.stderr || result.stdout || "OpenSpec archive did not complete.");
     }
+  }
+
+  async function runValidationCommand(repoPath: string): Promise<ValidationResult> {
+    const command = await invoke<CommandResultDto>("run_openspec_command", {
+      repoPath,
+      args: ["validate", "--all", "--json"],
+    });
+    const rawJson = extractJsonPayload(command.stdout);
+
+    if (rawJson !== undefined) {
+      return parseValidationResult(rawJson, {
+        validatedAt: new Date(),
+        repoPath,
+      });
+    }
+
+    if (command.success) {
+      return parseValidationResult(command.stdout || command, {
+        validatedAt: new Date(),
+        repoPath,
+      });
+    }
+
+    return createValidationCommandFailureResult({
+      stdout: command.stdout,
+      stderr: command.stderr,
+      statusCode: command.status_code ?? command.statusCode ?? null,
+      validatedAt: new Date(),
+      raw: command,
+    });
+  }
+
+  function applyValidationResult(result: ValidationResult) {
+    const activeWorkspace = workspaceRef.current;
+    const records = Object.values(activeWorkspace?.filesByPath ?? {});
+    const changeStatuses = activeWorkspace?.changeStatuses ?? [];
+    const indexed = indexOpenSpecWorkspace({ files: records, changeStatuses });
+    const nextWorkspace = buildWorkspaceView(indexed, records, result, changeStatuses);
+
+    workspaceRef.current = nextWorkspace;
+    setWorkspace(nextWorkspace);
   }
 
   async function loadGitStatus(repoPath: string, options: { quiet?: boolean } = {}) {
@@ -2631,14 +2663,10 @@ function activeChangeToView(
     validation,
     validationIssueCount: blockingValidationIssues.length,
   });
-  const validationClean = isCurrentCleanValidation(validation);
   const archiveReady = Boolean(
     taskProgress &&
       taskProgress.total > 0 &&
-      taskProgress.done === taskProgress.total &&
-      missingArtifacts.length === 0 &&
-      validationClean &&
-      blockingValidationIssues.length === 0,
+      taskProgress.done === taskProgress.total,
   );
 
   const record: ChangeRecord = {
@@ -2659,8 +2687,8 @@ function activeChangeToView(
     archiveReadiness: {
       ready: archiveReady,
       reasons: archiveReady
-        ? ["All required change files are present and current validation is clean."]
-        : readinessReasons(taskProgress, missingArtifacts, validation, blockingValidationIssues),
+        ? ["All tasks are complete. Archive will run validation before changing files."]
+        : readinessReasons(taskProgress),
     },
     searchText: "",
   };
@@ -2905,16 +2933,19 @@ function matchesSpecFilters(spec: SpecRecord, query: string): boolean {
   );
 }
 
-function isCurrentCleanValidation(validation: ValidationResult | null): boolean {
-  return Boolean(
-    validation &&
-      validation.state === "pass" &&
-      validation.diagnostics.length === 0,
-  );
-}
-
 function isBlockingValidationIssue(issue: ValidationIssue): boolean {
   return issue.severity === "error";
+}
+
+function canArchiveAfterValidation(validation: ValidationResult): boolean {
+  return validation.state === "pass" && validation.diagnostics.length === 0;
+}
+
+function archiveValidationFailureMessage(validation: ValidationResult): string {
+  return (
+    validation.diagnostics[0]?.message ??
+    "Validation must pass before archiving. Review the validation tab for details."
+  );
 }
 
 function specHealthFromValidation(
@@ -2936,12 +2967,7 @@ function specHealthFromValidation(
   return "valid";
 }
 
-function readinessReasons(
-  taskProgress: TaskProgress | null,
-  missingArtifacts: Artifact[],
-  validation: ValidationResult | null,
-  blockingValidationIssues: ValidationIssue[],
-): string[] {
+function readinessReasons(taskProgress: TaskProgress | null): string[] {
   const reasons: string[] = [];
 
   if (!taskProgress) {
@@ -2950,25 +2976,7 @@ function readinessReasons(
     reasons.push(taskProgress.total - taskProgress.done + " tasks remain open.");
   }
 
-  if (missingArtifacts.length > 0) {
-    reasons.push("Missing files: " + missingArtifacts.map((artifact) => artifact.label).join(", ") + ".");
-  }
-
-  if (!validation) {
-    reasons.push("Run validation before archiving.");
-  } else if (validation.state === "stale") {
-    reasons.push("Validation is outdated for the current files.");
-  } else if (validation.diagnostics.length > 0) {
-    reasons.push("Validation diagnostics need attention.");
-  } else if (validation.state !== "pass") {
-    reasons.push("Validation must pass before archiving.");
-  }
-
-  if (blockingValidationIssues.length > 0) {
-    reasons.push(blockingValidationIssues.length + " linked validation errors need attention.");
-  }
-
-  return reasons.length > 0 ? reasons : ["Refresh validation to confirm archive readiness."];
+  return reasons.length > 0 ? reasons : ["Complete all tasks to make this change archive-ready."];
 }
 
 function confirmArchiveChanges(changeNames: string[]): boolean {

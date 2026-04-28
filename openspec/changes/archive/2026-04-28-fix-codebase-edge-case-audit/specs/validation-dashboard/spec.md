@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Validation output reflects real OpenSpec results
 The application SHALL parse OpenSpec validation JSON using OpenSpec's canonical issue fields, including `level`, and SHALL preserve warning and informational issues without treating them as errors.

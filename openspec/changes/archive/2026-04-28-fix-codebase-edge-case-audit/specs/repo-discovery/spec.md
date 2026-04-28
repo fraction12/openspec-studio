@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Search state is scoped to its data surface
 The application SHALL avoid silently applying a search query from one primary data surface to another unrelated data surface.

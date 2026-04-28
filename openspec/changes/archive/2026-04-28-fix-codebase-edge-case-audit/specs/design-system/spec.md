@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Interactive controls expose honest semantics
 The UI SHALL use ARIA roles only when it implements the corresponding keyboard and relationship model.

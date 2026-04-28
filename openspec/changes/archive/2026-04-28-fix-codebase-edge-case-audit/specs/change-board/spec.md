@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Archive readiness requires trusted validation
 The application SHALL only place an active change in the archive-ready phase when required artifacts exist, tasks are complete, validation is current and passing for the same file snapshot, no validation diagnostics are present, and no linked blocking issues remain.

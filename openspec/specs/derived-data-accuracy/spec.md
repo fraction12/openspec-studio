@@ -61,3 +61,26 @@ The system SHALL include regression coverage for the source-of-truth behaviors t
 #### Scenario: Hardcoded data path is tested or structurally isolated
 - **WHEN** tests or static checks inspect the production desktop loading path
 - **THEN** they verify it does not use hardcoded OpenSpec sample records as real repository data
+
+### Requirement: Derived Data Audit Coverage
+The audit SHALL inspect all derived OpenSpec data paths for hard-coded assumptions, stale state, missing-file handling, malformed artifact handling, and incorrect health/status computation.
+
+#### Scenario: Reviewer records derived-data findings
+- **WHEN** a reviewer identifies a derived-data issue
+- **THEN** they SHALL record the issue with the source file, observed behavior, expected behavior, and recommended correction.
+
+### Requirement: Derived OpenSpec records use normalized paths consistently
+The application SHALL use the same normalized path representation for indexing, content lookup, search, previews, and view-model derivation.
+
+#### Scenario: Normalizable file paths include content
+- **WHEN** file records contain leading `./`, backslashes, duplicate slashes, or leading slashes
+- **THEN** indexed artifacts SHALL still resolve their source content.
+
+### Requirement: Malformed root files do not create phantom changes
+The application SHALL only create a change row from a real change directory or files nested beneath `openspec/changes/<change-name>/`.
+
+#### Scenario: Root file under changes directory
+- **WHEN** `openspec/changes/README.md` or `.keep` exists
+- **THEN** Studio SHALL NOT create a change named `README.md` or `.keep`
+- **AND** SHALL NOT request status for that phantom name.
+

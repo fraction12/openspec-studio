@@ -113,7 +113,40 @@ describe("archived change view model", () => {
 });
 
 describe("active archive readiness view model", () => {
-  it("allows archive-ready changes only when validation is current and clean of blocking issues", () => {
+  it("uses complete tasks for archive-ready placement without requiring current validation", () => {
+    const workspace = buildWorkspaceView(
+      indexOpenSpecWorkspace({
+        files: activeWorkspaceFiles(),
+        changeStatuses: [
+          {
+            changeName: "ready-flow",
+            isComplete: true,
+            artifacts: [
+              { id: "proposal", status: "done" },
+              { id: "design", status: "done" },
+              { id: "tasks", status: "done" },
+            ],
+          },
+        ],
+      }),
+      activeWorkspaceFiles(),
+      null,
+      [],
+    );
+
+    const readyChange = workspace.changes.find((change) => change.name === "ready-flow");
+
+    expect(readyChange).toMatchObject({
+      phase: "archive-ready",
+      health: "stale",
+      archiveReadiness: {
+        ready: true,
+        reasons: ["All tasks are complete. Archive will run validation before changing files."],
+      },
+    });
+  });
+
+  it("keeps warning-only validation non-blocking in archive-ready rows", () => {
     const validation: ValidationResult = {
       state: "pass",
       validatedAt: "2026-04-27T12:00:00.000Z",
@@ -161,7 +194,7 @@ describe("active archive readiness view model", () => {
     expect(readyChange?.validationIssues).toHaveLength(1);
   });
 
-  it("keeps changes and specs conservative when validation failed without linked issues", () => {
+  it("keeps trust conservative when validation failed without removing task-complete archive readiness", () => {
     const validation: ValidationResult = {
       state: "fail",
       validatedAt: "2026-04-27T12:00:00.000Z",
@@ -194,9 +227,9 @@ describe("active archive readiness view model", () => {
     const change = workspace.changes.find((candidate) => candidate.name === "ready-flow");
     const spec = workspace.specs.find((candidate) => candidate.capability === "change-board");
 
-    expect(change?.phase).toBe("active");
-    expect(change?.archiveReadiness).toMatchObject({ ready: false });
-    expect(change?.archiveReadiness.reasons).toContain("Validation must pass before archiving.");
+    expect(change?.phase).toBe("archive-ready");
+    expect(change?.archiveReadiness).toMatchObject({ ready: true });
+    expect(change?.health).toBe("stale");
     expect(spec?.health).toBe("invalid");
   });
 });

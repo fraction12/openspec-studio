@@ -88,3 +88,11 @@ The system SHALL prioritize repository names and native actions while keeping fu
 #### Scenario: User needs the repository in Finder
 - **WHEN** the user requests a filesystem action for the active repository
 - **THEN** the app can reveal the repository folder in the operating system file manager
+
+### Requirement: Search state is scoped to its data surface
+The application SHALL avoid silently applying a search query from one primary data surface to another unrelated data surface.
+
+#### Scenario: User switches between Changes and Specs
+- **WHEN** the user searches Changes and then switches to Specs
+- **THEN** the Specs view SHALL NOT appear empty solely because of the hidden Changes query.
+

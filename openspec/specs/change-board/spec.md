@@ -221,3 +221,61 @@ The system SHALL use factual, action-oriented empty states that match OpenSpec's
 - **THEN** the empty state explains the current condition in concise language
 - **AND** it offers the next practical action when one exists
 - **AND** it avoids promotional or decorative copy
+
+### Requirement: Change Board Audit Coverage
+The audit SHALL inspect the change-board implementation for selection, filtering, table behavior, archive actions, trust labels, derived row state, and viewport edge cases.
+
+#### Scenario: Reviewer records concrete change-board findings
+- **WHEN** a reviewer identifies a change-board issue
+- **THEN** they SHALL record the finding under `openspec/changes/audit-codebase-edge-cases/reviews/`
+- **AND** the finding SHALL include severity, file references, evidence, and a recommended fix.
+
+### Requirement: Archive readiness derives from task completion
+The application SHALL place an active change in the archive-ready phase when its indexed task list is complete.
+
+#### Scenario: Completed tasks appear in archive ready
+- **WHEN** a change has a task list with all tasks checked
+- **THEN** Studio SHALL show the change on the Archive ready board
+- **AND** validation freshness SHALL NOT be required for the change to appear there.
+
+### Requirement: Archive actions validate before mutation
+The application SHALL run OpenSpec validation immediately before archiving a change or bulk set of changes.
+
+#### Scenario: Archive button is pressed
+- **WHEN** the user presses Archive for an archive-ready change
+- **THEN** Studio SHALL run validation for the selected repository
+- **AND** Studio SHALL only invoke the archive command if validation passes without command or parse diagnostics.
+
+#### Scenario: Validation fails before archive
+- **WHEN** validation fails during the archive action
+- **THEN** Studio SHALL NOT archive the change
+- **AND** Studio SHALL show the validation failure.
+
+### Requirement: Archive readiness requires trusted validation
+The application SHALL only place an active change in the archive-ready phase when required artifacts exist, tasks are complete, validation is current and passing for the same file snapshot, no validation diagnostics are present, and no linked blocking issues remain.
+
+#### Scenario: Completed tasks without validation stay active
+- **WHEN** a change has complete tasks and all required files
+- **AND** validation has not run or is stale
+- **THEN** the change SHALL remain active
+- **AND** archive readiness SHALL explain that validation must be run.
+
+### Requirement: Archive actions are guarded mutations
+The application SHALL prevent duplicate archive submissions and SHALL confirm bulk archive operations before mutating files.
+
+#### Scenario: Archive is already running
+- **WHEN** an archive operation is in progress
+- **THEN** row archive and bulk archive controls SHALL be disabled
+- **AND** duplicate invocations SHALL be ignored.
+
+#### Scenario: Bulk archive partially succeeds
+- **WHEN** one or more changes archive successfully and a later archive fails
+- **THEN** Studio SHALL refresh repository data before reporting the partial failure.
+
+### Requirement: Shared board tables are accessible and consistent
+Board tables SHALL preserve full-row pointer selection while exposing valid keyboard and assistive-technology semantics.
+
+#### Scenario: Keyboard user selects rows
+- **WHEN** focus is inside a board table
+- **THEN** keyboard users SHALL be able to move between rows and select a row without tabbing through every row.
+

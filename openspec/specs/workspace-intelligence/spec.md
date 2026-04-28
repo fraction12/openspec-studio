@@ -165,3 +165,11 @@ The system SHALL show the selected spec source text in the side panel using the 
 - **WHEN** the selected spec source text cannot be loaded
 - **THEN** the spec inspector shows a clear empty preview state
 - **AND** it preserves available metadata and file actions
+
+### Requirement: Tooling measures production derivation paths
+Performance tooling SHALL measure the production workspace indexing and view-model derivation paths, not only filesystem scan and file read time.
+
+#### Scenario: Performance measurement runs
+- **WHEN** the performance measurement script completes
+- **THEN** it SHALL report scan/read timing, production indexing timing, derived model timing where available, and derived active/archive/spec counts.
+

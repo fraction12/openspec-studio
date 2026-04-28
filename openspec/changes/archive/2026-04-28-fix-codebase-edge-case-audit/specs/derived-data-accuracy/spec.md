@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Derived OpenSpec records use normalized paths consistently
 The application SHALL use the same normalized path representation for indexing, content lookup, search, previews, and view-model derivation.
