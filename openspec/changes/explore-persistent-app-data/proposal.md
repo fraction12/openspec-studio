@@ -1,30 +1,38 @@
 ## Why
 
-The app currently derives most state from live OpenSpec files, which is correct for source truth, but some operational state is useful across launches. Last validation snapshots, remembered repository metadata, and future settings need a persistence strategy that does not confuse cached app data with OpenSpec source data.
+OpenSpec Studio currently derives project truth from live OpenSpec files, which is correct, but the app still needs a small amount of convenience memory to feel like a real desktop tool. Recent repositories, last selected repo, table preferences, selection state, and validation snapshots should survive restarts without becoming a second source of truth.
 
 ## What Changes
 
-- Explore a lightweight local persistence layer for non-source-of-truth app data.
-- Define what may be cached, how it expires, and how the UI communicates stale persisted data.
-- Include future settings data in the persistence model without deciding the settings page scope yet.
+- Add a lightweight local persistence layer for app-owned convenience state.
+- Persist recent repositories and reopen the last selected repo when it still exists.
+- Persist per-repo UI state such as selected change/spec and table sort direction.
+- Persist validation snapshots only with a file fingerprint/signature so cached validation can be shown as current only when the repository has not changed.
+- Store app preferences needed for the current inspection-window experience, while keeping broader settings-page scope separate.
+- Make all persisted derived state disposable and rebuildable from OpenSpec files plus CLI output.
 
 ## Capabilities
 
 ### New Capabilities
-- `local-app-persistence`: Durable app-local storage for repository metadata, validation snapshots, settings, and UI preferences.
+- `local-app-persistence`: App-local convenience persistence for recent repos, selected repo, per-repo UI state, preferences, and fingerprinted validation snapshots.
 
 ### Modified Capabilities
+- `local-desktop-shell`: Launch and repo-selection behavior should use persisted recent/last repo state.
+- `change-board`: Table sort and selected change/spec state may be restored from app-local persistence.
+- `validation-dashboard`: Cached validation snapshots may be restored only with staleness/fingerprint checks.
 
 ## Impact
 
-- No implementation yet.
-- Needs product and technical exploration before specs/design/tasks are finalized.
-- Must preserve OpenSpec files as source of truth and avoid showing cached data as current facts.
+- Tauri-side storage bridge or store plugin integration.
+- Frontend app model for serializing/deserializing safe app state.
+- Repo fingerprinting/file-signature logic reused or extended from existing OpenSpec file signatures.
+- UI copy for stale validation snapshots and missing/moved repositories.
+- Tests for persistence shape migration, path validation, stale validation behavior, and corrupted-store recovery.
 
-## Open Questions
+## Non-Goals
 
-- What data should persist: last validation result, last validation time, recent repos, selected repo, table sort, dismissed issues, settings?
-- Should data be stored with Tauri store, local files, SQLite, or another native mechanism?
-- How should repo identity be keyed when paths move or names collide?
-- What is the expiration/staleness model for validation snapshots?
-- How does persistence interact with future settings and privacy expectations?
+- Do not copy or persist OpenSpec artifacts as canonical data.
+- Do not persist task completion, archive readiness, or validation health as truth without checking the current file signature.
+- Do not introduce SQLite/search index storage yet.
+- Do not build a full settings page as part of this change.
+- Do not require persistence for the app to function; it should fail open with fresh derived state if persistence is unavailable or corrupt.
