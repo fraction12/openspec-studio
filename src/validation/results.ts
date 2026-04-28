@@ -1,6 +1,6 @@
 export type ValidationState = "pass" | "fail" | "stale";
 
-export type ValidationSeverity = "error" | "warning";
+export type ValidationSeverity = "error" | "warning" | "info";
 
 export type ValidationAssociation =
   | {
@@ -114,9 +114,9 @@ export function parseValidationResult(
     return createUnrecognizedResult(raw, options);
   }
 
-  const issues = items
-    ? parseItemIssues(items, options)
-    : parseRootIssues(raw, options);
+  const itemIssues = items ? parseItemIssues(items, options) : [];
+  const rootIssues = parseRootIssues(raw, options, itemIssues.length);
+  const issues = items ? [...itemIssues, ...rootIssues] : rootIssues;
   const derivedSummary =
     summary ?? deriveSummary(items, rootValid, issues.length > 0);
   const state = deriveState(derivedSummary, issues, rootValid);
@@ -274,11 +274,12 @@ function parseItemIssues(
 function parseRootIssues(
   raw: Record<string, unknown>,
   options: ParseValidationOptions,
+  indexOffset = 0,
 ): ValidationIssue[] {
   const rawIssues = Array.isArray(raw.issues) ? raw.issues : [];
 
   return rawIssues.map((issue, index) =>
-    normalizeIssue(issue, index + 1, { repoPath: options.repoPath }),
+    normalizeIssue(issue, indexOffset + index + 1, { repoPath: options.repoPath }),
   );
 }
 
@@ -309,7 +310,9 @@ function normalizeIssue(
   return {
     id: `issue-${index}`,
     message,
-    severity: normalizeSeverity(readString(issue.severity)),
+    severity: normalizeSeverity(
+      readString(issue.level) ?? readString(issue.severity),
+    ),
     code: readString(issue.code),
     path,
     associations: inferAssociations(issueContext),
@@ -479,7 +482,17 @@ function readBoolean(value: unknown): boolean | undefined {
 }
 
 function normalizeSeverity(value: string | undefined): ValidationSeverity {
-  return value === "warning" ? "warning" : "error";
+  const normalized = value?.trim().toLowerCase();
+
+  if (normalized === "warning" || normalized === "warn") {
+    return "warning";
+  }
+
+  if (normalized === "info" || normalized === "information") {
+    return "info";
+  }
+
+  return "error";
 }
 
 function normalizeDate(value: Date | string | undefined): string | null {

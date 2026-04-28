@@ -4,18 +4,21 @@ use std::{
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
         Arc,
     },
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
 };
+use tauri_plugin_dialog::DialogExt;
 
-const ALLOWED_OPENSPEC_COMMANDS: &[&str] = &["list", "show", "status", "validate"];
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
+const COMMAND_TERMINATION_GRACE: Duration = Duration::from_millis(200);
+const OUTPUT_READER_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 const STANDARD_COMMAND_DIRS: &[&str] = &[
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -101,6 +104,9 @@ pub enum BridgeError {
         stream: String,
         max_bytes: usize,
     },
+    CommandOutputReadTimedOut {
+        program: String,
+    },
     PathOutsideOpenSpec {
         path: String,
     },
@@ -119,6 +125,7 @@ impl BridgeError {
             Self::CommandStartFailed { .. } => "command_start_failed",
             Self::CommandTimedOut { .. } => "command_timeout",
             Self::CommandOutputExceeded { .. } => "command_output_too_large",
+            Self::CommandOutputReadTimedOut { .. } => "command_output_read_timeout",
             Self::PathOutsideOpenSpec { .. } => "path_outside_openspec",
             Self::Io { .. } => "io_error",
         }
@@ -147,6 +154,10 @@ impl BridgeError {
             } => format!(
                 "Command '{}' exceeded the {} output limit of {} bytes",
                 program, stream, max_bytes
+            ),
+            Self::CommandOutputReadTimedOut { program } => format!(
+                "Command '{}' exited but output readers did not finish",
+                program
             ),
             Self::PathOutsideOpenSpec { path } => {
                 format!(
@@ -336,43 +347,25 @@ pub async fn validate_repo(repo_path: String) -> Result<RepositoryValidation, Br
 }
 
 #[tauri::command]
-pub async fn pick_repository_folder() -> Result<Option<String>, BridgeErrorDto> {
-    #[cfg(target_os = "macos")]
-    {
-        run_bridge_task(pick_repository_folder_impl).await
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(None)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn pick_repository_folder_impl() -> Result<Option<String>, BridgeError> {
-    let script = r#"set selectedFolder to choose folder with prompt "Choose an OpenSpec repository folder"
-POSIX path of selectedFolder"#;
-    let output = run_command_with_fallbacks(
-        Path::new("/"),
-        "/usr/bin/osascript",
-        &["-e".to_string(), script.to_string()],
-        CommandExecutionOptions::default(),
-    )?;
-
-    if output.success {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok((!path.is_empty()).then_some(path));
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("User canceled") || output.status_code == Some(1) {
-        return Ok(None);
-    }
-
-    Err(BridgeError::CommandStartFailed {
-        program: "osascript".to_string(),
-        message: stderr.trim().to_string(),
+pub async fn pick_repository_folder(
+    app: tauri::AppHandle,
+) -> Result<Option<String>, BridgeErrorDto> {
+    run_bridge_task(move || {
+        app.dialog()
+            .file()
+            .blocking_pick_folder()
+            .map(|folder| {
+                folder
+                    .into_path()
+                    .map(|path| path_to_string(&path))
+                    .map_err(|error| BridgeError::Io {
+                        path: "selected folder".to_string(),
+                        message: error.to_string(),
+                    })
+            })
+            .transpose()
     })
+    .await
 }
 
 #[tauri::command]
@@ -452,22 +445,28 @@ where
 }
 
 fn validate_openspec_args(args: &[String]) -> Result<(), BridgeError> {
-    let Some(command) = args.first() else {
-        return Err(BridgeError::InvalidCommand {
-            reason: "expected an openspec subcommand".to_string(),
-        });
-    };
-
-    if !ALLOWED_OPENSPEC_COMMANDS.contains(&command.as_str()) {
-        return Err(BridgeError::InvalidCommand {
-            reason: format!("unsupported subcommand '{}'", command),
-        });
+    match args {
+        [command, all, json] if command == "validate" && all == "--all" && json == "--json" => {
+            Ok(())
+        }
+        [command, change_flag, change_name, json]
+            if command == "status" && change_flag == "--change" && json == "--json" =>
+        {
+            validate_change_name(change_name)
+        }
+        _ => Err(BridgeError::InvalidCommand {
+            reason: "unsupported openspec command shape".to_string(),
+        }),
     }
-
-    Ok(())
 }
 
 fn validate_archive_change_name(change_name: &str) -> Result<(), BridgeError> {
+    validate_change_name(change_name).map_err(|_| BridgeError::InvalidCommand {
+        reason: format!("invalid archive change name '{}'", change_name),
+    })
+}
+
+fn validate_change_name(change_name: &str) -> Result<(), BridgeError> {
     let trimmed = change_name.trim();
 
     if trimmed.is_empty() {
@@ -485,7 +484,7 @@ fn validate_archive_change_name(change_name: &str) -> Result<(), BridgeError> {
         || trimmed.starts_with('-')
     {
         return Err(BridgeError::InvalidCommand {
-            reason: format!("invalid archive change name '{}'", change_name),
+            reason: format!("invalid change name '{}'", change_name),
         });
     }
 
@@ -589,6 +588,8 @@ fn run_command_with_fallbacks(
             command.env("PATH", path);
         }
 
+        prepare_command_for_tree_termination(&mut command);
+
         match run_bounded_command(command, program, options) {
             Ok(Ok(output)) => return Ok(output),
             Ok(Err(error)) => return Err(error),
@@ -617,22 +618,22 @@ fn run_bounded_command(
     options: CommandExecutionOptions,
 ) -> Result<Result<BoundedCommandOutput, BridgeError>, io::Error> {
     let mut child = command.spawn()?;
+    let child_id = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_overflow = Arc::new(AtomicBool::new(false));
     let stderr_overflow = Arc::new(AtomicBool::new(false));
-    let stdout_handle = stdout
+    let mut stdout_handle = stdout
         .map(|reader| read_bounded(reader, options.max_output_bytes, stdout_overflow.clone()));
-    let stderr_handle = stderr
+    let mut stderr_handle = stderr
         .map(|reader| read_bounded(reader, options.max_output_bytes, stderr_overflow.clone()));
     let start = Instant::now();
 
     let status = loop {
         if stdout_overflow.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_output(stdout_handle);
-            let _ = join_output(stderr_handle);
+            terminate_child_tree(&mut child, child_id);
+            let _ = receive_output(stdout_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT);
+            let _ = receive_output(stderr_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT);
             return Ok(Err(BridgeError::CommandOutputExceeded {
                 program: program.to_string(),
                 stream: "stdout".to_string(),
@@ -641,10 +642,9 @@ fn run_bounded_command(
         }
 
         if stderr_overflow.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_output(stdout_handle);
-            let _ = join_output(stderr_handle);
+            terminate_child_tree(&mut child, child_id);
+            let _ = receive_output(stdout_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT);
+            let _ = receive_output(stderr_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT);
             return Ok(Err(BridgeError::CommandOutputExceeded {
                 program: program.to_string(),
                 stream: "stderr".to_string(),
@@ -653,10 +653,9 @@ fn run_bounded_command(
         }
 
         if start.elapsed() >= options.timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_output(stdout_handle);
-            let _ = join_output(stderr_handle);
+            terminate_child_tree(&mut child, child_id);
+            let _ = receive_output(stdout_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT);
+            let _ = receive_output(stderr_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT);
             return Ok(Err(BridgeError::CommandTimedOut {
                 program: program.to_string(),
                 timeout_ms: options.timeout.as_millis(),
@@ -670,12 +669,26 @@ fn run_bounded_command(
         thread::sleep(Duration::from_millis(10));
     };
 
-    let stdout = match join_output(stdout_handle) {
+    terminate_process_group_gracefully(child_id);
+
+    let stdout = match receive_output(stdout_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT) {
         Ok(stdout) => stdout,
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            terminate_process_group_forcefully(child_id);
+            return Ok(Err(BridgeError::CommandOutputReadTimedOut {
+                program: program.to_string(),
+            }));
+        }
         Err(error) => return Ok(Err(command_error(program, error))),
     };
-    let stderr = match join_output(stderr_handle) {
+    let stderr = match receive_output(stderr_handle.take(), OUTPUT_READER_DRAIN_TIMEOUT) {
         Ok(stderr) => stderr,
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            terminate_process_group_forcefully(child_id);
+            return Ok(Err(BridgeError::CommandOutputReadTimedOut {
+                program: program.to_string(),
+            }));
+        }
         Err(error) => return Ok(Err(command_error(program, error))),
     };
 
@@ -703,45 +716,117 @@ fn run_bounded_command(
     }))
 }
 
-fn read_bounded<R>(
-    mut reader: R,
-    max_bytes: usize,
-    overflow: Arc<AtomicBool>,
-) -> thread::JoinHandle<io::Result<Vec<u8>>>
+fn prepare_command_for_tree_termination(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        command.process_group(0);
+    }
+}
+
+fn terminate_child_tree(child: &mut Child, child_id: u32) {
+    terminate_process_group_gracefully(child_id);
+    let _ = child.kill();
+
+    if wait_child_for(child, COMMAND_TERMINATION_GRACE).is_some() {
+        return;
+    }
+
+    terminate_process_group_forcefully(child_id);
+    let _ = child.kill();
+    let _ = wait_child_for(child, COMMAND_TERMINATION_GRACE);
+}
+
+fn wait_child_for(child: &mut Child, timeout: Duration) -> Option<()> {
+    let start = Instant::now();
+
+    while start.elapsed() < timeout {
+        match child.try_wait() {
+            Ok(Some(_)) => return Some(()),
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(_) => return Some(()),
+        }
+    }
+
+    None
+}
+
+fn terminate_process_group_gracefully(child_id: u32) {
+    #[cfg(unix)]
+    terminate_process_group(child_id, libc::SIGTERM);
+}
+
+fn terminate_process_group_forcefully(child_id: u32) {
+    #[cfg(unix)]
+    terminate_process_group(child_id, libc::SIGKILL);
+}
+
+#[cfg(unix)]
+fn terminate_process_group(child_id: u32, signal: i32) {
+    unsafe {
+        libc::kill(-(child_id as libc::pid_t), signal);
+    }
+}
+
+fn read_bounded<R>(mut reader: R, max_bytes: usize, overflow: Arc<AtomicBool>) -> OutputReader
 where
     R: Read + Send + 'static,
 {
+    let (sender, receiver) = mpsc::channel();
+
     thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut buffer = [0u8; 8192];
+        let result: io::Result<Vec<u8>> = (|| {
+            let mut output = Vec::new();
+            let mut buffer = [0u8; 8192];
 
-        loop {
-            let bytes_read = reader.read(&mut buffer)?;
-            if bytes_read == 0 {
-                return Ok(output);
+            loop {
+                let bytes_read = reader.read(&mut buffer)?;
+                if bytes_read == 0 {
+                    return Ok(output);
+                }
+
+                let available = max_bytes.saturating_sub(output.len());
+                if bytes_read > available {
+                    output.extend_from_slice(&buffer[..available]);
+                    overflow.store(true, Ordering::SeqCst);
+                    return Ok(output);
+                }
+
+                output.extend_from_slice(&buffer[..bytes_read]);
             }
+        })();
 
-            let available = max_bytes.saturating_sub(output.len());
-            if bytes_read > available {
-                output.extend_from_slice(&buffer[..available]);
-                overflow.store(true, Ordering::SeqCst);
-                return Ok(output);
-            }
+        let _ = sender.send(result);
+    });
 
-            output.extend_from_slice(&buffer[..bytes_read]);
-        }
-    })
+    OutputReader { receiver }
 }
 
-fn join_output(handle: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+fn receive_output(handle: Option<OutputReader>, timeout: Duration) -> io::Result<Vec<u8>> {
     match handle {
-        Some(handle) => handle.join().unwrap_or_else(|_| {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "output reader panicked",
-            ))
-        }),
+        Some(handle) => handle.receive(timeout),
         None => Ok(Vec::new()),
+    }
+}
+
+struct OutputReader {
+    receiver: Receiver<io::Result<Vec<u8>>>,
+}
+
+impl OutputReader {
+    fn receive(self, timeout: Duration) -> io::Result<Vec<u8>> {
+        self.receiver.recv_timeout(timeout).unwrap_or_else(|error| {
+            Err(match error {
+                mpsc::RecvTimeoutError::Timeout => io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "output reader did not finish before timeout",
+                ),
+                mpsc::RecvTimeoutError::Disconnected => {
+                    io::Error::new(io::ErrorKind::Other, "output reader disconnected")
+                }
+            })
+        })
     }
 }
 
@@ -817,8 +902,8 @@ fn normalize_relative_path(path: &Path) -> String {
 fn parse_git_status_entries(output: &str) -> Vec<String> {
     output
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
         .map(ToOwned::to_owned)
         .collect()
 }
@@ -859,25 +944,44 @@ fn collect_openspec_files(
         })?;
         let file_type = symlink_metadata.file_type();
         let is_symlink = file_type.is_symlink();
+
+        if is_symlink {
+            let relative_path = path
+                .strip_prefix(canonical_repo)
+                .map(normalize_relative_path)
+                .unwrap_or_else(|_| path_to_string(&path));
+            let modified_time_ms = symlink_metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis());
+            let read_error = fs::metadata(&path).err().map(|error| error.to_string());
+
+            records.push(OpenSpecFileRecord {
+                path: relative_path,
+                kind: "symlink".to_string(),
+                modified_time_ms,
+                file_size: Some(symlink_metadata.len()),
+                content: None,
+                read_error,
+            });
+            continue;
+        }
+
         let canonical_path = canonicalize_path(&path)?;
 
         if !canonical_path.starts_with(openspec_root) {
             continue;
         }
 
-        let metadata = if is_symlink {
-            symlink_metadata
-        } else {
-            fs::metadata(&canonical_path).map_err(|error| BridgeError::Io {
-                path: path_to_string(&canonical_path),
-                message: error.to_string(),
-            })?
-        };
-        let record_path = if is_symlink { &path } else { &canonical_path };
-        let relative_path = record_path
+        let metadata = fs::metadata(&canonical_path).map_err(|error| BridgeError::Io {
+            path: path_to_string(&canonical_path),
+            message: error.to_string(),
+        })?;
+        let relative_path = canonical_path
             .strip_prefix(canonical_repo)
             .map(normalize_relative_path)
-            .unwrap_or_else(|_| path_to_string(record_path));
+            .unwrap_or_else(|_| path_to_string(&canonical_path));
         let modified_time_ms = metadata
             .modified()
             .ok()
@@ -885,16 +989,7 @@ fn collect_openspec_files(
             .map(|duration| duration.as_millis());
         let file_size = metadata.is_file().then_some(metadata.len());
 
-        if is_symlink {
-            records.push(OpenSpecFileRecord {
-                path: relative_path,
-                kind: "symlink".to_string(),
-                modified_time_ms,
-                file_size: Some(metadata.len()),
-                content: None,
-                read_error: None,
-            });
-        } else if metadata.is_dir() {
+        if metadata.is_dir() {
             records.push(OpenSpecFileRecord {
                 path: relative_path,
                 kind: "directory".to_string(),
@@ -945,9 +1040,10 @@ fn path_to_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
         path::PathBuf,
         process,
         time::{SystemTime, UNIX_EPOCH},
@@ -1109,6 +1205,63 @@ mod tests {
         cleanup(repo);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_fallbacks_times_out_descendant_stdio_without_hanging() {
+        let repo = temp_repo("command-timeout-tree", true);
+        let script = repo.join("slow-tree-command");
+        write_executable(&script, "#!/bin/sh\n(sleep 5) &\nwait\n");
+        let started = Instant::now();
+
+        let error = run_command_with_fallbacks(
+            &repo,
+            &path_to_string(&script),
+            &[],
+            CommandExecutionOptions {
+                timeout: Duration::from_millis(50),
+                max_output_bytes: DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+            },
+        )
+        .expect_err("command tree should time out");
+
+        assert!(matches!(error, BridgeError::CommandTimedOut { .. }));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout path should not wait for descendant sleep"
+        );
+
+        cleanup(repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_fallbacks_reaps_descendant_stdio_after_parent_exits() {
+        let repo = temp_repo("command-orphan-stdio", true);
+        let script = repo.join("orphan-stdio-command");
+        write_executable(&script, "#!/bin/sh\n(sleep 5) &\nprintf done\n");
+        let started = Instant::now();
+
+        let result = run_command_with_fallbacks(
+            &repo,
+            &path_to_string(&script),
+            &[],
+            CommandExecutionOptions {
+                timeout: Duration::from_secs(2),
+                max_output_bytes: DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+            },
+        )
+        .expect("command should return without waiting for descendant sleep");
+
+        assert!(result.success);
+        assert_eq!(String::from_utf8_lossy(&result.stdout), "done");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "successful command should not hang on descendant stdio"
+        );
+
+        cleanup(repo);
+    }
+
     #[test]
     fn command_candidates_include_standard_macos_install_paths() {
         let candidates = command_candidates("openspec");
@@ -1203,6 +1356,49 @@ mod tests {
                     Err(BridgeError::InvalidCommand { .. })
                 ),
                 "{change_name:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_openspec_args_accepts_product_command_shapes() {
+        validate_openspec_args(&["validate".into(), "--all".into(), "--json".into()])
+            .expect("validation command shape should be allowed");
+        validate_openspec_args(&[
+            "status".into(),
+            "--change".into(),
+            "improve-desktop-ux".into(),
+            "--json".into(),
+        ])
+        .expect("status command shape should be allowed");
+    }
+
+    #[test]
+    fn validate_openspec_args_rejects_extra_flags_and_unsafe_change_names() {
+        for args in [
+            vec!["validate".into(), "--all".into()],
+            vec![
+                "validate".into(),
+                "--all".into(),
+                "--json".into(),
+                "--watch".into(),
+            ],
+            vec!["status".into(), "--json".into()],
+            vec![
+                "status".into(),
+                "--change".into(),
+                "../demo".into(),
+                "--json".into(),
+            ],
+            vec!["list".into(), "--json".into()],
+            vec!["show".into(), "demo".into(), "--json".into()],
+        ] {
+            assert!(
+                matches!(
+                    validate_openspec_args(&args),
+                    Err(BridgeError::InvalidCommand { .. })
+                ),
+                "{args:?} should be rejected"
             );
         }
     }
@@ -1353,14 +1549,48 @@ mod tests {
         cleanup(repo);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn parse_git_status_entries_ignores_blank_lines() {
+    fn list_openspec_files_records_broken_and_external_symlinks() {
+        let repo = temp_repo("file-symlink-broken-external", true);
+        fs::write(repo.join("README.md"), "outside").expect("external target should be written");
+        std::os::unix::fs::symlink(
+            repo.join("openspec/missing.md"),
+            repo.join("openspec/broken-link"),
+        )
+        .expect("broken symlink should be created");
+        std::os::unix::fs::symlink(repo.join("README.md"), repo.join("openspec/external-link"))
+            .expect("external symlink should be created");
+
+        let records = list_openspec_files(&repo).expect("openspec files should be listed");
+        let broken = records
+            .iter()
+            .find(|record| record.path == "openspec/broken-link")
+            .expect("broken symlink should be recorded");
+        let external = records
+            .iter()
+            .find(|record| record.path == "openspec/external-link")
+            .expect("external symlink should be recorded");
+
+        assert_eq!(broken.kind, "symlink");
+        assert!(broken.read_error.is_some());
+        assert_eq!(external.kind, "symlink");
+        assert!(external.read_error.is_none());
+        assert!(!records
+            .iter()
+            .any(|record| record.path.starts_with("openspec/external-link/")));
+
+        cleanup(repo);
+    }
+
+    #[test]
+    fn parse_git_status_entries_preserves_porcelain_columns_and_ignores_blank_lines() {
         assert_eq!(
             parse_git_status_entries(
                 " M openspec/changes/demo/tasks.md\n\n?? openspec/specs/demo/spec.md\n"
             ),
             vec![
-                "M openspec/changes/demo/tasks.md".to_string(),
+                " M openspec/changes/demo/tasks.md".to_string(),
                 "?? openspec/specs/demo/spec.md".to_string(),
             ]
         );

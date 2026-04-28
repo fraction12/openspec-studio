@@ -197,14 +197,14 @@ function normalizeFileRecords(
   return records
     .map((record) => ({
       ...record,
-      path: normalizePath(record.path),
+      path: normalizeOpenSpecPath(record.path),
       kind: record.kind ?? "file",
     }))
     .filter((record) => record.path.length > 0)
     .sort((left, right) => compareStrings(left.path, right.path));
 }
 
-function normalizePath(path: string): string {
+export function normalizeOpenSpecPath(path: string): string {
   return path
     .replace(/\\/g, "/")
     .replace(/^\.\/+/, "")
@@ -264,7 +264,10 @@ function getChangeFileBucket(
   }
 
   if (parts[2] === "archive") {
-    return parts[3]
+    const isArchiveChangeRoot = parts.length === 4 && file.kind === "directory";
+    const isNestedArchiveChangeRecord = parts.length > 4;
+
+    return parts[3] && (isArchiveChangeRoot || isNestedArchiveChangeRecord)
       ? getOrCreateChangeBucket(
           archivedChanges,
           parts[3],
@@ -273,7 +276,10 @@ function getChangeFileBucket(
       : undefined;
   }
 
-  return parts[2]
+  const isChangeRoot = parts.length === 3 && file.kind === "directory";
+  const isNestedChangeRecord = parts.length > 3;
+
+  return parts[2] && (isChangeRoot || isNestedChangeRecord)
     ? getOrCreateChangeBucket(
         activeChanges,
         parts[2],

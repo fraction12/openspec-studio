@@ -412,6 +412,52 @@ describe("indexOpenSpecWorkspace", () => {
     ]);
     expect(index.archivedChanges[0]?.modifiedTimeMs).toBe(120);
   });
+
+  it("ignores root-level files under changes instead of creating phantom changes", () => {
+    const index = indexOpenSpecWorkspace({
+      files: [
+        file("openspec/changes/README.md", 100),
+        file("openspec/changes/.keep", 110),
+        file("openspec/changes/archive/README.md", 115),
+        file("openspec/changes/add-login/tasks.md", 120),
+        directory("openspec/changes/empty-change", 130),
+      ],
+    });
+
+    expect(index.activeChanges.map((change) => change.name)).toEqual([
+      "add-login",
+      "empty-change",
+    ]);
+    expect(index.archivedChanges).toEqual([]);
+  });
+
+  it("normalizes paths before indexing artifacts and content", () => {
+    const index = indexOpenSpecWorkspace({
+      files: [
+        file(
+          "./openspec\\changes//add-login///tasks.md",
+          120,
+          "- [x] Done",
+        ),
+        file("/openspec/specs//auth/spec.md", 130),
+      ],
+    });
+
+    expect(index.activeChanges[0]?.artifacts.tasks).toMatchObject({
+      exists: true,
+      path: "openspec/changes/add-login/tasks.md",
+    });
+    expect(index.activeChanges[0]?.taskProgress).toEqual({
+      available: true,
+      completed: 1,
+      total: 1,
+      sourceTrace: {
+        source: "markdown",
+        path: "openspec/changes/add-login/tasks.md",
+      },
+    });
+    expect(index.specs[0]?.path).toBe("openspec/specs/auth/spec.md");
+  });
 });
 
 function file(

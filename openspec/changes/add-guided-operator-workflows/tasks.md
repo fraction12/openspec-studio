@@ -1,6 +1,7 @@
 ## 1. Workflow Surface
 
-- [ ] Define guided propose/apply/archive entry points and disabled states.
+- [ ] Define guided propose/apply entry points and disabled states.
+- [ ] Identify any archive/validation confirmation or diagnostics refinements that build on the existing flows.
 - [ ] Add previews for generated or modified artifacts before write actions.
 - [ ] Add explicit confirmations for write operations.
 

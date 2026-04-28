@@ -1,7 +1,7 @@
 # validation-dashboard Specification
 
 ## Purpose
-TBD - created by archiving change build-local-desktop-companion. Update Purpose after archive.
+Define how OpenSpec Studio runs validation, parses and scopes validation output, communicates trust and freshness, and links actionable issues to repository, change, or spec records.
 ## Requirements
 ### Requirement: Validation execution
 The system SHALL allow the user to run OpenSpec validation for the selected repository.
@@ -81,4 +81,3 @@ The system SHALL avoid showing validation messages or actions that appear to app
 - **WHEN** the user selects a different change or spec
 - **THEN** validation detail areas update to messages linked to that record
 - **AND** repository-level diagnostics remain visually distinct from record-level validation issues
-

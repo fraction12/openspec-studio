@@ -1,7 +1,7 @@
 # design-system Specification
 
 ## Purpose
-TBD - created by archiving change refine-table-interactions-design-system. Update Purpose after archive.
+Define the shared visual language, tokens, typography, and interaction patterns that keep OpenSpec Studio's artifact-heavy desktop surfaces consistent, readable, and stable.
 ## Requirements
 ### Requirement: Tokenized visual foundation
 The system SHALL define reusable design tokens for visual decisions that are shared across OpenSpec Studio surfaces.
@@ -23,6 +23,12 @@ The system SHALL use shared tokens and styles for selectable table rows.
 - **WHEN** a table row can open detail content
 - **THEN** hover, focus, selected, and pointer states use shared row interaction tokens
 - **AND** these states do not shift row dimensions
+- **AND** base row geometry reserves any borders, padding, or focus affordances used by interaction states
+
+#### Scenario: Board tables share component behavior
+- **WHEN** multiple board views render source-backed artifact tables
+- **THEN** they share the same table component or table behavior layer
+- **AND** visual states, row limits, keyboard activation, scrolling, and optional resize affordances remain consistent across table contexts
 
 ### Requirement: OpenSpec-native visual language
 The system SHALL express a restrained, text-first visual language that feels native to OpenSpec.
@@ -40,6 +46,7 @@ The system SHALL define typography tokens and component styles that prioritize r
 - **WHEN** proposal, design, task, or spec content is previewed
 - **THEN** headings, paragraphs, lists, code, and paths use a consistent document reading scale
 - **AND** source paths and artifact labels remain visible without crowding the content
+- **AND** long artifact previews remain readable without creating competing vertical scroll traps
 
 #### Scenario: Code and delta content render
 - **WHEN** code blocks, tree output, CLI snippets, or spec deltas are shown
@@ -53,4 +60,3 @@ The system SHALL keep proposal-stage visual examples available before implementa
 - **WHEN** an OpenSpec change significantly alters app visual direction
 - **THEN** the change includes at least one static visual review artifact
 - **AND** the artifact demonstrates the intended hierarchy, surfaces, controls, table rows, and detail preview treatment
-

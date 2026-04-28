@@ -1,7 +1,7 @@
 # change-board Specification
 
 ## Purpose
-TBD - created by archiving change build-local-desktop-companion. Update Purpose after archive.
+Define how OpenSpec Studio presents active, archive-ready, and archived changes as source-backed work items with trustworthy status, task progress, selection, archive actions, and inspector drill-down.
 ## Requirements
 ### Requirement: Change board overview
 The system SHALL provide a visual overview of OpenSpec changes for the selected repository.
@@ -84,6 +84,7 @@ The system SHALL make selectable board rows visually and interactively clear.
 - **WHEN** a row can open detail content
 - **THEN** hover and focus states communicate row navigation without changing row dimensions
 - **AND** keyboard focus exposes the same selection behavior as pointer interaction
+- **AND** row styling avoids padding, border, or layout changes that cause visible content shifts
 
 ### Requirement: Board rows are fully selectable
 The system SHALL allow users to select changes by activating any selectable area of a change table row.
@@ -97,6 +98,11 @@ The system SHALL allow users to select changes by activating any selectable area
 - **WHEN** a selectable change row has keyboard focus and the user presses Enter or Space
 - **THEN** the app selects that change
 - **AND** the row exposes focus and selected states without changing layout dimensions
+
+#### Scenario: Board tables share row behavior
+- **WHEN** changes or specs are rendered in board tables
+- **THEN** both tables use the same row selection and keyboard activation behavior
+- **AND** page-specific cells and actions do not fork the underlying table interaction model
 
 ### Requirement: Board table status cells stay scan-focused
 The system SHALL keep change table status cells concise and avoid secondary text beneath pill badges.
@@ -149,11 +155,40 @@ The system SHALL present changes and specs as source-backed OpenSpec artifacts r
 - **WHEN** the board is narrower than the table's overview columns
 - **THEN** the table preserves change/spec name, trust, tasks, capabilities, updated time, and row actions when present
 - **AND** the table scrolls horizontally instead of hiding or partially clipping columns
+- **AND** compact shell breakpoints do not create hidden horizontal dead zones outside the table scroller
+
+#### Scenario: Shared table renderer is used
+- **WHEN** the app renders the Changes or Specs board
+- **THEN** both boards use a shared table renderer for common table structure, row limits, scrolling, and interaction behavior
+- **AND** each board still defines context-specific columns, labels, empty states, and actions
+
+#### Scenario: Specs table renders trust state
+- **WHEN** a spec row shows the `Check needed` trust pill
+- **THEN** the pill has the same visual padding and internal spacing as comparable trust pills elsewhere in the app
+- **AND** the label and status dot do not appear clipped or crowded
 
 #### Scenario: Row titles need truncation
 - **WHEN** a change or spec title is wider than its current table cell
 - **THEN** the title truncates with width-based ellipsis
 - **AND** resizing the change column reveals more of the title without relying on a fixed character cutoff
+
+### Requirement: Board interactions remain smooth at scale
+The system SHALL keep board search, selection, scrolling, and column resizing responsive as OpenSpec workspaces grow.
+
+#### Scenario: Many rows are visible
+- **WHEN** the active, archive-ready, archived, or specs table contains many rows
+- **THEN** the app avoids rendering or recalculating more row detail than needed for the visible interaction
+- **AND** selecting a row updates the inspector without jank
+
+#### Scenario: User searches rows
+- **WHEN** the user types into a change or spec search field
+- **THEN** filtering uses deferred or precomputed searchable text where needed
+- **AND** typing remains responsive while preserving accurate results derived from current OpenSpec data
+
+#### Scenario: User resizes the change column
+- **WHEN** the user drags the change-column resize handle
+- **THEN** width updates are throttled or applied through a lightweight visual path
+- **AND** the table does not re-render every row on every pointer movement
 
 ### Requirement: Inspector reinforces OpenSpec artifact hierarchy
 The system SHALL make the inspector feel like a focused review surface for OpenSpec artifacts.
@@ -186,4 +221,3 @@ The system SHALL use factual, action-oriented empty states that match OpenSpec's
 - **THEN** the empty state explains the current condition in concise language
 - **AND** it offers the next practical action when one exists
 - **AND** it avoids promotional or decorative copy
-

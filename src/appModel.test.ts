@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  activeChangeNamesFromFileRecords,
+  buildVirtualFilesByPath,
   buildOpenSpecFileSignature,
   decideRepositoryCandidateOpen,
   deriveChangeHealth,
@@ -44,6 +46,67 @@ describe("toVirtualFileRecords", () => {
         content: undefined,
       },
     ]);
+  });
+
+  it("normalizes paths before derived lookup helpers consume records", () => {
+    expect(
+      toVirtualFileRecords([
+        {
+          path: "./openspec\\changes//demo///tasks.md",
+          modified_time_ms: 42,
+          content: "- [x] Done",
+        },
+        {
+          path: "/openspec/specs/auth/spec.md",
+          modifiedTimeMs: 41,
+        },
+      ]),
+    ).toEqual([
+      {
+        path: "openspec/changes/demo/tasks.md",
+        kind: "file",
+        modifiedTimeMs: 42,
+        content: "- [x] Done",
+        fileSize: undefined,
+        readError: undefined,
+      },
+      {
+        path: "openspec/specs/auth/spec.md",
+        kind: "file",
+        modifiedTimeMs: 41,
+        content: undefined,
+        fileSize: undefined,
+        readError: undefined,
+      },
+    ]);
+  });
+});
+
+describe("buildVirtualFilesByPath", () => {
+  it("keys file records by normalized paths", () => {
+    const filesByPath = buildVirtualFilesByPath([
+      {
+        path: "./openspec\\specs//auth/spec.md",
+        content: "## Auth",
+      },
+    ]);
+
+    expect(filesByPath["openspec/specs/auth/spec.md"]?.content).toBe("## Auth");
+    expect(filesByPath["./openspec\\specs//auth/spec.md"]).toBeUndefined();
+  });
+});
+
+describe("activeChangeNamesFromFileRecords", () => {
+  it("ignores root-level non-change files under openspec changes", () => {
+    expect(
+      activeChangeNamesFromFileRecords([
+        { path: "openspec/changes/README.md", kind: "file" },
+        { path: "openspec/changes/.keep", kind: "file" },
+        { path: "openspec/changes/archive", kind: "directory" },
+        { path: "./openspec\\changes//add-login///tasks.md", kind: "file" },
+        { path: "openspec/changes/empty-change", kind: "directory" },
+      ]),
+    ).toEqual(["add-login", "empty-change"]);
   });
 });
 

@@ -1,10 +1,12 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import {
+  activeChangeNamesFromFileRecords,
+  buildVirtualFilesByPath,
   buildOpenSpecFileSignature,
   deriveChangeHealth,
   decideRepositoryCandidateOpen,
@@ -257,29 +259,35 @@ function App() {
   const [candidateError, setCandidateError] = useState<CandidateRepoError | null>(null);
   const [view, setView] = useState<BoardView>("changes");
   const [phase, setPhase] = useState<ChangePhase>("active");
-  const [query, setQuery] = useState("");
+  const [changesQuery, setChangesQuery] = useState("");
+  const [specsQuery, setSpecsQuery] = useState("");
   const [selectedChangeId, setSelectedChangeId] = useState("");
   const [selectedSpecId, setSelectedSpecId] = useState("");
   const [detailTab, setDetailTab] = useState<DetailTab>("proposal");
   const [artifactPreview, setArtifactPreview] = useState("");
   const [gitStatus, setGitStatus] = useState<OpenSpecGitStatus>(unknownGitStatus);
   const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [archiveBusy, setArchiveBusy] = useState(false);
   const [message, setMessage] = useState("Loading local workspace...");
   const repoLoadGenerationRef = useRef(0);
   const refreshGenerationRef = useRef(0);
   const gitStatusGenerationRef = useRef(0);
   const artifactPreviewGenerationRef = useRef(0);
   const validationGenerationRef = useRef(0);
+  const archiveInFlightRef = useRef(false);
+  const chooseRepositoryFolderRef = useRef<() => Promise<void>>(async () => undefined);
   const statusCacheRef = useRef<Map<string, StatusCacheEntry>>(new Map());
   const backgroundRefreshInFlightRef = useRef<Set<string>>(new Set());
   const workspaceRef = useRef<WorkspaceView | null>(workspace);
   const repoRef = useRef<RepositoryView | null>(repo);
   const gitStatusRef = useRef<OpenSpecGitStatus>(gitStatus);
-  const deferredQuery = useDeferredValue(query);
+  const deferredChangesQuery = useDeferredValue(changesQuery);
+  const deferredSpecsQuery = useDeferredValue(specsQuery);
 
   workspaceRef.current = workspace;
   repoRef.current = repo;
   gitStatusRef.current = gitStatus;
+  chooseRepositoryFolderRef.current = chooseRepositoryFolder;
 
   useEffect(() => {
     const lastRepoPath = recentRepos[0];
@@ -299,16 +307,25 @@ function App() {
       return;
     }
 
+    let disposed = false;
     let unlisten: (() => void) | undefined;
 
     void listen("open-repository-menu", () => {
-      void chooseRepositoryFolder();
+      void chooseRepositoryFolderRef.current();
     }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+
       unlisten = nextUnlisten;
     });
 
-    return () => unlisten?.();
-  }, [repo?.path, repoPathInput]);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!repo || repo.state !== "ready" || !workspace || !isTauriRuntime()) {
@@ -327,10 +344,10 @@ function App() {
   const selectedChange =
     changes.find(
       (change) =>
-        change.id === selectedChangeId && matchesChangeFilters(change, phase, deferredQuery),
+        change.id === selectedChangeId && matchesChangeFilters(change, phase, deferredChangesQuery),
     ) ?? null;
   const selectedSpec =
-    specs.find((spec) => spec.id === selectedSpecId && matchesSpecFilters(spec, deferredQuery)) ??
+    specs.find((spec) => spec.id === selectedSpecId && matchesSpecFilters(spec, deferredSpecsQuery)) ??
     null;
 
   useEffect(() => {
@@ -341,14 +358,14 @@ function App() {
     const nextSelectedChangeId = selectVisibleItemId(
       changes,
       selectedChangeId,
-      (change) => matchesChangeFilters(change, phase, deferredQuery),
+      (change) => matchesChangeFilters(change, phase, deferredChangesQuery),
     );
 
     if (nextSelectedChangeId !== selectedChangeId) {
       setSelectedChangeId(nextSelectedChangeId);
       setDetailTab("proposal");
     }
-  }, [changes, phase, deferredQuery, selectedChangeId, view]);
+  }, [changes, phase, deferredChangesQuery, selectedChangeId, view]);
 
   useEffect(() => {
     if (view !== "specs") {
@@ -356,13 +373,13 @@ function App() {
     }
 
     const nextSelectedSpecId = selectVisibleItemId(specs, selectedSpecId, (spec) =>
-      matchesSpecFilters(spec, deferredQuery),
+      matchesSpecFilters(spec, deferredSpecsQuery),
     );
 
     if (nextSelectedSpecId !== selectedSpecId) {
       setSelectedSpecId(nextSelectedSpecId);
     }
-  }, [deferredQuery, selectedSpecId, specs, view]);
+  }, [deferredSpecsQuery, selectedSpecId, specs, view]);
 
   useEffect(() => {
     if (!selectedChange) {
@@ -653,6 +670,11 @@ function App() {
   }
 
   async function archiveChange(changeName: string) {
+    if (archiveInFlightRef.current) {
+      setMessage("Archive already in progress.");
+      return;
+    }
+
     if (!repo || repo.state !== "ready") {
       setMessage("Choose a valid OpenSpec repository before archiving.");
       return;
@@ -663,21 +685,32 @@ function App() {
       return;
     }
 
+    archiveInFlightRef.current = true;
+    setArchiveBusy(true);
     setLoadState("loading");
     setMessage("Archiving " + changeName + "...");
+    const repoPath = repo.path;
 
     try {
-      await archiveOneChange(repo.path, changeName);
-      await loadRepository(repo.path);
+      await archiveOneChange(repoPath, changeName);
+      await loadRepository(repoPath);
       setPhase("archived");
       setMessage("Archived " + changeName + ".");
     } catch (error) {
       setLoadState("loaded");
       setMessage(errorMessage(error));
+    } finally {
+      archiveInFlightRef.current = false;
+      setArchiveBusy(false);
     }
   }
 
   async function archiveAllChanges(changeNames: string[]) {
+    if (archiveInFlightRef.current) {
+      setMessage("Archive already in progress.");
+      return;
+    }
+
     if (!repo || repo.state !== "ready") {
       setMessage("Choose a valid OpenSpec repository before archiving.");
       return;
@@ -693,19 +726,47 @@ function App() {
       return;
     }
 
+    const uniqueChangeNames = Array.from(new Set(changeNames));
+
+    if (!confirmArchiveChanges(uniqueChangeNames)) {
+      setMessage("Bulk archive canceled.");
+      return;
+    }
+
+    archiveInFlightRef.current = true;
+    setArchiveBusy(true);
     setLoadState("loading");
-    setMessage("Archiving " + changeNames.length + " changes...");
+    setMessage("Archiving " + uniqueChangeNames.length + " changes...");
+    const repoPath = repo.path;
+    let archivedCount = 0;
 
     try {
-      for (const changeName of changeNames) {
-        await archiveOneChange(repo.path, changeName);
+      for (const changeName of uniqueChangeNames) {
+        await archiveOneChange(repoPath, changeName);
+        archivedCount += 1;
       }
-      await loadRepository(repo.path);
+      await loadRepository(repoPath);
       setPhase("archived");
-      setMessage("Archived " + changeNames.length + " changes.");
+      setMessage("Archived " + uniqueChangeNames.length + " changes.");
     } catch (error) {
+      if (archivedCount > 0) {
+        await loadRepository(repoPath);
+        setPhase("archived");
+        setMessage(
+          "Archived " +
+            archivedCount +
+            " of " +
+            uniqueChangeNames.length +
+            " changes before failure: " +
+            errorMessage(error),
+        );
+      } else {
+        setMessage(errorMessage(error));
+      }
       setLoadState("loaded");
-      setMessage(errorMessage(error));
+    } finally {
+      archiveInFlightRef.current = false;
+      setArchiveBusy(false);
     }
   }
 
@@ -979,7 +1040,8 @@ function App() {
     setDetailTab("proposal");
     setView("changes");
     setPhase("active");
-    setQuery("");
+    setChangesQuery("");
+    setSpecsQuery("");
   }
 
   function keepSelectionInWorkspace(nextWorkspace: WorkspaceView) {
@@ -1016,14 +1078,18 @@ function App() {
         workspace={workspace}
         view={view}
         phase={phase}
-        query={query}
-        filterQuery={deferredQuery}
+        changesQuery={changesQuery}
+        specsQuery={specsQuery}
+        changesFilterQuery={deferredChangesQuery}
+        specsFilterQuery={deferredSpecsQuery}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
         loadState={loadState}
+        archiveBusy={archiveBusy}
         onViewChange={setView}
         onPhaseChange={setPhase}
-        onQueryChange={setQuery}
+        onChangesQueryChange={setChangesQuery}
+        onSpecsQueryChange={setSpecsQuery}
         onSelectChange={(changeId) => {
           setSelectedChangeId(changeId);
           setDetailTab("proposal");
@@ -1176,14 +1242,18 @@ function WorkspaceMain({
   workspace,
   view,
   phase,
-  query,
-  filterQuery,
+  changesQuery,
+  specsQuery,
+  changesFilterQuery,
+  specsFilterQuery,
   selectedChange,
   selectedSpec,
   loadState,
+  archiveBusy,
   onViewChange,
   onPhaseChange,
-  onQueryChange,
+  onChangesQueryChange,
+  onSpecsQueryChange,
   onSelectChange,
   onSelectSpec,
   onChooseFolder,
@@ -1196,14 +1266,18 @@ function WorkspaceMain({
   workspace: WorkspaceView | null;
   view: BoardView;
   phase: ChangePhase;
-  query: string;
-  filterQuery: string;
+  changesQuery: string;
+  specsQuery: string;
+  changesFilterQuery: string;
+  specsFilterQuery: string;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
   loadState: LoadState;
+  archiveBusy: boolean;
   onViewChange: (view: BoardView) => void;
   onPhaseChange: (phase: ChangePhase) => void;
-  onQueryChange: (query: string) => void;
+  onChangesQueryChange: (query: string) => void;
+  onSpecsQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
   onSelectSpec: (specId: string) => void;
   onChooseFolder: () => void;
@@ -1262,11 +1336,10 @@ function WorkspaceMain({
           <p>{repo.path}</p>
         </div>
         <div className="workspace-actions">
-          <div className="segmented" role="tablist" aria-label="Workspace view">
+          <div className="segmented" aria-label="Workspace view">
             <button
               type="button"
-              role="tab"
-              aria-selected={view === "changes"}
+              aria-pressed={view === "changes"}
               className={view === "changes" ? "is-active" : ""}
               onClick={() => onViewChange("changes")}
             >
@@ -1274,8 +1347,7 @@ function WorkspaceMain({
             </button>
             <button
               type="button"
-              role="tab"
-              aria-selected={view === "specs"}
+              aria-pressed={view === "specs"}
               className={view === "specs" ? "is-active" : ""}
               onClick={() => onViewChange("specs")}
             >
@@ -1295,11 +1367,12 @@ function WorkspaceMain({
         <ChangeBoard
           changes={workspace.changes}
           phase={phase}
-          query={query}
-          filterQuery={filterQuery}
+          query={changesQuery}
+          filterQuery={changesFilterQuery}
           selectedChange={selectedChange}
+          archiveBusy={archiveBusy}
           onPhaseChange={onPhaseChange}
-          onQueryChange={onQueryChange}
+          onQueryChange={onChangesQueryChange}
           onSelectChange={onSelectChange}
           onArchiveChange={onArchiveChange}
           onArchiveAll={onArchiveAll}
@@ -1308,9 +1381,9 @@ function WorkspaceMain({
         <SpecsBrowser
           specs={workspace.specs}
           selectedSpec={selectedSpec}
-          query={query}
-          filterQuery={filterQuery}
-          onQueryChange={onQueryChange}
+          query={specsQuery}
+          filterQuery={specsFilterQuery}
+          onQueryChange={onSpecsQueryChange}
           onSelectSpec={onSelectSpec}
         />
       )}
@@ -1324,6 +1397,7 @@ function ChangeBoard({
   query,
   filterQuery,
   selectedChange,
+  archiveBusy,
   onPhaseChange,
   onQueryChange,
   onSelectChange,
@@ -1335,6 +1409,7 @@ function ChangeBoard({
   query: string;
   filterQuery: string;
   selectedChange: ChangeRecord | null;
+  archiveBusy: boolean;
   onPhaseChange: (phase: ChangePhase) => void;
   onQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
@@ -1401,6 +1476,7 @@ function ChangeBoard({
           <button
             type="button"
             className="primary-outline table-action"
+            disabled={archiveBusy}
             onKeyDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();
@@ -1414,7 +1490,7 @@ function ChangeBoard({
     }
 
     return nextColumns;
-  }, [onArchiveChange, phase]);
+  }, [archiveBusy, onArchiveChange, phase]);
 
   return (
     <section className="board-panel artifact-board change-board" aria-label="Change board">
@@ -1437,9 +1513,10 @@ function ChangeBoard({
             <button
               type="button"
               className="primary-button"
+              disabled={archiveBusy}
               onClick={() => onArchiveAll(filteredChanges.map((change) => change.name))}
             >
-              Archive all
+              {archiveBusy ? "Archiving..." : "Archive all"}
             </button>
           ) : null}
           <SearchField label="Search changes" value={query} onChange={onQueryChange} />
@@ -1475,7 +1552,7 @@ function ChangeBoard({
             minWidth: 160,
             maxWidth: 560,
             ariaLabel: "Resize change column",
-            title: "Drag to resize change column",
+            title: "Drag or use arrow keys to resize change column",
           }}
         />
       )}
@@ -1575,7 +1652,7 @@ function SpecsBrowser({
             minWidth: 180,
             maxWidth: 640,
             ariaLabel: "Resize spec column",
-            title: "Drag to resize spec column",
+            title: "Drag or use arrow keys to resize spec column",
           }}
         />
       )}
@@ -1604,7 +1681,9 @@ function BoardTable<T extends { id: string }>({
 }) {
   const [rowLimit, setRowLimit] = useState(ROW_RENDER_BATCH_SIZE);
   const [resizedWidth, setResizedWidth] = useState(resize?.defaultWidth ?? 0);
+  const [focusRowId, setFocusRowId] = useState(selectedId || rows[0]?.id || "");
   const tableRef = useRef<HTMLTableElement | null>(null);
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
   const bounded = useMemo(
     () => boundedRows(rows, selectedId, rowLimit),
     [rowLimit, rows, selectedId],
@@ -1613,6 +1692,43 @@ function BoardTable<T extends { id: string }>({
   useEffect(() => {
     setRowLimit(ROW_RENDER_BATCH_SIZE);
   }, [resetKey]);
+
+  useEffect(() => {
+    if (selectedId && bounded.rows.some((row) => row.id === selectedId)) {
+      setFocusRowId(selectedId);
+      return;
+    }
+
+    if (!bounded.rows.some((row) => row.id === focusRowId)) {
+      setFocusRowId(bounded.rows[0]?.id ?? "");
+    }
+  }, [bounded.rows, focusRowId, selectedId]);
+
+  function focusTableRow(rowId: string) {
+    setFocusRowId(rowId);
+    window.requestAnimationFrame(() => rowRefs.current.get(rowId)?.focus());
+  }
+
+  function moveRowFocus(currentId: string, direction: "next" | "previous" | "first" | "last") {
+    if (bounded.rows.length === 0) {
+      return;
+    }
+
+    const currentIndex = bounded.rows.findIndex((row) => row.id === currentId);
+    let nextIndex = currentIndex >= 0 ? currentIndex : 0;
+
+    if (direction === "first") {
+      nextIndex = 0;
+    } else if (direction === "last") {
+      nextIndex = bounded.rows.length - 1;
+    } else if (direction === "next") {
+      nextIndex = Math.min(nextIndex + 1, bounded.rows.length - 1);
+    } else {
+      nextIndex = Math.max(nextIndex - 1, 0);
+    }
+
+    focusTableRow(bounded.rows[nextIndex].id);
+  }
 
   function startColumnResize(startX: number) {
     if (!resize) {
@@ -1653,19 +1769,56 @@ function BoardTable<T extends { id: string }>({
     window.addEventListener("mouseup", handleMouseUp);
   }
 
+  function updateColumnWidth(width: number) {
+    if (!resize) {
+      return;
+    }
+
+    const nextWidth = clampNumber(width, resize.minWidth, resize.maxWidth);
+    tableRef.current?.style.setProperty(resize.cssVariable, nextWidth + "px");
+    setResizedWidth(nextWidth);
+  }
+
   function resetColumnWidth() {
     if (!resize) {
       return;
     }
 
-    tableRef.current?.style.setProperty(resize.cssVariable, resize.resetWidth + "px");
-    setResizedWidth(resize.resetWidth);
+    updateColumnWidth(resize.resetWidth);
+  }
+
+  function handleResizeKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (!resize) {
+      return;
+    }
+
+    const step = event.shiftKey ? 40 : 16;
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      updateColumnWidth(resizedWidth - step);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      updateColumnWidth(resizedWidth + step);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      updateColumnWidth(resize.minWidth);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      updateColumnWidth(resize.maxWidth);
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      resetColumnWidth();
+    }
   }
 
   return (
     <div className="table-scroll">
       <table
         ref={tableRef}
+        role="grid"
+        aria-label={itemLabel + " table"}
+        aria-rowcount={rows.length}
         className={["change-table", tableClassName].filter(Boolean).join(" ")}
       >
         <colgroup>
@@ -1681,11 +1834,12 @@ function BoardTable<T extends { id: string }>({
             />
           ))}
         </colgroup>
-        <thead>
-          <tr>
+        <thead role="rowgroup">
+          <tr role="row">
             {columns.map((column) => (
               <th
                 key={column.id}
+                role="columnheader"
                 scope="col"
                 className={resize?.columnId === column.id ? "resizable-heading" : undefined}
               >
@@ -1694,7 +1848,12 @@ function BoardTable<T extends { id: string }>({
                   <button
                     type="button"
                     className="column-resize-handle"
+                    role="separator"
+                    aria-orientation="vertical"
                     aria-label={resize.ariaLabel}
+                    aria-valuemin={resize.minWidth}
+                    aria-valuemax={resize.maxWidth}
+                    aria-valuenow={resizedWidth}
                     title={resize.title}
                     onMouseDown={(event) => {
                       event.preventDefault();
@@ -1706,30 +1865,54 @@ function BoardTable<T extends { id: string }>({
                       event.stopPropagation();
                       resetColumnWidth();
                     }}
+                    onKeyDown={handleResizeKeyDown}
                   />
                 ) : null}
               </th>
             ))}
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {bounded.rows.map((row) => (
             <tr
               key={row.id}
-              role="button"
-              tabIndex={0}
+              ref={(element) => {
+                if (element) {
+                  rowRefs.current.set(row.id, element);
+                } else {
+                  rowRefs.current.delete(row.id);
+                }
+              }}
+              role="row"
+              tabIndex={focusRowId === row.id ? 0 : -1}
               aria-selected={selectedId === row.id}
               className={selectedId === row.id ? "is-selected" : ""}
-              onClick={() => onSelect(row.id)}
+              onClick={() => {
+                setFocusRowId(row.id);
+                onSelect(row.id);
+              }}
+              onFocus={() => setFocusRowId(row.id)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   onSelect(row.id);
+                } else if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  moveRowFocus(row.id, "next");
+                } else if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  moveRowFocus(row.id, "previous");
+                } else if (event.key === "Home") {
+                  event.preventDefault();
+                  moveRowFocus(row.id, "first");
+                } else if (event.key === "End") {
+                  event.preventDefault();
+                  moveRowFocus(row.id, "last");
                 }
               }}
             >
               {columns.map((column) => (
-                <td key={column.id} className={column.cellClassName}>
+                <td key={column.id} role="gridcell" className={column.cellClassName}>
                   {column.render(row)}
                 </td>
               ))}
@@ -1860,13 +2043,12 @@ function Inspector({
         </div>
       </div>
 
-      <div className="tabs artifact-tabs" role="tablist" aria-label="Change artifacts">
+      <div className="tabs artifact-tabs" aria-label="Change artifacts">
         {tabs.map((tab) => (
           <button
             type="button"
             key={tab.id}
-            role="tab"
-            aria-selected={selectedDetailTab === tab.id}
+            aria-pressed={selectedDetailTab === tab.id}
             className={selectedDetailTab === tab.id ? "is-active" : ""}
             onClick={() => onDetailTabChange(tab.id)}
           >
@@ -2395,14 +2577,14 @@ function StatusBand({
   );
 }
 
-function buildWorkspaceView(
+export function buildWorkspaceView(
   indexed: ReturnType<typeof indexOpenSpecWorkspace>,
   files: VirtualOpenSpecFileRecord[],
   validation: ValidationResult | null,
   changeStatuses: VirtualOpenSpecChangeStatusRecord[],
   fileSignature = buildOpenSpecFileSignature(files),
 ): WorkspaceView {
-  const filesByPath = Object.fromEntries(files.map((file) => [file.path, file]));
+  const filesByPath = buildVirtualFilesByPath(files);
   const validationIssueMaps = buildValidationIssueMaps(validation);
   const changes: ChangeRecord[] = [
     ...indexed.activeChanges.map((change) =>
@@ -2441,19 +2623,22 @@ function activeChangeToView(
   ];
   const taskProgress = taskProgressToView(change.taskProgress, filesByPath[change.artifacts.tasks.path]?.content);
   const validationIssues = validationIssueMaps.byChange.get(change.name) ?? [];
+  const blockingValidationIssues = validationIssues.filter(isBlockingValidationIssue);
   const missingArtifacts = artifacts.filter((artifact) => artifact.status === "missing");
   const health = deriveChangeHealth({
     workflowStatus: change.workflowStatus.status,
     missingArtifactCount: missingArtifacts.length,
     validation,
-    validationIssueCount: validationIssues.length,
+    validationIssueCount: blockingValidationIssues.length,
   });
+  const validationClean = isCurrentCleanValidation(validation);
   const archiveReady = Boolean(
     taskProgress &&
       taskProgress.total > 0 &&
       taskProgress.done === taskProgress.total &&
       missingArtifacts.length === 0 &&
-      validationIssues.length === 0,
+      validationClean &&
+      blockingValidationIssues.length === 0,
   );
 
   const record: ChangeRecord = {
@@ -2474,8 +2659,8 @@ function activeChangeToView(
     archiveReadiness: {
       ready: archiveReady,
       reasons: archiveReady
-        ? ["All required change files are present and no linked validation errors are present."]
-        : readinessReasons(taskProgress, missingArtifacts, validationIssues),
+        ? ["All required change files are present and current validation is clean."]
+        : readinessReasons(taskProgress, missingArtifacts, validation, blockingValidationIssues),
     },
     searchText: "",
   };
@@ -2556,14 +2741,7 @@ function specToView(
     id: spec.capability,
     capability: spec.capability,
     path: spec.path,
-    health:
-      validation?.state === "stale"
-        ? "stale"
-        : issues.length > 0
-          ? "invalid"
-          : validation
-            ? "valid"
-            : "stale",
+    health: specHealthFromValidation(validation, issues),
     requirements: countRequirements(content),
     updatedAt: formatTime(spec.modifiedTimeMs),
     modifiedTimeMs: spec.modifiedTimeMs ?? null,
@@ -2727,10 +2905,42 @@ function matchesSpecFilters(spec: SpecRecord, query: string): boolean {
   );
 }
 
+function isCurrentCleanValidation(validation: ValidationResult | null): boolean {
+  return Boolean(
+    validation &&
+      validation.state === "pass" &&
+      validation.diagnostics.length === 0,
+  );
+}
+
+function isBlockingValidationIssue(issue: ValidationIssue): boolean {
+  return issue.severity === "error";
+}
+
+function specHealthFromValidation(
+  validation: ValidationResult | null,
+  issues: ValidationIssue[],
+): Health {
+  if (!validation || validation.state === "stale") {
+    return "stale";
+  }
+
+  if (
+    validation.diagnostics.length > 0 ||
+    validation.state === "fail" ||
+    issues.some(isBlockingValidationIssue)
+  ) {
+    return "invalid";
+  }
+
+  return "valid";
+}
+
 function readinessReasons(
   taskProgress: TaskProgress | null,
   missingArtifacts: Artifact[],
-  validationIssues: ValidationIssue[],
+  validation: ValidationResult | null,
+  blockingValidationIssues: ValidationIssue[],
 ): string[] {
   const reasons: string[] = [];
 
@@ -2744,11 +2954,36 @@ function readinessReasons(
     reasons.push("Missing files: " + missingArtifacts.map((artifact) => artifact.label).join(", ") + ".");
   }
 
-  if (validationIssues.length > 0) {
-    reasons.push(validationIssues.length + " linked validation issues need attention.");
+  if (!validation) {
+    reasons.push("Run validation before archiving.");
+  } else if (validation.state === "stale") {
+    reasons.push("Validation is outdated for the current files.");
+  } else if (validation.diagnostics.length > 0) {
+    reasons.push("Validation diagnostics need attention.");
+  } else if (validation.state !== "pass") {
+    reasons.push("Validation must pass before archiving.");
+  }
+
+  if (blockingValidationIssues.length > 0) {
+    reasons.push(blockingValidationIssues.length + " linked validation errors need attention.");
   }
 
   return reasons.length > 0 ? reasons : ["Refresh validation to confirm archive readiness."];
+}
+
+function confirmArchiveChanges(changeNames: string[]): boolean {
+  if (typeof window.confirm !== "function") {
+    return true;
+  }
+
+  return window.confirm(
+    "Archive " +
+      changeNames.length +
+      " archive-ready " +
+      (changeNames.length === 1 ? "change" : "changes") +
+      "?\n\n" +
+      changeNames.join("\n"),
+  );
 }
 
 function artifactPathForTab(change: ChangeRecord | null, tab: DetailTab): string | undefined {
@@ -2908,22 +3143,6 @@ function changeSourcePath(change: ChangeRecord): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
-}
-
-function activeChangeNamesFromFileRecords(records: VirtualOpenSpecFileRecord[]): string[] {
-  const names = new Set<string>();
-
-  for (const record of records) {
-    const parts = record.path.replace(/\\/g, "/").replace(/^\/+/, "").split("/");
-
-    if (parts[0] !== "openspec" || parts[1] !== "changes" || parts[2] === "archive" || !parts[2]) {
-      continue;
-    }
-
-    names.add(parts[2]);
-  }
-
-  return Array.from(names).sort((left, right) => left.localeCompare(right));
 }
 
 function statusCacheId(repoPath: string, changeName: string): string {

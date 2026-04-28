@@ -1,10 +1,11 @@
 ## Why
 
-OpenSpec Studio v1 is read-mostly. The next workflow layer should let a user run propose, apply, archive, and validation operations from the app without replacing the OpenSpec CLI or hiding file changes.
+OpenSpec Studio already runs validation and archive flows from the app. The next workflow layer should add guided propose/apply flows and enhance existing archive/validation flows with clearer confirmation, diagnostics, and previews where their behavior changes, without replacing the OpenSpec CLI or hiding file changes.
 
 ## What Changes
 
-- Add guided CLI-backed workflows for propose, apply, archive, and validation.
+- Add guided CLI-backed workflows for propose and apply.
+- Build on existing archive and validation flows instead of reimplementing them from scratch.
 - Preview generated or modified artifacts before writes are accepted.
 - Preserve OpenSpec files and CLI output as the source of truth.
 

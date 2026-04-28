@@ -1,7 +1,7 @@
 # derived-data-accuracy Specification
 
 ## Purpose
-TBD - created by archiving change fix-derived-data-accuracy. Update Purpose after archive.
+Define source-of-truth guarantees for OpenSpec-derived data, including CLI execution diagnostics, validation-to-record health mapping, and regression coverage that prevents hardcoded or misleading workspace state.
 ## Requirements
 ### Requirement: Packaged CLI execution preserves runtime resolution
 The system SHALL run supported OpenSpec CLI commands from the packaged desktop app with a child command environment that can resolve the installed CLI executable and its launcher runtime dependencies from standard local install locations.
@@ -61,4 +61,3 @@ The system SHALL include regression coverage for the source-of-truth behaviors t
 #### Scenario: Hardcoded data path is tested or structurally isolated
 - **WHEN** tests or static checks inspect the production desktop loading path
 - **THEN** they verify it does not use hardcoded OpenSpec sample records as real repository data
-

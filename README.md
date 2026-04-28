@@ -10,7 +10,7 @@ OpenSpec Studio is a Tauri v2 desktop app with a React/TypeScript frontend.
 
 ### Prerequisites
 
-- Node.js and npm
+- Node.js `^20.19.0` or `>=22.12.0`, plus npm
 - Rust and Cargo
 - The `openspec` CLI available on your `PATH` for repository validation features
 

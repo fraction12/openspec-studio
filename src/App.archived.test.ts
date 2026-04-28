@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { archivedChangeToView, detailTabsForChange } from "./App";
+import { archivedChangeToView, buildWorkspaceView, detailTabsForChange } from "./App";
 import type { IndexedArchivedChange, VirtualOpenSpecFileRecord } from "./domain/openspecIndex";
+import { indexOpenSpecWorkspace } from "./domain/openspecIndex";
+import type { ValidationResult } from "./validation/results";
 
 describe("archived change view model", () => {
   it("derives archived detail state from archived artifacts", () => {
@@ -109,3 +111,117 @@ describe("archived change view model", () => {
     ]);
   });
 });
+
+describe("active archive readiness view model", () => {
+  it("allows archive-ready changes only when validation is current and clean of blocking issues", () => {
+    const validation: ValidationResult = {
+      state: "pass",
+      validatedAt: "2026-04-27T12:00:00.000Z",
+      summary: { total: 1, passed: 1, failed: 0 },
+      diagnostics: [],
+      raw: {},
+      issues: [
+        {
+          id: "issue-warning",
+          severity: "warning",
+          message: "Review wording before final archive.",
+          associations: [{ kind: "change", id: "ready-flow" }],
+          raw: {},
+        },
+      ],
+    };
+
+    const workspace = buildWorkspaceView(
+      indexOpenSpecWorkspace({
+        files: activeWorkspaceFiles(),
+        changeStatuses: [
+          {
+            changeName: "ready-flow",
+            isComplete: true,
+            artifacts: [
+              { id: "proposal", status: "done" },
+              { id: "design", status: "done" },
+              { id: "tasks", status: "done" },
+            ],
+          },
+        ],
+      }),
+      activeWorkspaceFiles(),
+      validation,
+      [],
+    );
+
+    const readyChange = workspace.changes.find((change) => change.name === "ready-flow");
+
+    expect(readyChange).toMatchObject({
+      phase: "archive-ready",
+      health: "valid",
+      archiveReadiness: { ready: true },
+    });
+    expect(readyChange?.validationIssues).toHaveLength(1);
+  });
+
+  it("keeps changes and specs conservative when validation failed without linked issues", () => {
+    const validation: ValidationResult = {
+      state: "fail",
+      validatedAt: "2026-04-27T12:00:00.000Z",
+      summary: { total: 1, passed: 0, failed: 1 },
+      diagnostics: [],
+      issues: [],
+      raw: {},
+    };
+
+    const workspace = buildWorkspaceView(
+      indexOpenSpecWorkspace({
+        files: activeWorkspaceFiles(),
+        changeStatuses: [
+          {
+            changeName: "ready-flow",
+            isComplete: true,
+            artifacts: [
+              { id: "proposal", status: "done" },
+              { id: "design", status: "done" },
+              { id: "tasks", status: "done" },
+            ],
+          },
+        ],
+      }),
+      activeWorkspaceFiles(),
+      validation,
+      [],
+    );
+
+    const change = workspace.changes.find((candidate) => candidate.name === "ready-flow");
+    const spec = workspace.specs.find((candidate) => candidate.capability === "change-board");
+
+    expect(change?.phase).toBe("active");
+    expect(change?.archiveReadiness).toMatchObject({ ready: false });
+    expect(change?.archiveReadiness.reasons).toContain("Validation must pass before archiving.");
+    expect(spec?.health).toBe("invalid");
+  });
+});
+
+function activeWorkspaceFiles(): VirtualOpenSpecFileRecord[] {
+  return [
+    {
+      path: "openspec/changes/ready-flow/proposal.md",
+      content: ["## Why", "", "Ready flow."].join("\n"),
+    },
+    {
+      path: "openspec/changes/ready-flow/design.md",
+      content: "Design.",
+    },
+    {
+      path: "openspec/changes/ready-flow/tasks.md",
+      content: ["- [x] Done", "- [x] Also done"].join("\n"),
+    },
+    {
+      path: "openspec/changes/ready-flow/specs/change-board/spec.md",
+      content: "### Requirement: Board",
+    },
+    {
+      path: "openspec/specs/change-board/spec.md",
+      content: ["## Purpose", "Board capability.", "### Requirement: Board"].join("\n"),
+    },
+  ];
+}

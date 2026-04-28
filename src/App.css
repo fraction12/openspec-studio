@@ -782,7 +782,7 @@ button:disabled {
   border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
 }
 
-.change-table tbody tr[role="button"] {
+.change-table tbody tr[role="row"] {
   cursor: pointer;
   outline: none;
 }

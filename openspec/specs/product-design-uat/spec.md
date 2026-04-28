@@ -1,7 +1,7 @@
 # product-design-uat Specification
 
 ## Purpose
-TBD - created by archiving change fix-product-design-uat. Update Purpose after archive.
+Define product design acceptance criteria for OpenSpec Studio's desktop layout, component scale, information hierarchy, status vocabulary, and review-focused artifact workflows.
 ## Requirements
 ### Requirement: Stable desktop layout regions
 The system SHALL keep persistent desktop application regions stable while allowing only intended content areas to scroll.
@@ -94,4 +94,3 @@ The system SHALL verify the polished interface with live UI review and responsiv
 - **WHEN** the app is viewed at narrower desktop widths
 - **THEN** persistent controls remain usable
 - **AND** text does not overlap, controls do not resize unpredictably, and tabs do not become accidental scroll traps
-

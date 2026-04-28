@@ -1,7 +1,7 @@
 # repo-discovery Specification
 
 ## Purpose
-TBD - created by archiving change build-local-desktop-companion. Update Purpose after archive.
+Define how OpenSpec Studio discovers, validates, indexes, refreshes, and switches local repositories while keeping active specs, changes, archives, and artifact status tied to the selected workspace.
 ## Requirements
 ### Requirement: OpenSpec workspace indexing
 The system SHALL index the selected repository's OpenSpec workspace.
@@ -88,4 +88,3 @@ The system SHALL prioritize repository names and native actions while keeping fu
 #### Scenario: User needs the repository in Finder
 - **WHEN** the user requests a filesystem action for the active repository
 - **THEN** the app can reveal the repository folder in the operating system file manager
-

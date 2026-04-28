@@ -116,6 +116,123 @@ describe("parseValidationResult", () => {
     ]);
   });
 
+  it("preserves warning and info levels from real OpenSpec issue output", () => {
+    const result = parseValidationResult({
+      valid: true,
+      items: [
+        {
+          id: "validation-dashboard",
+          type: "spec",
+          valid: true,
+          issues: [
+            {
+              level: "WARNING",
+              message: "Requirement should include another scenario",
+              path: "openspec/specs/validation-dashboard/spec.md",
+            },
+            {
+              level: "INFO",
+              message: "Requirement includes optional guidance",
+              path: "openspec/specs/validation-dashboard/spec.md",
+            },
+          ],
+        },
+      ],
+      summary: {
+        totals: {
+          items: 1,
+          passed: 1,
+          failed: 0,
+        },
+      },
+    });
+
+    expect(result.state).toBe("pass");
+    expect(result.summary).toEqual({ total: 1, passed: 1, failed: 0 });
+    expect(result.issues.map((issue) => issue.severity)).toEqual([
+      "warning",
+      "info",
+    ]);
+  });
+
+  it("merges root-level issues with item issues", () => {
+    const result = parseValidationResult({
+      items: [
+        {
+          id: "add-validation-dashboard",
+          type: "change",
+          valid: false,
+          issues: [
+            {
+              level: "ERROR",
+              message: "Missing scenario",
+              path: "openspec/changes/add-validation-dashboard/specs/validation-dashboard/spec.md",
+            },
+          ],
+        },
+      ],
+      issues: [
+        {
+          level: "WARNING",
+          message: "Workspace contains deprecated proposal metadata",
+          path: "openspec/changes/add-validation-dashboard/proposal.md",
+        },
+      ],
+      summary: {
+        totals: {
+          items: 1,
+          passed: 0,
+          failed: 1,
+        },
+      },
+    });
+
+    expect(result.state).toBe("fail");
+    expect(result.issues).toHaveLength(2);
+    expect(result.issues.map((issue) => issue.id)).toEqual([
+      "issue-1",
+      "issue-2",
+    ]);
+    expect(result.issues.map((issue) => issue.message)).toEqual([
+      "Missing scenario",
+      "Workspace contains deprecated proposal metadata",
+    ]);
+    expect(result.issues[1]).toMatchObject({
+      severity: "warning",
+      associations: [
+        {
+          kind: "file",
+          path: "openspec/changes/add-validation-dashboard/proposal.md",
+        },
+        {
+          kind: "change",
+          id: "add-validation-dashboard",
+          path: "openspec/changes/add-validation-dashboard",
+        },
+      ],
+    });
+  });
+
+  it("surfaces root-level issues when itemized output has no item issues", () => {
+    const result = parseValidationResult({
+      items: [],
+      issues: [
+        {
+          level: "ERROR",
+          message: "Workspace schema is invalid",
+        },
+      ],
+    });
+
+    expect(result.state).toBe("fail");
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({
+      id: "issue-1",
+      message: "Workspace schema is invalid",
+      severity: "error",
+    });
+  });
+
   it("models unrecognized JSON as a parse diagnostic instead of a validation issue", () => {
     const raw = { ok: false, details: ["unexpected shape"] };
 

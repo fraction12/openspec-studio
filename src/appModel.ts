@@ -1,8 +1,10 @@
-import type {
-  IndexedWorkflowStatusValue,
-  VirtualOpenSpecChangeStatusRecord,
-  VirtualOpenSpecFileRecord,
+import {
+  normalizeOpenSpecPath,
+  type IndexedWorkflowStatusValue,
+  type VirtualOpenSpecChangeStatusRecord,
+  type VirtualOpenSpecFileRecord,
 } from "./domain/openspecIndex";
+
 import type { ValidationResult } from "./validation/results";
 
 export interface BridgeFileRecord {
@@ -60,14 +62,59 @@ export interface ChangeHealthInput {
 export function toVirtualFileRecords(
   records: BridgeFileRecord[],
 ): VirtualOpenSpecFileRecord[] {
-  return records.map((record) => ({
-    path: record.path,
-    kind: record.kind ?? "file",
-    modifiedTimeMs: record.modified_time_ms ?? record.modifiedTimeMs,
-    fileSize: record.file_size ?? record.fileSize,
-    content: record.content,
-    readError: record.read_error ?? record.readError,
-  }));
+  return records
+    .map((record) => ({
+      path: normalizeOpenSpecPath(record.path),
+      kind: record.kind ?? "file",
+      modifiedTimeMs: record.modified_time_ms ?? record.modifiedTimeMs,
+      fileSize: record.file_size ?? record.fileSize,
+      content: record.content,
+      readError: record.read_error ?? record.readError,
+    }))
+    .filter((record) => record.path.length > 0);
+}
+
+export function buildVirtualFilesByPath(
+  records: VirtualOpenSpecFileRecord[],
+): Record<string, VirtualOpenSpecFileRecord> {
+  return Object.fromEntries(
+    records
+      .map((record) => ({
+        ...record,
+        path: normalizeOpenSpecPath(record.path),
+        kind: record.kind ?? "file",
+      }))
+      .filter((record) => record.path.length > 0)
+      .map((record) => [record.path, record]),
+  );
+}
+
+export function activeChangeNamesFromFileRecords(
+  records: VirtualOpenSpecFileRecord[],
+): string[] {
+  const names = new Set<string>();
+
+  for (const record of records) {
+    const normalizedPath = normalizeOpenSpecPath(record.path);
+    const parts = normalizedPath.split("/");
+
+    if (
+      parts[0] !== "openspec" ||
+      parts[1] !== "changes" ||
+      parts[2] === "archive" ||
+      !parts[2]
+    ) {
+      continue;
+    }
+
+    if (parts.length === 3 && record.kind !== "directory") {
+      continue;
+    }
+
+    names.add(parts[2]);
+  }
+
+  return Array.from(names).sort((left, right) => left.localeCompare(right));
 }
 
 export function toVirtualChangeStatusRecord(
@@ -115,11 +162,20 @@ export function buildOpenSpecFileSignature(
   let latestPath: string | null = null;
   let latestModifiedTimeMs: number | null = null;
   const fingerprint = records
+    .map((record) => ({
+      ...record,
+      path: normalizeOpenSpecPath(record.path),
+      kind: record.kind ?? "file",
+    }))
+    .filter((record) => record.path.length > 0)
     .map((record) => {
       const modifiedTimeMs = record.modifiedTimeMs ?? 0;
       const fileSize = record.fileSize ?? 0;
 
-      if (record.kind !== "directory" && modifiedTimeMs > (latestModifiedTimeMs ?? 0)) {
+      if (
+        record.kind !== "directory" &&
+        modifiedTimeMs > (latestModifiedTimeMs ?? 0)
+      ) {
         latestPath = record.path;
         latestModifiedTimeMs = modifiedTimeMs;
       }
