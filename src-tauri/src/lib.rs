@@ -41,6 +41,8 @@ pub fn run() {
             bridge::archive_change,
             bridge::read_openspec_artifact_file,
             bridge::list_openspec_file_records,
+            bridge::list_openspec_file_metadata_records,
+            bridge::list_openspec_file_records_with_options,
             bridge::get_openspec_git_status,
             bridge::pick_repository_folder,
             bridge::run_openspec_command,

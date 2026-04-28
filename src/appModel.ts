@@ -10,7 +10,11 @@ export interface BridgeFileRecord {
   kind?: "file" | "directory";
   modified_time_ms?: number;
   modifiedTimeMs?: number;
+  file_size?: number;
+  fileSize?: number;
   content?: string;
+  read_error?: string;
+  readError?: string;
 }
 
 export interface OpenSpecFileSignature {
@@ -60,7 +64,9 @@ export function toVirtualFileRecords(
     path: record.path,
     kind: record.kind ?? "file",
     modifiedTimeMs: record.modified_time_ms ?? record.modifiedTimeMs,
+    fileSize: record.file_size ?? record.fileSize,
     content: record.content,
+    readError: record.read_error ?? record.readError,
   }));
 }
 
@@ -111,13 +117,14 @@ export function buildOpenSpecFileSignature(
   const fingerprint = records
     .map((record) => {
       const modifiedTimeMs = record.modifiedTimeMs ?? 0;
+      const fileSize = record.fileSize ?? 0;
 
       if (record.kind !== "directory" && modifiedTimeMs > (latestModifiedTimeMs ?? 0)) {
         latestPath = record.path;
         latestModifiedTimeMs = modifiedTimeMs;
       }
 
-      return `${record.path}:${record.kind ?? "file"}:${modifiedTimeMs}`;
+      return `${record.path}:${record.kind ?? "file"}:${modifiedTimeMs}:${fileSize}`;
     })
     .sort()
     .join("|");

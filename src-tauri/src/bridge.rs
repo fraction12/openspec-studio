@@ -1,13 +1,21 @@
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::{OsStr, OsString},
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::{Command, Output},
-    time::UNIX_EPOCH,
+    process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 const ALLOWED_OPENSPEC_COMMANDS: &[&str] = &["list", "show", "status", "validate"];
+const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const STANDARD_COMMAND_DIRS: &[&str] = &[
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -44,7 +52,14 @@ pub struct OpenSpecFileRecord {
     pub path: String,
     pub kind: String,
     pub modified_time_ms: Option<u128>,
+    pub file_size: Option<u64>,
     pub content: Option<String>,
+    pub read_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct OpenSpecFileListOptions {
+    pub include_content: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,12 +78,36 @@ pub struct BridgeErrorDto {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {
-    InvalidRepository { path: String, reason: String },
-    InvalidCommand { reason: String },
-    CommandNotFound { program: String },
-    CommandStartFailed { program: String, message: String },
-    PathOutsideOpenSpec { path: String },
-    Io { path: String, message: String },
+    InvalidRepository {
+        path: String,
+        reason: String,
+    },
+    InvalidCommand {
+        reason: String,
+    },
+    CommandNotFound {
+        program: String,
+    },
+    CommandStartFailed {
+        program: String,
+        message: String,
+    },
+    CommandTimedOut {
+        program: String,
+        timeout_ms: u128,
+    },
+    CommandOutputExceeded {
+        program: String,
+        stream: String,
+        max_bytes: usize,
+    },
+    PathOutsideOpenSpec {
+        path: String,
+    },
+    Io {
+        path: String,
+        message: String,
+    },
 }
 
 impl BridgeError {
@@ -78,6 +117,8 @@ impl BridgeError {
             Self::InvalidCommand { .. } => "invalid_command",
             Self::CommandNotFound { .. } => "command_not_found",
             Self::CommandStartFailed { .. } => "command_start_failed",
+            Self::CommandTimedOut { .. } => "command_timeout",
+            Self::CommandOutputExceeded { .. } => "command_output_too_large",
             Self::PathOutsideOpenSpec { .. } => "path_outside_openspec",
             Self::Io { .. } => "io_error",
         }
@@ -95,6 +136,18 @@ impl BridgeError {
             Self::CommandStartFailed { program, message } => {
                 format!("Command '{}' could not be started: {}", program, message)
             }
+            Self::CommandTimedOut {
+                program,
+                timeout_ms,
+            } => format!("Command '{}' timed out after {}ms", program, timeout_ms),
+            Self::CommandOutputExceeded {
+                program,
+                stream,
+                max_bytes,
+            } => format!(
+                "Command '{}' exceeded the {} output limit of {} bytes",
+                program, stream, max_bytes
+            ),
             Self::PathOutsideOpenSpec { path } => {
                 format!(
                     "Path '{}' is outside the selected repo's openspec/ directory",
@@ -143,13 +196,18 @@ pub fn execute_local_command(
     args: &[String],
 ) -> Result<CommandResult, BridgeError> {
     let (canonical_repo, _) = require_openspec_repo(repo_path.as_ref())?;
-    let output = run_command_with_fallbacks(&canonical_repo, program, args)?;
+    let output = run_command_with_fallbacks(
+        &canonical_repo,
+        program,
+        args,
+        CommandExecutionOptions::default(),
+    )?;
 
     Ok(CommandResult {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        status_code: output.status.code(),
-        success: output.status.success(),
+        status_code: output.status_code,
+        success: output.success,
     })
 }
 
@@ -190,13 +248,38 @@ pub fn read_openspec_artifact(
 pub fn list_openspec_files(
     repo_path: impl AsRef<Path>,
 ) -> Result<Vec<OpenSpecFileRecord>, BridgeError> {
+    list_openspec_files_with_options(
+        repo_path,
+        OpenSpecFileListOptions {
+            include_content: Some(true),
+        },
+    )
+}
+
+pub fn list_openspec_file_metadata(
+    repo_path: impl AsRef<Path>,
+) -> Result<Vec<OpenSpecFileRecord>, BridgeError> {
+    list_openspec_files_with_options(
+        repo_path,
+        OpenSpecFileListOptions {
+            include_content: Some(false),
+        },
+    )
+}
+
+pub fn list_openspec_files_with_options(
+    repo_path: impl AsRef<Path>,
+    options: OpenSpecFileListOptions,
+) -> Result<Vec<OpenSpecFileRecord>, BridgeError> {
     let (canonical_repo, openspec_root) = require_openspec_repo(repo_path.as_ref())?;
     let mut records = Vec::new();
+    let include_content = options.include_content.unwrap_or(false);
 
     collect_openspec_files(
         &canonical_repo,
         &openspec_root,
         &openspec_root,
+        include_content,
         &mut records,
     )?;
     records.sort_by(|left, right| left.path.cmp(&right.path));
@@ -215,8 +298,13 @@ pub fn inspect_openspec_git_status(
         "openspec".to_string(),
     ];
 
-    match run_command_with_fallbacks(&canonical_repo, "git", &args) {
-        Ok(output) if output.status.success() => {
+    match run_command_with_fallbacks(
+        &canonical_repo,
+        "git",
+        &args,
+        CommandExecutionOptions::default(),
+    ) {
+        Ok(output) if output.success => {
             let entries = parse_git_status_entries(&String::from_utf8_lossy(&output.stdout));
 
             Ok(OpenSpecGitStatus {
@@ -243,39 +331,15 @@ pub fn inspect_openspec_git_status(
 }
 
 #[tauri::command]
-pub fn validate_repo(repo_path: String) -> Result<RepositoryValidation, BridgeErrorDto> {
-    validate_repository(repo_path).map_err(BridgeErrorDto::from)
+pub async fn validate_repo(repo_path: String) -> Result<RepositoryValidation, BridgeErrorDto> {
+    run_bridge_task(move || validate_repository(repo_path)).await
 }
 
 #[tauri::command]
-pub fn pick_repository_folder() -> Result<Option<String>, BridgeErrorDto> {
+pub async fn pick_repository_folder() -> Result<Option<String>, BridgeErrorDto> {
     #[cfg(target_os = "macos")]
     {
-        let script = r#"set selectedFolder to choose folder with prompt "Choose an OpenSpec repository folder"
-POSIX path of selectedFolder"#;
-        let output = Command::new("/usr/bin/osascript")
-            .arg("-e")
-            .arg(script)
-            .output()
-            .map_err(|source| BridgeError::CommandStartFailed {
-                program: "osascript".to_string(),
-                message: source.to_string(),
-            })?;
-
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return Ok((!path.is_empty()).then_some(path));
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("User canceled") || output.status.code() == Some(1) {
-            return Ok(None);
-        }
-
-        Err(BridgeErrorDto {
-            code: "dialog_failed".to_string(),
-            message: stderr.trim().to_string(),
-        })
+        run_bridge_task(pick_repository_folder_impl).await
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -284,47 +348,107 @@ POSIX path of selectedFolder"#;
     }
 }
 
+#[cfg(target_os = "macos")]
+fn pick_repository_folder_impl() -> Result<Option<String>, BridgeError> {
+    let script = r#"set selectedFolder to choose folder with prompt "Choose an OpenSpec repository folder"
+POSIX path of selectedFolder"#;
+    let output = run_command_with_fallbacks(
+        Path::new("/"),
+        "/usr/bin/osascript",
+        &["-e".to_string(), script.to_string()],
+        CommandExecutionOptions::default(),
+    )?;
+
+    if output.success {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok((!path.is_empty()).then_some(path));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("User canceled") || output.status_code == Some(1) {
+        return Ok(None);
+    }
+
+    Err(BridgeError::CommandStartFailed {
+        program: "osascript".to_string(),
+        message: stderr.trim().to_string(),
+    })
+}
+
 #[tauri::command]
-pub fn run_openspec_command(
+pub async fn run_openspec_command(
     repo_path: String,
     args: Vec<String>,
 ) -> Result<CommandResult, BridgeErrorDto> {
     validate_openspec_args(&args).map_err(BridgeErrorDto::from)?;
-    execute_local_command(repo_path, "openspec", &args).map_err(BridgeErrorDto::from)
+    run_bridge_task(move || execute_local_command(repo_path, "openspec", &args)).await
 }
 
 #[tauri::command]
-pub fn archive_change(
+pub async fn archive_change(
     repo_path: String,
     change_name: String,
 ) -> Result<CommandResult, BridgeErrorDto> {
     validate_archive_change_name(&change_name).map_err(BridgeErrorDto::from)?;
-    execute_local_command(
-        repo_path,
-        "openspec",
-        &["archive".to_string(), change_name, "--yes".to_string()],
-    )
-    .map_err(BridgeErrorDto::from)
+    run_bridge_task(move || {
+        execute_local_command(
+            repo_path,
+            "openspec",
+            &["archive".to_string(), change_name, "--yes".to_string()],
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn read_openspec_artifact_file(
+pub async fn read_openspec_artifact_file(
     repo_path: String,
     artifact_path: String,
 ) -> Result<ArtifactFile, BridgeErrorDto> {
-    read_openspec_artifact(repo_path, artifact_path).map_err(BridgeErrorDto::from)
+    run_bridge_task(move || read_openspec_artifact(repo_path, artifact_path)).await
 }
 
 #[tauri::command]
-pub fn list_openspec_file_records(
+pub async fn list_openspec_file_records(
     repo_path: String,
 ) -> Result<Vec<OpenSpecFileRecord>, BridgeErrorDto> {
-    list_openspec_files(repo_path).map_err(BridgeErrorDto::from)
+    run_bridge_task(move || list_openspec_files(repo_path)).await
 }
 
 #[tauri::command]
-pub fn get_openspec_git_status(repo_path: String) -> Result<OpenSpecGitStatus, BridgeErrorDto> {
-    inspect_openspec_git_status(repo_path).map_err(BridgeErrorDto::from)
+pub async fn list_openspec_file_metadata_records(
+    repo_path: String,
+) -> Result<Vec<OpenSpecFileRecord>, BridgeErrorDto> {
+    run_bridge_task(move || list_openspec_file_metadata(repo_path)).await
+}
+
+#[tauri::command]
+pub async fn list_openspec_file_records_with_options(
+    repo_path: String,
+    options: OpenSpecFileListOptions,
+) -> Result<Vec<OpenSpecFileRecord>, BridgeErrorDto> {
+    run_bridge_task(move || list_openspec_files_with_options(repo_path, options)).await
+}
+
+#[tauri::command]
+pub async fn get_openspec_git_status(
+    repo_path: String,
+) -> Result<OpenSpecGitStatus, BridgeErrorDto> {
+    run_bridge_task(move || inspect_openspec_git_status(repo_path)).await
+}
+
+async fn run_bridge_task<T, F>(task: F) -> Result<T, BridgeErrorDto>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, BridgeError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| BridgeErrorDto {
+            code: "bridge_task_failed".to_string(),
+            message: error.to_string(),
+        })?
+        .map_err(BridgeErrorDto::from)
 }
 
 fn validate_openspec_args(args: &[String]) -> Result<(), BridgeError> {
@@ -421,24 +545,53 @@ fn command_error(program: &str, error: io::Error) -> BridgeError {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CommandExecutionOptions {
+    timeout: Duration,
+    max_output_bytes: usize,
+}
+
+impl Default for CommandExecutionOptions {
+    fn default() -> Self {
+        Self {
+            timeout: DEFAULT_COMMAND_TIMEOUT,
+            max_output_bytes: DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoundedCommandOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    status_code: Option<i32>,
+    success: bool,
+}
+
 fn run_command_with_fallbacks(
     canonical_repo: &Path,
     program: &str,
     args: &[String],
-) -> Result<Output, BridgeError> {
+    options: CommandExecutionOptions,
+) -> Result<BoundedCommandOutput, BridgeError> {
     let candidates = command_candidates(program);
     let mut not_found = false;
 
     for candidate in candidates {
         let mut command = Command::new(&candidate);
-        command.args(args).current_dir(canonical_repo);
+        command
+            .args(args)
+            .current_dir(canonical_repo)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         if let Some(path) = child_path_for_candidate(&candidate) {
             command.env("PATH", path);
         }
 
-        match command.output() {
-            Ok(output) => return Ok(output),
+        match run_bounded_command(command, program, options) {
+            Ok(Ok(output)) => return Ok(output),
+            Ok(Err(error)) => return Err(error),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 not_found = true;
             }
@@ -455,6 +608,140 @@ fn run_command_with_fallbacks(
             program: program.to_string(),
             message: "no command candidates were available".to_string(),
         })
+    }
+}
+
+fn run_bounded_command(
+    mut command: Command,
+    program: &str,
+    options: CommandExecutionOptions,
+) -> Result<Result<BoundedCommandOutput, BridgeError>, io::Error> {
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_overflow = Arc::new(AtomicBool::new(false));
+    let stderr_overflow = Arc::new(AtomicBool::new(false));
+    let stdout_handle = stdout
+        .map(|reader| read_bounded(reader, options.max_output_bytes, stdout_overflow.clone()));
+    let stderr_handle = stderr
+        .map(|reader| read_bounded(reader, options.max_output_bytes, stderr_overflow.clone()));
+    let start = Instant::now();
+
+    let status = loop {
+        if stdout_overflow.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_output(stdout_handle);
+            let _ = join_output(stderr_handle);
+            return Ok(Err(BridgeError::CommandOutputExceeded {
+                program: program.to_string(),
+                stream: "stdout".to_string(),
+                max_bytes: options.max_output_bytes,
+            }));
+        }
+
+        if stderr_overflow.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_output(stdout_handle);
+            let _ = join_output(stderr_handle);
+            return Ok(Err(BridgeError::CommandOutputExceeded {
+                program: program.to_string(),
+                stream: "stderr".to_string(),
+                max_bytes: options.max_output_bytes,
+            }));
+        }
+
+        if start.elapsed() >= options.timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_output(stdout_handle);
+            let _ = join_output(stderr_handle);
+            return Ok(Err(BridgeError::CommandTimedOut {
+                program: program.to_string(),
+                timeout_ms: options.timeout.as_millis(),
+            }));
+        }
+
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let stdout = match join_output(stdout_handle) {
+        Ok(stdout) => stdout,
+        Err(error) => return Ok(Err(command_error(program, error))),
+    };
+    let stderr = match join_output(stderr_handle) {
+        Ok(stderr) => stderr,
+        Err(error) => return Ok(Err(command_error(program, error))),
+    };
+
+    if stdout_overflow.load(Ordering::SeqCst) {
+        return Ok(Err(BridgeError::CommandOutputExceeded {
+            program: program.to_string(),
+            stream: "stdout".to_string(),
+            max_bytes: options.max_output_bytes,
+        }));
+    }
+
+    if stderr_overflow.load(Ordering::SeqCst) {
+        return Ok(Err(BridgeError::CommandOutputExceeded {
+            program: program.to_string(),
+            stream: "stderr".to_string(),
+            max_bytes: options.max_output_bytes,
+        }));
+    }
+
+    Ok(Ok(BoundedCommandOutput {
+        stdout,
+        stderr,
+        status_code: status.code(),
+        success: status.success(),
+    }))
+}
+
+fn read_bounded<R>(
+    mut reader: R,
+    max_bytes: usize,
+    overflow: Arc<AtomicBool>,
+) -> thread::JoinHandle<io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let mut buffer = [0u8; 8192];
+
+        loop {
+            let bytes_read = reader.read(&mut buffer)?;
+            if bytes_read == 0 {
+                return Ok(output);
+            }
+
+            let available = max_bytes.saturating_sub(output.len());
+            if bytes_read > available {
+                output.extend_from_slice(&buffer[..available]);
+                overflow.store(true, Ordering::SeqCst);
+                return Ok(output);
+            }
+
+            output.extend_from_slice(&buffer[..bytes_read]);
+        }
+    })
+}
+
+fn join_output(handle: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+    match handle {
+        Some(handle) => handle.join().unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "output reader panicked",
+            ))
+        }),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -554,6 +841,7 @@ fn collect_openspec_files(
     canonical_repo: &Path,
     openspec_root: &Path,
     current_dir: &Path,
+    include_content: bool,
     records: &mut Vec<OpenSpecFileRecord>,
 ) -> Result<(), BridgeError> {
     for entry in fs::read_dir(current_dir).map_err(|error| BridgeError::Io {
@@ -565,49 +853,84 @@ fn collect_openspec_files(
             message: error.to_string(),
         })?;
         let path = entry.path();
+        let symlink_metadata = fs::symlink_metadata(&path).map_err(|error| BridgeError::Io {
+            path: path_to_string(&path),
+            message: error.to_string(),
+        })?;
+        let file_type = symlink_metadata.file_type();
+        let is_symlink = file_type.is_symlink();
         let canonical_path = canonicalize_path(&path)?;
 
         if !canonical_path.starts_with(openspec_root) {
             continue;
         }
 
-        let metadata = fs::metadata(&canonical_path).map_err(|error| BridgeError::Io {
-            path: path_to_string(&canonical_path),
-            message: error.to_string(),
-        })?;
-        let relative_path = canonical_path
+        let metadata = if is_symlink {
+            symlink_metadata
+        } else {
+            fs::metadata(&canonical_path).map_err(|error| BridgeError::Io {
+                path: path_to_string(&canonical_path),
+                message: error.to_string(),
+            })?
+        };
+        let record_path = if is_symlink { &path } else { &canonical_path };
+        let relative_path = record_path
             .strip_prefix(canonical_repo)
             .map(normalize_relative_path)
-            .unwrap_or_else(|_| path_to_string(&canonical_path));
+            .unwrap_or_else(|_| path_to_string(record_path));
         let modified_time_ms = metadata
             .modified()
             .ok()
             .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_millis());
+        let file_size = metadata.is_file().then_some(metadata.len());
 
-        if metadata.is_dir() {
+        if is_symlink {
+            records.push(OpenSpecFileRecord {
+                path: relative_path,
+                kind: "symlink".to_string(),
+                modified_time_ms,
+                file_size: Some(metadata.len()),
+                content: None,
+                read_error: None,
+            });
+        } else if metadata.is_dir() {
             records.push(OpenSpecFileRecord {
                 path: relative_path,
                 kind: "directory".to_string(),
                 modified_time_ms,
+                file_size: None,
                 content: None,
+                read_error: None,
             });
-            collect_openspec_files(canonical_repo, openspec_root, &canonical_path, records)?;
+            collect_openspec_files(
+                canonical_repo,
+                openspec_root,
+                &canonical_path,
+                include_content,
+                records,
+            )?;
         } else if metadata.is_file() {
-            let content = if canonical_path
-                .extension()
-                .is_some_and(|extension| extension == "md")
+            let (content, read_error) = if include_content
+                && canonical_path
+                    .extension()
+                    .is_some_and(|extension| extension == "md")
             {
-                fs::read_to_string(&canonical_path).ok()
+                match fs::read_to_string(&canonical_path) {
+                    Ok(content) => (Some(content), None),
+                    Err(error) => (None, Some(error.to_string())),
+                }
             } else {
-                None
+                (None, None)
             };
 
             records.push(OpenSpecFileRecord {
                 path: relative_path,
                 kind: "file".to_string(),
                 modified_time_ms,
+                file_size,
                 content,
+                read_error,
             });
         }
     }
@@ -649,6 +972,13 @@ mod tests {
 
     fn cleanup(path: PathBuf) {
         let _ = fs::remove_dir_all(path);
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        fs::write(path, contents).expect("script should be written");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .expect("script should be executable");
     }
 
     #[test]
@@ -715,6 +1045,65 @@ mod tests {
         assert!(matches!(
             error,
             BridgeError::CommandNotFound { program: missing } if missing == program
+        ));
+
+        cleanup(repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_fallbacks_times_out_and_maps_error() {
+        let repo = temp_repo("command-timeout", true);
+        let script = repo.join("slow-command");
+        write_executable(&script, "#!/bin/sh\nsleep 2\n");
+
+        let error = run_command_with_fallbacks(
+            &repo,
+            &path_to_string(&script),
+            &[],
+            CommandExecutionOptions {
+                timeout: Duration::from_millis(50),
+                max_output_bytes: DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+            },
+        )
+        .expect_err("slow command should time out");
+
+        assert!(matches!(
+            error,
+            BridgeError::CommandTimedOut {
+                program,
+                timeout_ms: 50
+            } if program == path_to_string(&script)
+        ));
+
+        cleanup(repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_fallbacks_bounds_stdout() {
+        let repo = temp_repo("command-output-limit", true);
+        let script = repo.join("noisy-command");
+        write_executable(&script, "#!/bin/sh\nprintf abcdefghijklmnop\n");
+
+        let error = run_command_with_fallbacks(
+            &repo,
+            &path_to_string(&script),
+            &[],
+            CommandExecutionOptions {
+                timeout: Duration::from_secs(1),
+                max_output_bytes: 8,
+            },
+        )
+        .expect_err("noisy command should exceed stdout bound");
+
+        assert!(matches!(
+            error,
+            BridgeError::CommandOutputExceeded {
+                program,
+                stream,
+                max_bytes: 8
+            } if program == path_to_string(&script) && stream == "stdout"
         ));
 
         cleanup(repo);
@@ -800,7 +1189,14 @@ mod tests {
 
     #[test]
     fn validate_archive_change_name_rejects_path_like_or_flag_values() {
-        for change_name in ["", " ../demo", "../demo", "archive/demo", "--help", "demo/name"] {
+        for change_name in [
+            "",
+            " ../demo",
+            "../demo",
+            "archive/demo",
+            "--help",
+            "demo/name",
+        ] {
             assert!(
                 matches!(
                     validate_archive_change_name(change_name),
@@ -868,12 +1264,91 @@ mod tests {
                 && record.kind == "file"
                 && record.content.as_deref() == Some("# Demo\n")
                 && record.modified_time_ms.is_some()
+                && record.file_size == Some(7)
+                && record.read_error.is_none()
         }));
         assert!(records.iter().any(|record| {
             record.path == "openspec/changes/demo/data.json"
                 && record.kind == "file"
                 && record.content.is_none()
+                && record.file_size == Some(2)
         }));
+
+        cleanup(repo);
+    }
+
+    #[test]
+    fn list_openspec_file_metadata_skips_markdown_content() {
+        let repo = temp_repo("file-metadata-list", true);
+        let proposal_path = repo.join("openspec/changes/demo/proposal.md");
+        fs::create_dir_all(proposal_path.parent().expect("proposal should have parent"))
+            .expect("proposal parent should be created");
+        fs::write(&proposal_path, "# Demo\n").expect("proposal should be written");
+
+        let records =
+            list_openspec_file_metadata(&repo).expect("openspec metadata should be listed");
+        let proposal = records
+            .iter()
+            .find(|record| record.path == "openspec/changes/demo/proposal.md")
+            .expect("proposal record should exist");
+
+        assert_eq!(proposal.kind, "file");
+        assert_eq!(proposal.file_size, Some(7));
+        assert!(proposal.modified_time_ms.is_some());
+        assert!(proposal.content.is_none());
+        assert!(proposal.read_error.is_none());
+
+        cleanup(repo);
+    }
+
+    #[test]
+    fn list_openspec_files_reports_markdown_read_errors() {
+        let repo = temp_repo("file-read-error", true);
+        let proposal_path = repo.join("openspec/changes/demo/proposal.md");
+        fs::create_dir_all(proposal_path.parent().expect("proposal should have parent"))
+            .expect("proposal parent should be created");
+        fs::write(&proposal_path, [0xff, 0xfe, 0xfd]).expect("invalid utf8 should be written");
+
+        let records = list_openspec_files(&repo).expect("openspec files should be listed");
+        let proposal = records
+            .iter()
+            .find(|record| record.path == "openspec/changes/demo/proposal.md")
+            .expect("proposal record should exist");
+
+        assert_eq!(proposal.kind, "file");
+        assert!(proposal.content.is_none());
+        assert!(
+            proposal
+                .read_error
+                .as_deref()
+                .is_some_and(|message| message.contains("UTF-8") || message.contains("utf-8")),
+            "read error should explain invalid UTF-8: {:?}",
+            proposal.read_error
+        );
+
+        cleanup(repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_openspec_files_does_not_recurse_into_symlinked_directories() {
+        let repo = temp_repo("file-symlink-loop", true);
+        let proposal_path = repo.join("openspec/proposal.md");
+        fs::write(&proposal_path, "# Root\n").expect("proposal should be written");
+        std::os::unix::fs::symlink(repo.join("openspec"), repo.join("openspec/self"))
+            .expect("symlink should be created");
+
+        let records = list_openspec_files(&repo).expect("openspec files should be listed");
+
+        assert!(records.iter().any(|record| {
+            record.path == "openspec/self"
+                && record.kind == "symlink"
+                && record.content.is_none()
+                && record.read_error.is_none()
+        }));
+        assert!(!records
+            .iter()
+            .any(|record| record.path.starts_with("openspec/self/")));
 
         cleanup(repo);
     }
@@ -881,7 +1356,9 @@ mod tests {
     #[test]
     fn parse_git_status_entries_ignores_blank_lines() {
         assert_eq!(
-            parse_git_status_entries(" M openspec/changes/demo/tasks.md\n\n?? openspec/specs/demo/spec.md\n"),
+            parse_git_status_entries(
+                " M openspec/changes/demo/tasks.md\n\n?? openspec/specs/demo/spec.md\n"
+            ),
             vec![
                 "M openspec/changes/demo/tasks.md".to_string(),
                 "?? openspec/specs/demo/spec.md".to_string(),

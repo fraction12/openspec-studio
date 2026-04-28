@@ -27,16 +27,11 @@ The system SHALL use shared tokens and styles for selectable table rows.
 ### Requirement: OpenSpec-native visual language
 The system SHALL express a restrained, text-first visual language that feels native to OpenSpec.
 
-#### Scenario: Primary app surfaces render
-- **WHEN** the app renders navigation, boards, inspectors, and document previews
-- **THEN** the visual design uses calm neutral surfaces, subtle borders, quiet control states, and limited semantic accents
-- **AND** decorative elements do not compete with OpenSpec artifacts, source paths, or markdown content
-
-#### Scenario: Status cues render
-- **WHEN** validation, readiness, archive, stale, blocked, or missing states are shown
-- **THEN** status styling uses compact trust cues
-- **AND** semantic color is reserved for state recognition and action urgency
-- **AND** status presentation does not dominate artifact content
+#### Scenario: Application identity renders
+- **WHEN** OpenSpec Studio renders its desktop icon or in-app brand mark
+- **THEN** the identity uses a restrained neutral palette, document/spec imagery, and quiet delta cues that align with the OpenSpec website
+- **AND** the mark remains legible at small desktop icon and sidebar sizes
+- **AND** the mark does not introduce decorative visual noise into product surfaces
 
 ### Requirement: Artifact-first typography
 The system SHALL define typography tokens and component styles that prioritize readable OpenSpec artifacts.

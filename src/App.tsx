@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -107,8 +107,7 @@ interface TaskGroup {
 interface TaskProgress {
   done: number;
   total: number;
-  items: TaskItem[];
-  groups: TaskGroup[];
+  content: string | undefined;
 }
 
 interface ChangeRecord {
@@ -131,6 +130,7 @@ interface ChangeRecord {
     ready: boolean;
     reasons: string[];
   };
+  searchText: string;
 }
 
 interface ArchiveInfo {
@@ -153,6 +153,7 @@ interface SpecRecord {
   validationIssues: ValidationIssue[];
   requirementsPreview: string[];
   sourceContent: string;
+  searchText: string;
 }
 
 interface WorkspaceView {
@@ -171,9 +172,47 @@ interface OpenSpecGitStatus {
   message: string;
 }
 
+interface ValidationIssueMaps {
+  byChange: Map<string, ValidationIssue[]>;
+  bySpec: Map<string, ValidationIssue[]>;
+}
+
+interface StatusCacheEntry {
+  freshnessKey: string;
+  record: VirtualOpenSpecChangeStatusRecord;
+}
+
+interface BoundedRows<T> {
+  rows: T[];
+  hiddenCount: number;
+}
+
+interface BoardTableColumn<T> {
+  id: string;
+  label: string;
+  colClassName?: string;
+  cellClassName?: string;
+  render: (row: T) => ReactNode;
+}
+
+interface BoardTableResizeConfig {
+  columnId: string;
+  cssVariable: string;
+  defaultWidth: number;
+  resetWidth: number;
+  minWidth: number;
+  maxWidth: number;
+  ariaLabel: string;
+  title: string;
+}
+
 const BROWSER_PREVIEW_REPO_PATH = "browser-preview://openspec-studio";
 const RECENT_REPOS_STORAGE_KEY = "openspec-studio.recent-repos";
 const AUTO_REFRESH_INTERVAL_MS = 15_000;
+const STATUS_COMMAND_CONCURRENCY = 4;
+const STATUS_CACHE_LIMIT = 300;
+const MARKDOWN_BLOCK_CACHE_LIMIT = 40;
+const ROW_RENDER_BATCH_SIZE = 250;
 
 const unknownGitStatus: OpenSpecGitStatus = {
   state: "unknown",
@@ -226,6 +265,21 @@ function App() {
   const [gitStatus, setGitStatus] = useState<OpenSpecGitStatus>(unknownGitStatus);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [message, setMessage] = useState("Loading local workspace...");
+  const repoLoadGenerationRef = useRef(0);
+  const refreshGenerationRef = useRef(0);
+  const gitStatusGenerationRef = useRef(0);
+  const artifactPreviewGenerationRef = useRef(0);
+  const validationGenerationRef = useRef(0);
+  const statusCacheRef = useRef<Map<string, StatusCacheEntry>>(new Map());
+  const backgroundRefreshInFlightRef = useRef<Set<string>>(new Set());
+  const workspaceRef = useRef<WorkspaceView | null>(workspace);
+  const repoRef = useRef<RepositoryView | null>(repo);
+  const gitStatusRef = useRef<OpenSpecGitStatus>(gitStatus);
+  const deferredQuery = useDeferredValue(query);
+
+  workspaceRef.current = workspace;
+  repoRef.current = repo;
+  gitStatusRef.current = gitStatus;
 
   useEffect(() => {
     const lastRepoPath = recentRepos[0];
@@ -273,10 +327,10 @@ function App() {
   const selectedChange =
     changes.find(
       (change) =>
-        change.id === selectedChangeId && matchesChangeFilters(change, phase, query),
+        change.id === selectedChangeId && matchesChangeFilters(change, phase, deferredQuery),
     ) ?? null;
   const selectedSpec =
-    specs.find((spec) => spec.id === selectedSpecId && matchesSpecFilters(spec, query)) ??
+    specs.find((spec) => spec.id === selectedSpecId && matchesSpecFilters(spec, deferredQuery)) ??
     null;
 
   useEffect(() => {
@@ -287,14 +341,14 @@ function App() {
     const nextSelectedChangeId = selectVisibleItemId(
       changes,
       selectedChangeId,
-      (change) => matchesChangeFilters(change, phase, query),
+      (change) => matchesChangeFilters(change, phase, deferredQuery),
     );
 
     if (nextSelectedChangeId !== selectedChangeId) {
       setSelectedChangeId(nextSelectedChangeId);
       setDetailTab("proposal");
     }
-  }, [changes, phase, query, selectedChangeId, view]);
+  }, [changes, phase, deferredQuery, selectedChangeId, view]);
 
   useEffect(() => {
     if (view !== "specs") {
@@ -302,13 +356,13 @@ function App() {
     }
 
     const nextSelectedSpecId = selectVisibleItemId(specs, selectedSpecId, (spec) =>
-      matchesSpecFilters(spec, query),
+      matchesSpecFilters(spec, deferredQuery),
     );
 
     if (nextSelectedSpecId !== selectedSpecId) {
       setSelectedSpecId(nextSelectedSpecId);
     }
-  }, [query, selectedSpecId, specs, view]);
+  }, [deferredQuery, selectedSpecId, specs, view]);
 
   useEffect(() => {
     if (!selectedChange) {
@@ -322,6 +376,7 @@ function App() {
   }, [detailTab, selectedChange]);
 
   useEffect(() => {
+    const requestId = ++artifactPreviewGenerationRef.current;
     const path = artifactPathForTab(selectedChange, detailTab);
 
     if (!path) {
@@ -340,15 +395,28 @@ function App() {
       return;
     }
 
+    const repoPath = repo.path;
     void invoke<{ contents: string }>("read_openspec_artifact_file", {
-      repoPath: repo.path,
+      repoPath,
       artifactPath: path,
     })
-      .then((artifact) => setArtifactPreview(artifact.contents))
-      .catch(() => setArtifactPreview(""));
+      .then((artifact) => {
+        if (artifactPreviewGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
+          setArtifactPreview(artifact.contents);
+        }
+      })
+      .catch(() => {
+        if (artifactPreviewGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
+          setArtifactPreview("");
+        }
+      });
   }, [detailTab, repo, selectedChange, workspace]);
 
   async function loadRepository(repoPath: string) {
+    const requestId = ++repoLoadGenerationRef.current;
+    refreshGenerationRef.current += 1;
+    artifactPreviewGenerationRef.current += 1;
+    validationGenerationRef.current += 1;
     const candidatePath = repoPath.trim();
 
     if (!candidatePath) {
@@ -388,6 +456,12 @@ function App() {
         previewStatuses,
       );
 
+      if (repoLoadGenerationRef.current !== requestId) {
+        return;
+      }
+
+      repoRef.current = previewRepo;
+      workspaceRef.current = nextWorkspace;
       setRepo(previewRepo);
       setWorkspace(nextWorkspace);
       setGitStatus({
@@ -404,6 +478,10 @@ function App() {
 
     try {
       const validation = await invoke<RepositoryValidationDto>("validate_repo", { repoPath: candidatePath });
+      if (repoLoadGenerationRef.current !== requestId) {
+        return;
+      }
+
       const hasOpenSpec = Boolean(validation.has_openspec ?? validation.hasOpenSpec);
       const candidateDecision = decideRepositoryCandidateOpen({
         readable: true,
@@ -424,6 +502,8 @@ function App() {
 
       if (!candidateDecision.promote) {
         if (!repo) {
+          repoRef.current = nextRepo;
+          workspaceRef.current = null;
           setRepo(nextRepo);
           setWorkspace(null);
           setGitStatus(unknownGitStatus);
@@ -444,23 +524,34 @@ function App() {
       const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
         repoPath: validation.path,
       });
+      if (repoLoadGenerationRef.current !== requestId) {
+        return;
+      }
+
       const fileRecords = toVirtualFileRecords(fileDtos);
-      const preliminaryIndex = indexOpenSpecWorkspace({ files: fileRecords });
       const changeStatuses = await loadChangeStatuses(
         validation.path,
-        preliminaryIndex.activeChanges.map((change) => change.name),
+        fileRecords,
+        activeChangeNamesFromFileRecords(fileRecords),
       );
+      if (repoLoadGenerationRef.current !== requestId) {
+        return;
+      }
+
       const fileSignature = buildOpenSpecFileSignature(fileRecords);
       const indexed = indexOpenSpecWorkspace({ files: fileRecords, changeStatuses });
       const nextWorkspace = buildWorkspaceView(
         indexed,
         fileRecords,
         isSameRepo
-          ? validationForFileRecords(workspace?.validation ?? null, workspace?.fileSignature, fileSignature)
+          ? validationForFileRecords(workspaceRef.current?.validation ?? null, workspaceRef.current?.fileSignature, fileSignature)
           : null,
         changeStatuses,
+        fileSignature,
       );
 
+      repoRef.current = nextRepo;
+      workspaceRef.current = nextWorkspace;
       setRepo(nextRepo);
       setWorkspace(nextWorkspace);
       setCandidateError(null);
@@ -474,6 +565,10 @@ function App() {
       setLoadState("loaded");
       setMessage("Refreshed files: " + nextWorkspace.changes.length + " changes and " + nextWorkspace.specs.length + " specs.");
     } catch (error) {
+      if (repoLoadGenerationRef.current !== requestId) {
+        return;
+      }
+
       setCandidateError({
         kind: "unavailable",
         path: candidatePath,
@@ -481,6 +576,7 @@ function App() {
         message: errorMessage(error),
       });
       if (!repo) {
+        workspaceRef.current = null;
         setWorkspace(null);
         setGitStatus(unknownGitStatus);
       }
@@ -502,23 +598,29 @@ function App() {
 
     setLoadState("loading");
     setMessage("Running OpenSpec validation...");
+    const requestId = ++validationGenerationRef.current;
+    const repoPath = repo.path;
 
     try {
       const command = await invoke<CommandResultDto>("run_openspec_command", {
-        repoPath: repo.path,
+        repoPath,
         args: ["validate", "--all", "--json"],
       });
+      if (validationGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+        return;
+      }
+
       const rawJson = extractJsonPayload(command.stdout);
       const result =
         rawJson !== undefined
           ? parseValidationResult(rawJson, {
               validatedAt: new Date(),
-              repoPath: repo.path,
+              repoPath,
             })
           : command.success
             ? parseValidationResult(command.stdout || command, {
                 validatedAt: new Date(),
-                repoPath: repo.path,
+                repoPath,
               })
             : createValidationCommandFailureResult({
                 stdout: command.stdout,
@@ -527,11 +629,13 @@ function App() {
                 validatedAt: new Date(),
                 raw: command,
               });
-      const records = Object.values(workspace?.filesByPath ?? {});
-      const changeStatuses = workspace?.changeStatuses ?? [];
+      const activeWorkspace = workspaceRef.current;
+      const records = Object.values(activeWorkspace?.filesByPath ?? {});
+      const changeStatuses = activeWorkspace?.changeStatuses ?? [];
       const indexed = indexOpenSpecWorkspace({ files: records, changeStatuses });
       const nextWorkspace = buildWorkspaceView(indexed, records, result, changeStatuses);
 
+      workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
       setLoadState("loaded");
       setMessage(
@@ -539,6 +643,10 @@ function App() {
           (result.state === "pass" ? "Validation checked clean." : "Validation found items that need attention."),
       );
     } catch (error) {
+      if (validationGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+        return;
+      }
+
       setLoadState("error");
       setMessage(errorMessage(error));
     }
@@ -638,34 +746,50 @@ function App() {
     }
   }
 
-  async function loadGitStatus(repoPath: string) {
+  async function loadGitStatus(repoPath: string, options: { quiet?: boolean } = {}) {
+    const requestId = ++gitStatusGenerationRef.current;
+
     if (!isTauriRuntime()) {
-      setGitStatus({
+      const nextStatus: OpenSpecGitStatus = {
         state: "unavailable",
         dirtyCount: 0,
         entries: [],
         message: "Git status requires the Tauri desktop runtime.",
-      });
+      };
+
+      if (!options.quiet || !areGitStatusesEqual(gitStatusRef.current, nextStatus)) {
+        setGitStatus(nextStatus);
+      }
       return;
     }
 
-    setGitStatus({ ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." });
+    if (!options.quiet) {
+      setGitStatus({ ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." });
+    }
 
     try {
       const status = await invoke<OpenSpecGitStatusDto>("get_openspec_git_status", { repoPath });
+      if (gitStatusGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+        return;
+      }
+
       const dirtyCount = status.dirty_count ?? status.dirtyCount ?? status.entries.length;
+      let nextStatus: OpenSpecGitStatus;
 
       if (!status.available) {
-        setGitStatus({
+        nextStatus = {
           state: "unavailable",
           dirtyCount: 0,
           entries: [],
           message: status.message ?? "Git status is unavailable for this repository.",
-        });
+        };
+        if (!options.quiet || !areGitStatusesEqual(gitStatusRef.current, nextStatus)) {
+          setGitStatus(nextStatus);
+        }
         return;
       }
 
-      setGitStatus({
+      nextStatus = {
         state: dirtyCount > 0 ? "dirty" : "clean",
         dirtyCount,
         entries: status.entries,
@@ -673,14 +797,26 @@ function App() {
           dirtyCount > 0
             ? dirtyCount + " uncommitted OpenSpec " + (dirtyCount === 1 ? "path" : "paths")
             : "No uncommitted OpenSpec paths",
-      });
+      };
+
+      if (!options.quiet || !areGitStatusesEqual(gitStatusRef.current, nextStatus)) {
+        setGitStatus(nextStatus);
+      }
     } catch (error) {
-      setGitStatus({
+      if (gitStatusGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+        return;
+      }
+
+      const nextStatus: OpenSpecGitStatus = {
         state: "unavailable",
         dirtyCount: 0,
         entries: [],
         message: errorMessage(error),
-      });
+      };
+
+      if (!options.quiet || !areGitStatusesEqual(gitStatusRef.current, nextStatus)) {
+        setGitStatus(nextStatus);
+      }
     }
   }
 
@@ -706,73 +842,118 @@ function App() {
 
   async function loadChangeStatuses(
     repoPath: string,
+    fileRecords: VirtualOpenSpecFileRecord[],
     changeNames: string[],
   ): Promise<VirtualOpenSpecChangeStatusRecord[]> {
-    return Promise.all(
-      changeNames.map(async (changeName) => {
-        try {
-          const command = await invoke<CommandResultDto>("run_openspec_command", {
-            repoPath,
-            args: ["status", "--change", changeName, "--json"],
-          });
-          const rawJson = extractJsonPayload(command.stdout);
+    const tasks = Array.from(new Set(changeNames)).map((changeName) => async () => {
+      const cacheId = statusCacheId(repoPath, changeName);
+      const freshnessKey = changeStatusFreshnessKey(fileRecords, changeName);
+      const cached = statusCacheRef.current.get(cacheId);
 
-          if (!rawJson) {
-            return toVirtualChangeStatusRecord(
-              {
-                changeName,
-                error:
-                  command.stderr ||
-                  command.stdout ||
-                  "OpenSpec status output was not recognized.",
-              },
+      if (cached?.freshnessKey === freshnessKey) {
+        return cached.record;
+      }
+
+      let record: VirtualOpenSpecChangeStatusRecord;
+
+      try {
+        const command = await invoke<CommandResultDto>("run_openspec_command", {
+          repoPath,
+          args: ["status", "--change", changeName, "--json"],
+        });
+        const rawJson = extractJsonPayload(command.stdout);
+
+        if (!rawJson) {
+          record = toVirtualChangeStatusRecord(
+            {
               changeName,
-            );
-          }
-
-          return toVirtualChangeStatusRecord(rawJson, changeName);
-        } catch (error) {
-          return toVirtualChangeStatusRecord(
-            { changeName, error: errorMessage(error) },
+              error:
+                command.stderr ||
+                command.stdout ||
+                "OpenSpec status output was not recognized.",
+            },
             changeName,
           );
+        } else {
+          record = toVirtualChangeStatusRecord(rawJson, changeName);
         }
-      }),
-    );
+      } catch (error) {
+        record = toVirtualChangeStatusRecord(
+          { changeName, error: errorMessage(error) },
+          changeName,
+        );
+      }
+
+      statusCacheRef.current.set(cacheId, { freshnessKey, record });
+      pruneStatusCache(statusCacheRef.current);
+      return record;
+    });
+
+    return mapWithConcurrency(tasks, STATUS_COMMAND_CONCURRENCY);
   }
 
   async function refreshRepositoryIfChanged(repoPath: string) {
+    if (backgroundRefreshInFlightRef.current.has(repoPath)) {
+      return;
+    }
+
+    const requestId = ++refreshGenerationRef.current;
+    backgroundRefreshInFlightRef.current.add(repoPath);
+
     try {
-      const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
+      const metadataDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_metadata_records", {
         repoPath,
       });
-      const fileRecords = toVirtualFileRecords(fileDtos);
-      const nextSignature = buildOpenSpecFileSignature(fileRecords);
-
-      if (nextSignature.fingerprint === workspace?.fileSignature.fingerprint) {
-        void loadGitStatus(repoPath);
+      if (refreshGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
         return;
       }
 
-      const preliminaryIndex = indexOpenSpecWorkspace({ files: fileRecords });
+      const metadataRecords = toVirtualFileRecords(metadataDtos);
+      const nextSignature = buildOpenSpecFileSignature(metadataRecords);
+      const currentWorkspace = workspaceRef.current;
+
+      if (nextSignature.fingerprint === currentWorkspace?.fileSignature.fingerprint) {
+        void loadGitStatus(repoPath, { quiet: true });
+        return;
+      }
+
+      const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
+        repoPath,
+      });
+      if (refreshGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+        return;
+      }
+
+      const fileRecords = toVirtualFileRecords(fileDtos);
       const changeStatuses = await loadChangeStatuses(
         repoPath,
-        preliminaryIndex.activeChanges.map((change) => change.name),
+        fileRecords,
+        activeChangeNamesFromFileRecords(fileRecords),
       );
+      if (refreshGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+        return;
+      }
+
       const indexed = indexOpenSpecWorkspace({ files: fileRecords, changeStatuses });
       const nextWorkspace = buildWorkspaceView(
         indexed,
         fileRecords,
-        validationForFileRecords(workspace?.validation ?? null, workspace?.fileSignature, nextSignature),
+        validationForFileRecords(currentWorkspace?.validation ?? null, currentWorkspace?.fileSignature, nextSignature),
         changeStatuses,
+        nextSignature,
       );
 
+      workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
       keepSelectionInWorkspace(nextWorkspace);
-      void loadGitStatus(repoPath);
+      void loadGitStatus(repoPath, { quiet: true });
       setMessage("OpenSpec files changed. Local files refreshed.");
     } catch (error) {
-      setMessage(errorMessage(error));
+      if (refreshGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
+        setMessage(errorMessage(error));
+      }
+    } finally {
+      backgroundRefreshInFlightRef.current.delete(repoPath);
     }
   }
 
@@ -836,6 +1017,7 @@ function App() {
         view={view}
         phase={phase}
         query={query}
+        filterQuery={deferredQuery}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
         loadState={loadState}
@@ -902,9 +1084,7 @@ function Sidebar({
   return (
     <aside className="repo-rail" aria-label="Repository navigation">
       <div className="brand">
-        <span className="brand-mark" aria-hidden="true">
-          OS
-        </span>
+        <img className="brand-mark" src="/openspec-studio-logo.svg" alt="" aria-hidden="true" />
         <div>
           <p>OpenSpec</p>
           <strong>Studio</strong>
@@ -997,6 +1177,7 @@ function WorkspaceMain({
   view,
   phase,
   query,
+  filterQuery,
   selectedChange,
   selectedSpec,
   loadState,
@@ -1016,6 +1197,7 @@ function WorkspaceMain({
   view: BoardView;
   phase: ChangePhase;
   query: string;
+  filterQuery: string;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
   loadState: LoadState;
@@ -1114,6 +1296,7 @@ function WorkspaceMain({
           changes={workspace.changes}
           phase={phase}
           query={query}
+          filterQuery={filterQuery}
           selectedChange={selectedChange}
           onPhaseChange={onPhaseChange}
           onQueryChange={onQueryChange}
@@ -1126,6 +1309,7 @@ function WorkspaceMain({
           specs={workspace.specs}
           selectedSpec={selectedSpec}
           query={query}
+          filterQuery={filterQuery}
           onQueryChange={onQueryChange}
           onSelectSpec={onSelectSpec}
         />
@@ -1138,6 +1322,7 @@ function ChangeBoard({
   changes,
   phase,
   query,
+  filterQuery,
   selectedChange,
   onPhaseChange,
   onQueryChange,
@@ -1148,6 +1333,7 @@ function ChangeBoard({
   changes: ChangeRecord[];
   phase: ChangePhase;
   query: string;
+  filterQuery: string;
   selectedChange: ChangeRecord | null;
   onPhaseChange: (phase: ChangePhase) => void;
   onQueryChange: (query: string) => void;
@@ -1155,10 +1341,9 @@ function ChangeBoard({
   onArchiveChange: (changeName: string) => void;
   onArchiveAll: (changeNames: string[]) => void;
 }) {
-  const [changeColumnWidth, setChangeColumnWidth] = useState(170);
   const filteredChanges = useMemo(() => {
-    return changes.filter((change) => matchesChangeFilters(change, phase, query));
-  }, [changes, phase, query]);
+    return changes.filter((change) => matchesChangeFilters(change, phase, filterQuery));
+  }, [changes, phase, filterQuery]);
   const phaseCounts = useMemo(
     () => ({
       active: changes.filter((change) => change.phase === "active").length,
@@ -1167,19 +1352,69 @@ function ChangeBoard({
     }),
     [changes],
   );
-  function startChangeColumnResize(startX: number) {
-    const startWidth = changeColumnWidth;
-    const handleMouseMove = (event: MouseEvent) => {
-      setChangeColumnWidth(clampNumber(startWidth + event.clientX - startX, 160, 560));
-    };
-    const handleMouseUp = () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
+  const columns = useMemo<BoardTableColumn<ChangeRecord>[]>(() => {
+    const nextColumns: BoardTableColumn<ChangeRecord>[] = [
+      {
+        id: "change",
+        label: "Change",
+        render: (change) => (
+          <div className="change-title-cell artifact-title-cell">
+            <strong title={change.title}>{change.title}</strong>
+          </div>
+        ),
+      },
+      {
+        id: "trust",
+        label: "Trust",
+        colClassName: "trust-col",
+        render: (change) => <HealthPill health={change.health} label={change.statusLabel} />,
+      },
+      {
+        id: "tasks",
+        label: "Tasks",
+        colClassName: "tasks-col",
+        render: (change) => <TaskProgressCell progress={change.taskProgress} />,
+      },
+      {
+        id: "capabilities",
+        label: "Capabilities",
+        colClassName: "capabilities-col",
+        cellClassName: "capability-cell",
+        render: (change) => formatCapabilities(change.capabilities),
+      },
+      {
+        id: "updated",
+        label: "Updated",
+        colClassName: "updated-col",
+        cellClassName: "updated-cell",
+        render: (change) => change.updatedAt,
+      },
+    ];
 
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-  }
+    if (phase === "archive-ready") {
+      nextColumns.push({
+        id: "action",
+        label: "Action",
+        colClassName: "action-col",
+        cellClassName: "action-cell",
+        render: (change) => (
+          <button
+            type="button"
+            className="primary-outline table-action"
+            onKeyDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onArchiveChange(change.name);
+            }}
+          >
+            Archive
+          </button>
+        ),
+      });
+    }
+
+    return nextColumns;
+  }, [onArchiveChange, phase]);
 
   return (
     <section className="board-panel artifact-board change-board" aria-label="Change board">
@@ -1224,95 +1459,25 @@ function ChangeBoard({
           onAction={query ? () => onQueryChange("") : undefined}
         />
       ) : (
-        <div className="table-scroll">
-          <table
-            className={"change-table" + (phase === "archive-ready" ? " has-actions" : "")}
-          >
-            <colgroup>
-              <col style={{ width: changeColumnWidth }} />
-              <col className="trust-col" />
-              <col className="tasks-col" />
-              <col className="capabilities-col" />
-              <col className="updated-col" />
-              {phase === "archive-ready" ? <col className="action-col" /> : null}
-            </colgroup>
-            <thead>
-              <tr>
-                <th scope="col" className="resizable-heading">
-                  <span>Change</span>
-                  <button
-                    type="button"
-                    className="column-resize-handle"
-                    aria-label="Resize change column"
-                    title="Drag to resize change column"
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      startChangeColumnResize(event.clientX);
-                    }}
-                    onDoubleClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setChangeColumnWidth(360);
-                    }}
-                  />
-                </th>
-                <th scope="col">Trust</th>
-                <th scope="col">Tasks</th>
-                <th scope="col">Capabilities</th>
-                <th scope="col">Updated</th>
-                {phase === "archive-ready" ? <th scope="col">Action</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {filteredChanges.map((change) => (
-                <tr
-                  key={change.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-selected={selectedChange?.id === change.id}
-                  className={selectedChange?.id === change.id ? "is-selected" : ""}
-                  onClick={() => onSelectChange(change.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelectChange(change.id);
-                    }
-                  }}
-                >
-                  <td>
-                    <div className="change-title-cell artifact-title-cell">
-                      <strong title={change.title}>{change.title}</strong>
-                    </div>
-                  </td>
-                  <td>
-                    <HealthPill health={change.health} label={change.statusLabel} />
-                  </td>
-                  <td>
-                    <TaskProgressCell progress={change.taskProgress} />
-                  </td>
-                  <td className="capability-cell">{formatCapabilities(change.capabilities)}</td>
-                  <td className="updated-cell">{change.updatedAt}</td>
-                  {phase === "archive-ready" ? (
-                    <td className="action-cell">
-                      <button
-                        type="button"
-                        className="primary-outline table-action"
-                        onKeyDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onArchiveChange(change.name);
-                        }}
-                      >
-                        Archive
-                      </button>
-                    </td>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <BoardTable
+          rows={filteredChanges}
+          columns={columns}
+          selectedId={selectedChange?.id ?? ""}
+          onSelect={onSelectChange}
+          tableClassName={phase === "archive-ready" ? "has-actions" : ""}
+          resetKey={phase + "\n" + filterQuery}
+          itemLabel="changes"
+          resize={{
+            columnId: "change",
+            cssVariable: "--change-column-width",
+            defaultWidth: 170,
+            resetWidth: 360,
+            minWidth: 160,
+            maxWidth: 560,
+            ariaLabel: "Resize change column",
+            title: "Drag to resize change column",
+          }}
+        />
       )}
     </section>
   );
@@ -1322,18 +1487,53 @@ function SpecsBrowser({
   specs,
   selectedSpec,
   query,
+  filterQuery,
   onQueryChange,
   onSelectSpec,
 }: {
   specs: SpecRecord[];
   selectedSpec: SpecRecord | null;
   query: string;
+  filterQuery: string;
   onQueryChange: (query: string) => void;
   onSelectSpec: (specId: string) => void;
 }) {
   const filteredSpecs = useMemo(() => {
-    return specs.filter((spec) => matchesSpecFilters(spec, query));
-  }, [query, specs]);
+    return specs.filter((spec) => matchesSpecFilters(spec, filterQuery));
+  }, [filterQuery, specs]);
+  const columns = useMemo<BoardTableColumn<SpecRecord>[]>(
+    () => [
+      {
+        id: "spec",
+        label: "Spec",
+        render: (spec) => (
+          <div className="change-title-cell artifact-title-cell">
+            <strong title={spec.capability}>{spec.capability}</strong>
+          </div>
+        ),
+      },
+      {
+        id: "trust",
+        label: "Trust",
+        colClassName: "spec-trust-col",
+        render: (spec) => <HealthPill health={spec.health} label={healthLabels[spec.health]} />,
+      },
+      {
+        id: "requirements",
+        label: "Requirements",
+        colClassName: "spec-requirements-col",
+        render: (spec) => spec.requirements,
+      },
+      {
+        id: "updated",
+        label: "Updated",
+        colClassName: "spec-updated-col",
+        cellClassName: "updated-cell",
+        render: (spec) => spec.updatedAt,
+      },
+    ],
+    [],
+  );
 
   return (
     <section className="board-panel artifact-board specs-board" aria-label="Specs board">
@@ -1359,55 +1559,199 @@ function SpecsBrowser({
           onAction={query ? () => onQueryChange("") : undefined}
         />
       ) : (
-        <div className="table-scroll">
-          <table className="change-table specs-table">
-            <colgroup>
-              <col />
-              <col className="spec-trust-col" />
-              <col className="spec-requirements-col" />
-              <col className="spec-updated-col" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th scope="col">Spec</th>
-                <th scope="col">Trust</th>
-                <th scope="col">Requirements</th>
-                <th scope="col">Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredSpecs.map((spec) => (
-                <tr
-                  key={spec.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-selected={selectedSpec?.id === spec.id}
-                  className={selectedSpec?.id === spec.id ? "is-selected" : ""}
-                  onClick={() => onSelectSpec(spec.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelectSpec(spec.id);
-                    }
-                  }}
-                >
-                  <td>
-                    <div className="change-title-cell artifact-title-cell">
-                      <strong title={spec.capability}>{spec.capability}</strong>
-                    </div>
-                  </td>
-                  <td>
-                    <HealthPill health={spec.health} label={healthLabels[spec.health]} />
-                  </td>
-                  <td>{spec.requirements}</td>
-                  <td className="updated-cell">{spec.updatedAt}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <BoardTable
+          rows={filteredSpecs}
+          columns={columns}
+          selectedId={selectedSpec?.id ?? ""}
+          onSelect={onSelectSpec}
+          tableClassName="specs-table"
+          resetKey={filterQuery}
+          itemLabel="specs"
+          resize={{
+            columnId: "spec",
+            cssVariable: "--spec-column-width",
+            defaultWidth: 320,
+            resetWidth: 420,
+            minWidth: 180,
+            maxWidth: 640,
+            ariaLabel: "Resize spec column",
+            title: "Drag to resize spec column",
+          }}
+        />
       )}
     </section>
+  );
+}
+
+function BoardTable<T extends { id: string }>({
+  rows,
+  columns,
+  selectedId,
+  onSelect,
+  tableClassName,
+  resetKey,
+  itemLabel,
+  resize,
+}: {
+  rows: T[];
+  columns: BoardTableColumn<T>[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  tableClassName?: string;
+  resetKey: string;
+  itemLabel: string;
+  resize?: BoardTableResizeConfig;
+}) {
+  const [rowLimit, setRowLimit] = useState(ROW_RENDER_BATCH_SIZE);
+  const [resizedWidth, setResizedWidth] = useState(resize?.defaultWidth ?? 0);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  const bounded = useMemo(
+    () => boundedRows(rows, selectedId, rowLimit),
+    [rowLimit, rows, selectedId],
+  );
+
+  useEffect(() => {
+    setRowLimit(ROW_RENDER_BATCH_SIZE);
+  }, [resetKey]);
+
+  function startColumnResize(startX: number) {
+    if (!resize) {
+      return;
+    }
+
+    const startWidth = resizedWidth;
+    const table = tableRef.current;
+    let nextWidth = startWidth;
+    let animationFrame = 0;
+    const updateCssWidth = (width: number) => {
+      nextWidth = width;
+
+      if (animationFrame) {
+        return;
+      }
+
+      animationFrame = window.requestAnimationFrame(() => {
+        table?.style.setProperty(resize.cssVariable, nextWidth + "px");
+        animationFrame = 0;
+      });
+    };
+    const handleMouseMove = (event: MouseEvent) => {
+      updateCssWidth(clampNumber(startWidth + event.clientX - startX, resize.minWidth, resize.maxWidth));
+    };
+    const handleMouseUp = () => {
+      if (animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = 0;
+      }
+      table?.style.setProperty(resize.cssVariable, nextWidth + "px");
+      setResizedWidth(nextWidth);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }
+
+  function resetColumnWidth() {
+    if (!resize) {
+      return;
+    }
+
+    tableRef.current?.style.setProperty(resize.cssVariable, resize.resetWidth + "px");
+    setResizedWidth(resize.resetWidth);
+  }
+
+  return (
+    <div className="table-scroll">
+      <table
+        ref={tableRef}
+        className={["change-table", tableClassName].filter(Boolean).join(" ")}
+      >
+        <colgroup>
+          {columns.map((column) => (
+            <col
+              key={column.id}
+              className={column.colClassName}
+              style={
+                resize?.columnId === column.id
+                  ? { width: "var(" + resize.cssVariable + ", " + resizedWidth + "px)" }
+                  : undefined
+              }
+            />
+          ))}
+        </colgroup>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th
+                key={column.id}
+                scope="col"
+                className={resize?.columnId === column.id ? "resizable-heading" : undefined}
+              >
+                <span>{column.label}</span>
+                {resize?.columnId === column.id ? (
+                  <button
+                    type="button"
+                    className="column-resize-handle"
+                    aria-label={resize.ariaLabel}
+                    title={resize.title}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      startColumnResize(event.clientX);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      resetColumnWidth();
+                    }}
+                  />
+                ) : null}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {bounded.rows.map((row) => (
+            <tr
+              key={row.id}
+              role="button"
+              tabIndex={0}
+              aria-selected={selectedId === row.id}
+              className={selectedId === row.id ? "is-selected" : ""}
+              onClick={() => onSelect(row.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect(row.id);
+                }
+              }}
+            >
+              {columns.map((column) => (
+                <td key={column.id} className={column.cellClassName}>
+                  {column.render(row)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {bounded.hiddenCount > 0 ? (
+        <div className="bounded-row-notice">
+          <span>
+            Showing {bounded.rows.length} of {rows.length} matching {itemLabel}.
+          </span>
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => setRowLimit((current) => current + ROW_RENDER_BATCH_SIZE)}
+          >
+            Show more
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1434,6 +1778,19 @@ function Inspector({
   onOpenArtifact: (artifact: Artifact | SpecRecord) => void;
   onValidate: () => void;
 }) {
+  const tabs = selectedChange ? detailTabsForChange(selectedChange) : [];
+  const selectedDetailTab =
+    selectedChange && tabs.some((tab) => tab.id === detailTab)
+      ? detailTab
+      : tabs[0]?.id ?? "archive-info";
+  const selectedTaskDetail = useMemo(
+    () =>
+      selectedDetailTab === "tasks" && selectedChange?.taskProgress
+        ? parseTaskProgressContent(selectedChange.taskProgress.content)
+        : { items: [], groups: [] },
+    [selectedChange?.taskProgress, selectedDetailTab],
+  );
+
   if (!repo || !workspace) {
     return (
       <aside className="inspector artifact-inspector" aria-label="Artifact inspector">
@@ -1480,10 +1837,6 @@ function Inspector({
     );
   }
 
-  const tabs = detailTabsForChange(selectedChange);
-  const selectedDetailTab = tabs.some((tab) => tab.id === detailTab)
-    ? detailTab
-    : tabs[0]?.id ?? "archive-info";
   const primaryArtifact =
     selectedChange.artifacts.find((artifact) => artifact.id === "proposal" && artifact.status === "present") ??
     selectedChange.artifacts.find((artifact) => artifact.status === "present");
@@ -1523,7 +1876,7 @@ function Inspector({
       </div>
 
       <div className="inspector-body artifact-inspector-body">
-        {renderDetailTab(selectedChange, selectedDetailTab, artifactPreview, workspace.validation, onOpenArtifact, onValidate)}
+        {renderDetailTab(selectedChange, selectedDetailTab, artifactPreview, workspace.validation, selectedTaskDetail, onOpenArtifact, onValidate)}
       </div>
     </aside>
   );
@@ -1534,6 +1887,7 @@ function renderDetailTab(
   tab: DetailTab,
   artifactPreview: string,
   validation: ValidationResult | null,
+  taskDetail: { items: TaskItem[]; groups: TaskGroup[] },
   onOpenArtifact: (artifact: Artifact) => void,
   onValidate: () => void,
 ) {
@@ -1557,9 +1911,9 @@ function renderDetailTab(
       );
     }
 
-    const completedTasks = change.taskProgress.items.filter((item) => item.done);
-    const remainingGroups = filterTaskGroups(change.taskProgress.groups, false);
-    const completedGroups = filterTaskGroups(change.taskProgress.groups, true);
+    const completedTasks = taskDetail.items.filter((item) => item.done);
+    const remainingGroups = filterTaskGroups(taskDetail.groups, false);
+    const completedGroups = filterTaskGroups(taskDetail.groups, true);
     const remainingCount = remainingGroups.reduce((total, group) => total + group.items.length, 0);
 
     return (
@@ -1836,6 +2190,8 @@ type MarkdownBlock =
   | { kind: "list"; items: string[] }
   | { kind: "code"; text: string };
 
+const markdownBlockCache = new Map<string, MarkdownBlock[]>();
+
 function MarkdownPreview({
   content,
   emptyText,
@@ -1843,7 +2199,7 @@ function MarkdownPreview({
   content: string;
   emptyText: string;
 }) {
-  const blocks = parseMarkdownBlocks(content);
+  const blocks = useMemo(() => parseMarkdownBlocksCached(content), [content]);
 
   if (blocks.length === 0) {
     return <div className="markdown-preview markdown-empty">{emptyText}</div>;
@@ -1969,6 +2325,29 @@ function parseMarkdownBlocks(content: string): MarkdownBlock[] {
   return blocks;
 }
 
+function parseMarkdownBlocksCached(content: string): MarkdownBlock[] {
+  const cached = markdownBlockCache.get(content);
+
+  if (cached) {
+    return cached;
+  }
+
+  const blocks = parseMarkdownBlocks(content);
+  markdownBlockCache.set(content, blocks);
+
+  while (markdownBlockCache.size > MARKDOWN_BLOCK_CACHE_LIMIT) {
+    const firstKey = markdownBlockCache.keys().next().value;
+
+    if (firstKey === undefined) {
+      break;
+    }
+
+    markdownBlockCache.delete(firstKey);
+  }
+
+  return blocks;
+}
+
 function cleanMarkdownText(text: string): string {
   return text
     .replace(/\*\*([^*]+)\*\*/g, "$1")
@@ -2021,18 +2400,22 @@ function buildWorkspaceView(
   files: VirtualOpenSpecFileRecord[],
   validation: ValidationResult | null,
   changeStatuses: VirtualOpenSpecChangeStatusRecord[],
+  fileSignature = buildOpenSpecFileSignature(files),
 ): WorkspaceView {
   const filesByPath = Object.fromEntries(files.map((file) => [file.path, file]));
+  const validationIssueMaps = buildValidationIssueMaps(validation);
   const changes: ChangeRecord[] = [
-    ...indexed.activeChanges.map((change) => activeChangeToView(change, filesByPath, validation)),
+    ...indexed.activeChanges.map((change) =>
+      activeChangeToView(change, filesByPath, validation, validationIssueMaps),
+    ),
     ...indexed.archivedChanges.map((change) => archivedChangeToView(change, filesByPath)),
   ];
 
   return {
     changes,
-    specs: indexed.specs.map((spec) => specToView(spec, filesByPath, validation)),
+    specs: indexed.specs.map((spec) => specToView(spec, filesByPath, validation, validationIssueMaps)),
     filesByPath,
-    fileSignature: buildOpenSpecFileSignature(files),
+    fileSignature,
     changeStatuses,
     validation,
   };
@@ -2042,6 +2425,7 @@ function activeChangeToView(
   change: IndexedActiveChange,
   filesByPath: Record<string, VirtualOpenSpecFileRecord>,
   validation: ValidationResult | null,
+  validationIssueMaps: ValidationIssueMaps,
 ): ChangeRecord {
   const artifacts: Artifact[] = [
     requiredArtifact("proposal", "Proposal", change.artifacts.proposal),
@@ -2056,7 +2440,7 @@ function activeChangeToView(
     })),
   ];
   const taskProgress = taskProgressToView(change.taskProgress, filesByPath[change.artifacts.tasks.path]?.content);
-  const validationIssues = issuesForChange(validation, change.name);
+  const validationIssues = validationIssueMaps.byChange.get(change.name) ?? [];
   const missingArtifacts = artifacts.filter((artifact) => artifact.status === "missing");
   const health = deriveChangeHealth({
     workflowStatus: change.workflowStatus.status,
@@ -2072,7 +2456,7 @@ function activeChangeToView(
       validationIssues.length === 0,
   );
 
-  return {
+  const record: ChangeRecord = {
     id: change.name,
     name: change.name,
     title: titleize(change.name),
@@ -2093,7 +2477,15 @@ function activeChangeToView(
         ? ["All required change files are present and no linked validation errors are present."]
         : readinessReasons(taskProgress, missingArtifacts, validationIssues),
     },
+    searchText: "",
   };
+  record.searchText = searchableText([
+    record.title,
+    record.name,
+    ...record.capabilities,
+  ]);
+
+  return record;
 }
 
 export function archivedChangeToView(
@@ -2114,7 +2506,7 @@ export function archivedChangeToView(
   }));
   const artifacts = [...requiredArtifacts, ...deltaArtifacts];
 
-  return {
+  const record: ChangeRecord = {
     id: change.name,
     name: change.name,
     title: titleize(change.name),
@@ -2139,21 +2531,28 @@ export function archivedChangeToView(
       ready: true,
       reasons: ["Archived."],
     },
+    searchText: "",
   };
+  record.searchText = searchableText([
+    record.title,
+    record.name,
+    ...record.capabilities,
+  ]);
+
+  return record;
 }
 
 function specToView(
   spec: IndexedSpec,
   filesByPath: Record<string, VirtualOpenSpecFileRecord>,
   validation: ValidationResult | null,
+  validationIssueMaps: ValidationIssueMaps,
 ): SpecRecord {
-  const issues = validation?.issues.filter((issue) =>
-    issue.associations.some((association) => association.kind === "spec" && association.id === spec.capability),
-  ) ?? [];
+  const issues = validationIssueMaps.bySpec.get(spec.capability) ?? [];
   const content = filesByPath[spec.path]?.content;
   const summary = summaryFromContent(content);
 
-  return {
+  const record: SpecRecord = {
     id: spec.capability,
     capability: spec.capability,
     path: spec.path,
@@ -2173,7 +2572,11 @@ function specToView(
     validationIssues: issues,
     requirementsPreview: extractRequirementTitles(content, 6),
     sourceContent: content ?? "",
+    searchText: "",
   };
+  record.searchText = searchableText([record.capability, record.summary]);
+
+  return record;
 }
 
 function requiredArtifact(
@@ -2214,7 +2617,7 @@ function taskProgressToView(
   return {
     done: progress.completed,
     total: progress.total,
-    ...parseTaskProgressContent(content),
+    content,
   };
 }
 
@@ -2268,16 +2671,51 @@ function filterTaskGroups(groups: TaskGroup[], done: boolean): TaskGroup[] {
     .filter((group) => group.items.length > 0);
 }
 
+function buildValidationIssueMaps(validation: ValidationResult | null): ValidationIssueMaps {
+  const byChange = new Map<string, ValidationIssue[]>();
+  const bySpec = new Map<string, ValidationIssue[]>();
+
+  for (const issue of validation?.issues ?? []) {
+    for (const association of issue.associations) {
+      if (association.kind === "change") {
+        const current = byChange.get(association.id);
+        if (current) {
+          current.push(issue);
+        } else {
+          byChange.set(association.id, [issue]);
+        }
+        continue;
+      }
+
+      if (association.kind === "spec") {
+        const current = bySpec.get(association.id);
+        if (current) {
+          current.push(issue);
+        } else {
+          bySpec.set(association.id, [issue]);
+        }
+      }
+    }
+  }
+
+  return { byChange, bySpec };
+}
+
 function matchesChangeFilters(change: ChangeRecord, phase: ChangePhase, query: string): boolean {
   const normalizedQuery = query.trim().toLowerCase();
 
   return (
     change.phase === phase &&
     (normalizedQuery.length === 0 ||
-      change.title.toLowerCase().includes(normalizedQuery) ||
-      change.name.toLowerCase().includes(normalizedQuery) ||
-      change.capabilities.some((capability) => capability.toLowerCase().includes(normalizedQuery)))
+      change.searchText.includes(normalizedQuery))
   );
+}
+
+function searchableText(parts: string[]): string {
+  return parts
+    .filter((part) => part.length > 0)
+    .join("\n")
+    .toLowerCase();
 }
 
 function matchesSpecFilters(spec: SpecRecord, query: string): boolean {
@@ -2285,16 +2723,7 @@ function matchesSpecFilters(spec: SpecRecord, query: string): boolean {
 
   return (
     normalizedQuery.length === 0 ||
-    spec.capability.toLowerCase().includes(normalizedQuery) ||
-    spec.summary.toLowerCase().includes(normalizedQuery)
-  );
-}
-
-function issuesForChange(validation: ValidationResult | null, changeName: string): ValidationIssue[] {
-  return (
-    validation?.issues.filter((issue) =>
-      issue.associations.some((association) => association.kind === "change" && association.id === changeName),
-    ) ?? []
+    spec.searchText.includes(normalizedQuery)
   );
 }
 
@@ -2479,6 +2908,104 @@ function changeSourcePath(change: ChangeRecord): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function activeChangeNamesFromFileRecords(records: VirtualOpenSpecFileRecord[]): string[] {
+  const names = new Set<string>();
+
+  for (const record of records) {
+    const parts = record.path.replace(/\\/g, "/").replace(/^\/+/, "").split("/");
+
+    if (parts[0] !== "openspec" || parts[1] !== "changes" || parts[2] === "archive" || !parts[2]) {
+      continue;
+    }
+
+    names.add(parts[2]);
+  }
+
+  return Array.from(names).sort((left, right) => left.localeCompare(right));
+}
+
+function statusCacheId(repoPath: string, changeName: string): string {
+  return repoPath + "\0" + changeName;
+}
+
+function changeStatusFreshnessKey(
+  records: VirtualOpenSpecFileRecord[],
+  changeName: string,
+): string {
+  const prefix = "openspec/changes/" + changeName + "/";
+
+  return records
+    .filter((record) => record.kind !== "directory" && record.path.startsWith(prefix))
+    .map((record) => record.path + ":" + (record.modifiedTimeMs ?? 0) + ":" + (record.fileSize ?? 0))
+    .sort()
+    .join("|");
+}
+
+function pruneStatusCache(cache: Map<string, StatusCacheEntry>) {
+  while (cache.size > STATUS_CACHE_LIMIT) {
+    const firstKey = cache.keys().next().value;
+
+    if (firstKey === undefined) {
+      return;
+    }
+
+    cache.delete(firstKey);
+  }
+}
+
+async function mapWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number,
+): Promise<T[]> {
+  const results: T[] = [];
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await tasks[index]();
+    }
+  }
+
+  const workerCount = Math.min(Math.max(1, concurrency), tasks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return results;
+}
+
+function areGitStatusesEqual(left: OpenSpecGitStatus, right: OpenSpecGitStatus): boolean {
+  return (
+    left.state === right.state &&
+    left.dirtyCount === right.dirtyCount &&
+    left.message === right.message &&
+    left.entries.length === right.entries.length &&
+    left.entries.every((entry, index) => entry === right.entries[index])
+  );
+}
+
+function boundedRows<T extends { id: string }>(
+  rows: T[],
+  selectedId: string,
+  limit: number,
+): BoundedRows<T> {
+  if (rows.length <= limit) {
+    return { rows, hiddenCount: 0 };
+  }
+
+  const bounded = rows.slice(0, limit);
+  const selectedIndex = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1;
+
+  if (selectedIndex >= limit) {
+    bounded.push(rows[selectedIndex]);
+  }
+
+  return {
+    rows: bounded,
+    hiddenCount: rows.length - bounded.length,
+  };
 }
 
 function absoluteArtifactPath(repoPath: string, artifactPath: string): string {

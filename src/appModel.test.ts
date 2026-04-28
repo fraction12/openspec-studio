@@ -110,16 +110,18 @@ describe("buildOpenSpecFileSignature", () => {
           path: "openspec/changes/demo/tasks.md",
           kind: "file",
           modifiedTimeMs: 20,
+          fileSize: 12,
         },
         {
           path: "openspec/changes/demo/proposal.md",
           kind: "file",
           modifiedTimeMs: 30,
+          fileSize: 42,
         },
       ]),
     ).toEqual({
       fingerprint:
-        "openspec/changes/demo/proposal.md:file:30|openspec/changes/demo/tasks.md:file:20",
+        "openspec/changes/demo/proposal.md:file:30:42|openspec/changes/demo/tasks.md:file:20:12",
       latestPath: "openspec/changes/demo/proposal.md",
       latestModifiedTimeMs: 30,
     });

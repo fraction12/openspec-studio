@@ -1,0 +1,23 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1024" height="1024" rx="228" fill="#101422"/>
+  <rect x="118" y="118" width="788" height="788" rx="176" fill="#F7F6F1"/>
+  <rect x="118" y="118" width="788" height="788" rx="176" stroke="#D8D3C8" stroke-width="10"/>
+  <rect x="244" y="194" width="536" height="636" rx="54" fill="#FFFFFF"/>
+  <rect x="244" y="194" width="536" height="636" rx="54" stroke="#D6D1C7" stroke-width="8"/>
+  <path d="M664 194H300C269.072 194 244 219.072 244 250V304H780V250C780 219.072 754.928 194 724 194H664Z" fill="#101422"/>
+  <circle cx="302" cy="249" r="14" fill="#F7F6F1"/>
+  <circle cx="350" cy="249" r="14" fill="#D6D1C7"/>
+  <circle cx="398" cy="249" r="14" fill="#F7F6F1"/>
+  <text x="512" y="268" text-anchor="middle" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="72" font-weight="700" letter-spacing="0" fill="#F7F6F1">OS</text>
+  <rect x="318" y="388" width="388" height="42" rx="21" fill="#101422"/>
+  <rect x="318" y="474" width="92" height="34" rx="17" fill="#EAF5ED"/>
+  <rect x="434" y="482" width="230" height="18" rx="9" fill="#D6D1C7"/>
+  <path d="M361 486V496M356 491H366" stroke="#23824D" stroke-width="10" stroke-linecap="round"/>
+  <rect x="318" y="558" width="92" height="34" rx="17" fill="#FFF1D7"/>
+  <rect x="434" y="566" width="178" height="18" rx="9" fill="#D6D1C7"/>
+  <path d="M356 575H366" stroke="#B87710" stroke-width="10" stroke-linecap="round"/>
+  <rect x="318" y="642" width="92" height="34" rx="17" fill="#EAF5ED"/>
+  <rect x="434" y="650" width="260" height="18" rx="9" fill="#D6D1C7"/>
+  <path d="M361 654V664M356 659H366" stroke="#23824D" stroke-width="10" stroke-linecap="round"/>
+  <rect x="318" y="728" width="250" height="28" rx="14" fill="#101422" opacity="0.92"/>
+</svg>

@@ -113,7 +113,7 @@ button:disabled {
 
 .studio-shell {
   display: grid;
-  grid-template-columns: 220px minmax(560px, 1fr) minmax(340px, 30vw);
+  grid-template-columns: 220px minmax(0, 1fr) minmax(320px, clamp(320px, 30vw, 460px));
   grid-template-rows: minmax(0, 1fr) 52px;
   width: 100%;
   height: 100%;
@@ -139,17 +139,10 @@ button:disabled {
 }
 
 .brand-mark {
-  display: grid;
   width: 32px;
   height: 32px;
-  place-items: center;
-  border: 1px solid var(--color-accent);
   border-radius: var(--radius-lg);
-  color: var(--color-surface);
-  background: var(--color-accent);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-heavy);
-  letter-spacing: 0;
+  box-shadow: var(--shadow-subtle);
 }
 
 .brand p,
@@ -178,6 +171,13 @@ button:disabled {
 .rail-section {
   padding: var(--space-14) var(--space-15);
   border-bottom: 1px solid var(--color-border-soft);
+}
+
+.repo-rail .rail-section:last-child {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
 }
 
 .rail-heading {
@@ -261,6 +261,11 @@ button:disabled {
 .recent-repos {
   display: grid;
   gap: var(--space-7);
+  min-height: 0;
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  padding-right: var(--space-2);
+  scrollbar-gutter: stable;
 }
 
 .recent-repos button {
@@ -602,10 +607,10 @@ button:disabled {
 }
 
 .board-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(260px, 1fr);
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
   gap: 16px;
   padding: var(--space-13) var(--space-16);
   border-bottom: 1px solid var(--color-border-soft);
@@ -618,6 +623,11 @@ button:disabled {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: var(--space-9);
+}
+
+.board-toolbar > .segmented {
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .board-toolbar h2,
@@ -640,7 +650,8 @@ button:disabled {
 .search-field {
   position: relative;
   display: block;
-  width: min(280px, 38%);
+  width: 100%;
+  max-width: 280px;
   min-width: 190px;
 }
 
@@ -684,25 +695,25 @@ button:disabled {
 }
 
 .change-table {
-  width: max(100%, 760px);
-  min-width: 760px;
+  width: max(100%, 790px);
+  min-width: 790px;
   border-collapse: separate;
   border-spacing: 0 var(--space-7);
   table-layout: fixed;
 }
 
 .change-table.has-actions {
-  width: max(100%, 840px);
-  min-width: 840px;
+  width: max(100%, 870px);
+  min-width: 870px;
 }
 
 .specs-table {
-  width: max(100%, 620px);
-  min-width: 620px;
+  width: max(100%, 740px);
+  min-width: 740px;
 }
 
 .change-table col.trust-col {
-  width: 116px;
+  width: 128px;
 }
 
 .change-table col.tasks-col {
@@ -722,7 +733,7 @@ button:disabled {
 }
 
 .specs-table col.spec-trust-col {
-  width: 124px;
+  width: 136px;
 }
 
 .specs-table col.spec-requirements-col {
@@ -751,11 +762,24 @@ button:disabled {
 .change-table td {
   height: var(--table-row-height);
   border-top: 1px solid transparent;
+  border-right: 0 solid transparent;
   border-bottom: 1px solid transparent;
+  border-left: 0 solid transparent;
   padding: var(--space-10);
   color: var(--color-text-soft);
   font-size: var(--font-size-sm);
   vertical-align: middle;
+}
+
+.change-table td:first-child {
+  border-left-width: 1px;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  padding-left: var(--space-12);
+}
+
+.change-table td:last-child {
+  border-right-width: 1px;
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
 }
 
 .change-table tbody tr[role="button"] {
@@ -774,17 +798,14 @@ button:disabled {
 .change-table tr:focus-within td:first-child,
 .change-table tr:focus-visible td:first-child,
 .change-table tr.is-selected td:first-child {
-  border-left: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
-  padding-left: var(--space-12);
+  border-left-color: var(--color-border-strong);
 }
 
 .change-table tr:hover td:last-child,
 .change-table tr:focus-within td:last-child,
 .change-table tr:focus-visible td:last-child,
 .change-table tr.is-selected td:last-child {
-  border-right: 1px solid var(--color-border-strong);
-  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+  border-right-color: var(--color-border-strong);
 }
 
 .change-table tr:hover td,
@@ -899,7 +920,7 @@ button:disabled {
   max-width: 100%;
   border: 1px solid var(--color-border);
   border-radius: 999px;
-  padding: 3px 8px;
+  padding: 3px 10px;
   color: var(--color-muted-strong);
   background: var(--color-surface);
   font-size: 12px;
@@ -909,7 +930,7 @@ button:disabled {
 }
 
 .change-table .health-pill {
-  min-width: 98px;
+  min-width: 112px;
 }
 
 .health-pill.valid {
@@ -1167,8 +1188,8 @@ button:disabled {
 .markdown-preview {
   display: grid;
   gap: var(--space-12);
-  max-height: 460px;
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
   margin: 0;
   border: 1px solid var(--document-border);
   border-radius: var(--radius-lg);
@@ -1215,7 +1236,9 @@ button:disabled {
 }
 
 .markdown-code {
-  overflow: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
   margin: 0;
   border: 1px solid #2d3540;
   border-radius: var(--radius-lg);
@@ -1652,7 +1675,19 @@ button:disabled {
   white-space: nowrap;
 }
 
-@container (max-width: 500px) {
+@container (max-width: 640px) {
+  .board-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .board-actions {
+    justify-content: stretch;
+  }
+
+  .board-actions .search-field {
+    max-width: none;
+  }
+
   .progress-copy {
     gap: 4px;
   }
@@ -1670,7 +1705,7 @@ button:disabled {
 @media (max-width: 1080px) {
   .studio-shell {
     grid-template-columns: 220px minmax(0, 1fr);
-    grid-template-rows: minmax(440px, 1fr) minmax(320px, 42vh) 56px;
+    grid-template-rows: minmax(0, 1fr) minmax(0, min(42vh, 360px)) 56px;
   }
 
   .repo-rail {
@@ -1722,6 +1757,13 @@ button:disabled {
   .workspace-header,
   .board-toolbar {
     align-items: stretch;
+  }
+
+  .board-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-header {
     flex-direction: column;
   }
 
@@ -1731,6 +1773,7 @@ button:disabled {
 
   .search-field {
     width: 100%;
+    max-width: none;
   }
 
   .status-band {

@@ -2,7 +2,9 @@ export interface VirtualOpenSpecFileRecord {
   path: string;
   kind?: "file" | "directory";
   modifiedTimeMs?: number;
+  fileSize?: number;
   content?: string;
+  readError?: string;
 }
 
 export interface VirtualOpenSpecChangeStatusRecord {
@@ -149,52 +151,43 @@ interface ModifiedTimeSummary {
   modifiedTimeTrace: OpenSpecSourceTrace;
 }
 
+interface OpenSpecFileBuckets {
+  fileByPath: Map<string, NormalizedOpenSpecFileRecord>;
+  activeChanges: Map<string, ChangeFileBucket>;
+  archivedChanges: Map<string, ChangeFileBucket>;
+  specs: IndexedSpec[];
+}
+
+interface ChangeFileBucket {
+  name: string;
+  path: string;
+  modifiedTime?: ModifiedTimeSummary;
+  deltaSpecsByPath: Map<string, IndexedDeltaSpecArtifact>;
+}
+
 export function indexOpenSpecWorkspace(snapshot: {
   files: VirtualOpenSpecFileRecord[];
   changeStatuses?: VirtualOpenSpecChangeStatusRecord[];
 }): IndexedOpenSpecWorkspace {
   const files = normalizeFileRecords(snapshot.files);
-  const fileByPath = new Map(
-    files
-      .filter((file) => file.kind === "file")
-      .map((file) => [file.path, file] as const),
-  );
+  const buckets = buildOpenSpecFileBuckets(files);
   const statusByChange = new Map(
     (snapshot.changeStatuses ?? []).map((status) => [
       status.changeName,
       status,
     ]),
   );
-  const activeChangeNames = new Set<string>();
-  const archivedChangeNames = new Set<string>();
-
-  for (const file of files) {
-    const parts = file.path.split("/");
-
-    if (parts[0] !== "openspec" || parts[1] !== "changes") {
-      continue;
-    }
-
-    if (parts[2] === "archive") {
-      if (parts[3]) {
-        archivedChangeNames.add(parts[3]);
-      }
-      continue;
-    }
-
-    if (parts[2]) {
-      activeChangeNames.add(parts[2]);
-    }
-  }
 
   return {
-    activeChanges: Array.from(activeChangeNames)
-      .sort(compareStrings)
-      .map((name) => buildActiveChange(name, files, fileByPath, statusByChange)),
-    archivedChanges: Array.from(archivedChangeNames)
-      .sort(compareStrings)
-      .map((name) => buildArchivedChange(name, files)),
-    specs: buildSpecs(fileByPath),
+    activeChanges: Array.from(buckets.activeChanges.values())
+      .sort(compareBucketsByName)
+      .map((bucket) =>
+        buildActiveChange(bucket, buckets.fileByPath, statusByChange),
+      ),
+    archivedChanges: Array.from(buckets.archivedChanges.values())
+      .sort(compareBucketsByName)
+      .map((bucket) => buildArchivedChange(bucket, buckets.fileByPath)),
+    specs: buckets.specs,
   };
 }
 
@@ -220,18 +213,178 @@ function normalizePath(path: string): string {
     .replace(/\/$/, "");
 }
 
-function buildActiveChange(
-  name: string,
+function buildOpenSpecFileBuckets(
   files: NormalizedOpenSpecFileRecord[],
+): OpenSpecFileBuckets {
+  const fileByPath = new Map<string, NormalizedOpenSpecFileRecord>();
+  const activeChanges = new Map<string, ChangeFileBucket>();
+  const archivedChanges = new Map<string, ChangeFileBucket>();
+  const specsByPath = new Map<string, IndexedSpec>();
+
+  for (const file of files) {
+    if (file.kind === "file") {
+      fileByPath.set(file.path, file);
+      addRootSpec(specsByPath, file);
+    }
+
+    const changeBucket = getChangeFileBucket(
+      file,
+      activeChanges,
+      archivedChanges,
+    );
+
+    if (!changeBucket) {
+      continue;
+    }
+
+    addModifiedTime(changeBucket, file);
+
+    if (file.kind === "file") {
+      addDeltaSpec(changeBucket, file);
+    }
+  }
+
+  return {
+    fileByPath,
+    activeChanges,
+    archivedChanges,
+    specs: Array.from(specsByPath.values()).sort(compareSpecsByCapability),
+  };
+}
+
+function getChangeFileBucket(
+  file: NormalizedOpenSpecFileRecord,
+  activeChanges: Map<string, ChangeFileBucket>,
+  archivedChanges: Map<string, ChangeFileBucket>,
+): ChangeFileBucket | undefined {
+  const parts = file.path.split("/");
+
+  if (parts[0] !== "openspec" || parts[1] !== "changes") {
+    return undefined;
+  }
+
+  if (parts[2] === "archive") {
+    return parts[3]
+      ? getOrCreateChangeBucket(
+          archivedChanges,
+          parts[3],
+          `openspec/changes/archive/${parts[3]}`,
+        )
+      : undefined;
+  }
+
+  return parts[2]
+    ? getOrCreateChangeBucket(
+        activeChanges,
+        parts[2],
+        `openspec/changes/${parts[2]}`,
+      )
+    : undefined;
+}
+
+function getOrCreateChangeBucket(
+  buckets: Map<string, ChangeFileBucket>,
+  name: string,
+  path: string,
+): ChangeFileBucket {
+  const existing = buckets.get(name);
+
+  if (existing) {
+    return existing;
+  }
+
+  const bucket: ChangeFileBucket = {
+    name,
+    path,
+    deltaSpecsByPath: new Map(),
+  };
+  buckets.set(name, bucket);
+
+  return bucket;
+}
+
+function addModifiedTime(
+  bucket: ChangeFileBucket,
+  file: NormalizedOpenSpecFileRecord,
+): void {
+  if (
+    !file.path.startsWith(`${bucket.path}/`) ||
+    file.modifiedTimeMs === undefined
+  ) {
+    return;
+  }
+
+  if (
+    !bucket.modifiedTime ||
+    file.modifiedTimeMs > bucket.modifiedTime.modifiedTimeMs
+  ) {
+    bucket.modifiedTime = {
+      modifiedTimeMs: file.modifiedTimeMs,
+      modifiedTimeTrace: fileRecordTrace(file.path),
+    };
+  }
+}
+
+function addRootSpec(
+  specsByPath: Map<string, IndexedSpec>,
+  file: NormalizedOpenSpecFileRecord,
+): void {
+  const capability = extractCapability(file.path, "openspec/specs/");
+
+  if (!capability) {
+    return;
+  }
+
+  const spec: IndexedSpec = {
+    capability,
+    path: file.path,
+    sourceTrace: fileTreeTrace(file.path),
+  };
+
+  if (file.modifiedTimeMs !== undefined) {
+    spec.modifiedTimeMs = file.modifiedTimeMs;
+    spec.modifiedTimeTrace = fileRecordTrace(file.path);
+  }
+
+  specsByPath.set(file.path, spec);
+}
+
+function addDeltaSpec(
+  bucket: ChangeFileBucket,
+  file: NormalizedOpenSpecFileRecord,
+): void {
+  const capability = extractCapability(file.path, `${bucket.path}/specs/`);
+
+  if (!capability) {
+    return;
+  }
+
+  const spec: IndexedDeltaSpecArtifact = {
+    kind: "delta-spec",
+    capability,
+    exists: true,
+    path: file.path,
+    sourceTrace: fileTreeTrace(file.path),
+  };
+
+  if (file.modifiedTimeMs !== undefined) {
+    spec.modifiedTimeMs = file.modifiedTimeMs;
+    spec.modifiedTimeTrace = fileRecordTrace(file.path);
+  }
+
+  bucket.deltaSpecsByPath.set(file.path, spec);
+}
+
+function buildActiveChange(
+  bucket: ChangeFileBucket,
   fileByPath: Map<string, NormalizedOpenSpecFileRecord>,
   statusByChange: Map<string, VirtualOpenSpecChangeStatusRecord>,
 ): IndexedActiveChange {
-  const path = `openspec/changes/${name}`;
-  const status = statusByChange.get(name);
+  const { name, path } = bucket;
+  const status = statusByChange.get(bucket.name);
   const artifactStatuses = new Map(
     (status?.artifacts ?? []).map((artifact) => [artifact.id, artifact]),
   );
-  const modifiedTime = getModifiedTimeForPrefix(files, `${path}/`);
   const artifacts: IndexedChangeArtifacts = {
     proposal: buildRequiredArtifact(
       "proposal",
@@ -251,7 +404,7 @@ function buildActiveChange(
       fileByPath,
       artifactStatuses.get("tasks"),
     ),
-    deltaSpecs: buildDeltaSpecs(path, fileByPath),
+    deltaSpecs: getBucketDeltaSpecs(bucket),
   };
   const change: IndexedActiveChange = {
     name,
@@ -267,30 +420,24 @@ function buildActiveChange(
     sourceTrace: fileTreeTrace(path),
   };
 
-  if (modifiedTime) {
-    change.modifiedTimeMs = modifiedTime.modifiedTimeMs;
-    change.modifiedTimeTrace = modifiedTime.modifiedTimeTrace;
+  if (bucket.modifiedTime) {
+    change.modifiedTimeMs = bucket.modifiedTime.modifiedTimeMs;
+    change.modifiedTimeTrace = bucket.modifiedTime.modifiedTimeTrace;
   }
 
   return change;
 }
 
 function buildArchivedChange(
-  name: string,
-  files: NormalizedOpenSpecFileRecord[],
+  bucket: ChangeFileBucket,
+  fileByPath: Map<string, NormalizedOpenSpecFileRecord>,
 ): IndexedArchivedChange {
-  const path = `openspec/changes/archive/${name}`;
-  const fileByPath = new Map(
-    files
-      .filter((file) => file.kind === "file")
-      .map((file) => [file.path, file] as const),
-  );
-  const modifiedTime = getModifiedTimeForPrefix(files, `${path}/`);
+  const { name, path } = bucket;
   const artifacts: IndexedChangeArtifacts = {
     proposal: buildRequiredArtifact("proposal", `${path}/proposal.md`, fileByPath),
     design: buildRequiredArtifact("design", `${path}/design.md`, fileByPath),
     tasks: buildRequiredArtifact("tasks", `${path}/tasks.md`, fileByPath),
-    deltaSpecs: buildDeltaSpecs(path, fileByPath),
+    deltaSpecs: getBucketDeltaSpecs(bucket),
   };
   const change: IndexedArchivedChange = {
     name,
@@ -306,9 +453,9 @@ function buildArchivedChange(
     sourceTrace: fileTreeTrace(path),
   };
 
-  if (modifiedTime) {
-    change.modifiedTimeMs = modifiedTime.modifiedTimeMs;
-    change.modifiedTimeTrace = modifiedTime.modifiedTimeTrace;
+  if (bucket.modifiedTime) {
+    change.modifiedTimeMs = bucket.modifiedTime.modifiedTimeMs;
+    change.modifiedTimeTrace = bucket.modifiedTime.modifiedTimeTrace;
   }
 
   return change;
@@ -325,37 +472,6 @@ function parseArchiveMetadata(name: string): IndexedArchiveMetadata {
     archivedDate: match.groups.date,
     originalName: match.groups.originalName,
   };
-}
-
-function buildSpecs(
-  fileByPath: Map<string, NormalizedOpenSpecFileRecord>,
-): IndexedSpec[] {
-  const specs: IndexedSpec[] = [];
-
-  for (const [path, file] of fileByPath) {
-    const capability = extractCapability(path, "openspec/specs/");
-
-    if (!capability) {
-      continue;
-    }
-
-    const spec: IndexedSpec = {
-      capability,
-      path,
-      sourceTrace: fileTreeTrace(path),
-    };
-
-    if (file.modifiedTimeMs !== undefined) {
-      spec.modifiedTimeMs = file.modifiedTimeMs;
-      spec.modifiedTimeTrace = fileRecordTrace(path);
-    }
-
-    specs.push(spec);
-  }
-
-  return specs.sort((left, right) =>
-    compareStrings(left.capability, right.capability),
-  );
 }
 
 function buildRequiredArtifact(
@@ -388,38 +504,11 @@ function buildRequiredArtifact(
   return artifact;
 }
 
-function buildDeltaSpecs(
-  changePath: string,
-  fileByPath: Map<string, NormalizedOpenSpecFileRecord>,
+function getBucketDeltaSpecs(
+  bucket: ChangeFileBucket,
 ): IndexedDeltaSpecArtifact[] {
-  const prefix = `${changePath}/specs/`;
-  const specs: IndexedDeltaSpecArtifact[] = [];
-
-  for (const [path, file] of fileByPath) {
-    const capability = extractCapability(path, prefix);
-
-    if (!capability) {
-      continue;
-    }
-
-    const spec: IndexedDeltaSpecArtifact = {
-      kind: "delta-spec",
-      capability,
-      exists: true,
-      path,
-      sourceTrace: fileTreeTrace(path),
-    };
-
-    if (file.modifiedTimeMs !== undefined) {
-      spec.modifiedTimeMs = file.modifiedTimeMs;
-      spec.modifiedTimeTrace = fileRecordTrace(path);
-    }
-
-    specs.push(spec);
-  }
-
-  return specs.sort((left, right) =>
-    compareStrings(left.capability, right.capability),
+  return Array.from(bucket.deltaSpecsByPath.values()).sort(
+    compareDeltaSpecsByCapability,
   );
 }
 
@@ -543,28 +632,6 @@ function deriveWorkflowStatus(
   return artifactStatuses.length > 0 ? "in-progress" : "unknown";
 }
 
-function getModifiedTimeForPrefix(
-  files: NormalizedOpenSpecFileRecord[],
-  prefix: string,
-): ModifiedTimeSummary | undefined {
-  let latest: ModifiedTimeSummary | undefined;
-
-  for (const file of files) {
-    if (!file.path.startsWith(prefix) || file.modifiedTimeMs === undefined) {
-      continue;
-    }
-
-    if (!latest || file.modifiedTimeMs > latest.modifiedTimeMs) {
-      latest = {
-        modifiedTimeMs: file.modifiedTimeMs,
-        modifiedTimeTrace: fileRecordTrace(file.path),
-      };
-    }
-  }
-
-  return latest;
-}
-
 function fileTreeTrace(path: string): OpenSpecSourceTrace {
   return {
     source: "file-tree",
@@ -581,4 +648,22 @@ function fileRecordTrace(path: string): OpenSpecSourceTrace {
 
 function compareStrings(left: string, right: string): number {
   return left.localeCompare(right);
+}
+
+function compareBucketsByName(
+  left: ChangeFileBucket,
+  right: ChangeFileBucket,
+): number {
+  return compareStrings(left.name, right.name);
+}
+
+function compareSpecsByCapability(left: IndexedSpec, right: IndexedSpec): number {
+  return compareStrings(left.capability, right.capability);
+}
+
+function compareDeltaSpecsByCapability(
+  left: IndexedDeltaSpecArtifact,
+  right: IndexedDeltaSpecArtifact,
+): number {
+  return compareStrings(left.capability, right.capability);
 }

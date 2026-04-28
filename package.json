@@ -9,6 +9,8 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "perf:fixture": "node scripts/create-large-openspec-fixture.mjs --reset",
+    "perf:measure": "node scripts/measure-openspec-workspace.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
