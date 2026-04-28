@@ -221,6 +221,4 @@ AI-generated code is welcome if it is reviewed, tested, and clearly verified.
 
 ## License
 
-No license has been selected yet.
-
-Until a license is added, this repository is source-available only and not legally reusable as open source.
+MIT. See [LICENSE](LICENSE).
