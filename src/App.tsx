@@ -554,7 +554,7 @@ function App() {
       endpoint,
     });
     try {
-      const dto = await invoke<RunnerLifecycleResponseDto>("start_studio_runner", {
+      const dto = await invoke<RunnerLifecycleResponseDto>("restart_studio_runner", {
         request: {
           repoPath: runnerRepoPath(),
           endpoint,

@@ -124,6 +124,8 @@ pub struct StudioRunnerLifecycleRequest {
     pub repo_path: String,
     #[serde(rename = "endpoint", default)]
     pub endpoint: Option<String>,
+    #[serde(default)]
+    pub restart: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -568,6 +570,14 @@ pub async fn start_studio_runner(
 }
 
 #[tauri::command]
+pub async fn restart_studio_runner(
+    mut request: StudioRunnerLifecycleRequest,
+) -> Result<StudioRunnerLifecycleResponse, BridgeErrorDto> {
+    request.restart = true;
+    run_bridge_task(move || start_runner_process(request)).await
+}
+
+#[tauri::command]
 pub async fn stop_studio_runner() -> Result<StudioRunnerLifecycleResponse, BridgeErrorDto> {
     run_bridge_task(stop_runner_process).await
 }
@@ -760,7 +770,7 @@ fn runner_process_is_active(process: &mut StudioRunnerProcess) -> Result<bool, B
         process.child = None;
     }
 
-    Ok(runner_process_command(process.pid).is_some())
+    Ok(runner_listener_pid(process.port) == Some(process.pid) && runner_process_command(process.pid).is_some())
 }
 
 fn start_runner_process(
@@ -800,9 +810,10 @@ fn start_runner_process(
 
     if let Some(existing) = store.as_mut() {
         if runner_process_is_active(existing)? {
-            if existing.endpoint == endpoint
-                && (existing.repo_path == repo_path || existing.child.is_none())
-            {
+            if request.restart {
+                terminate_runner_process(existing.pid, existing.child.as_mut());
+                *store = None;
+            } else if existing.endpoint == endpoint && existing.repo_path == repo_path {
                 return Ok(StudioRunnerLifecycleResponse {
                     started: false,
                     endpoint: existing.endpoint.clone(),
@@ -810,12 +821,35 @@ fn start_runner_process(
                     pid: Some(existing.pid),
                     message: "Studio Runner is already managed by Studio.".to_string(),
                 });
+            } else {
+                return Err(BridgeError::RunnerRequest {
+                    message: "A managed Studio Runner is already running for a different repository or endpoint. Stop it before starting another.".to_string(),
+                });
             }
+        } else {
+            *store = None;
+        }
+    }
+
+    if request.restart {
+        terminate_matching_runner_listener(port, &repo_path)?;
+    } else if let Some(pid) = runner_listener_pid(port) {
+        let Some(command) = runner_process_command(pid) else {
             return Err(BridgeError::RunnerRequest {
-                message: "A managed Studio Runner is already running for a different repository or endpoint. Stop it before starting another.".to_string(),
+                message: format!("Port {port} is already in use. Stop it or choose another Studio Runner endpoint."),
+            });
+        };
+        let expected = path_to_string(&repo_path);
+        if !(command.contains("bin/symphony") || command.contains("/symphony ")) || !command.contains(&expected) {
+            return Err(BridgeError::RunnerRequest {
+                message: format!(
+                    "Port {port} is already in use by a non-matching process. Stop it or choose another Studio Runner endpoint."
+                ),
             });
         }
-        *store = None;
+        return Err(BridgeError::RunnerRequest {
+            message: format!("A Studio Runner is already listening on port {port}. Use Restart Runner so Studio can replace it with the current session secret."),
+        });
     }
 
     let mut command = Command::new(studio_runner_program(&repo_path));
@@ -1228,6 +1262,35 @@ fn recover_managed_runner_from_endpoint(
         endpoint: endpoint.to_string(),
         repo_path: recovered_repo_path,
     }))
+}
+
+fn terminate_matching_runner_listener(port: u16, expected_repo_path: &Path) -> Result<(), BridgeError> {
+    let Some(pid) = runner_listener_pid(port) else {
+        return Ok(());
+    };
+    let expected = path_to_string(expected_repo_path);
+    let Some(command) = runner_process_command(pid) else {
+        return Ok(());
+    };
+    if !(command.contains("bin/symphony") || command.contains("/symphony ")) || !command.contains(&expected) {
+        return Err(BridgeError::RunnerRequest {
+            message: format!(
+                "Port {port} is already in use by a non-matching process. Stop it or choose another Studio Runner endpoint."
+            ),
+        });
+    }
+    terminate_pid_gracefully(pid);
+    thread::sleep(COMMAND_TERMINATION_GRACE);
+    if runner_listener_pid(port) == Some(pid) {
+        terminate_pid_forcefully(pid);
+        thread::sleep(COMMAND_TERMINATION_GRACE);
+    }
+    if runner_listener_pid(port).is_some() {
+        return Err(BridgeError::RunnerRequest {
+            message: format!("Port {port} is still in use after stopping the stale Studio Runner."),
+        });
+    }
+    Ok(())
 }
 
 fn runner_listener_pid(port: u16) -> Option<u32> {
@@ -2252,13 +2315,19 @@ PY
         let previous_bin = std::env::var_os("OPENSPEC_STUDIO_RUNNER_BIN");
         std::env::set_var("OPENSPEC_STUDIO_RUNNER_BIN", &runner_bin);
 
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+        let port = listener.local_addr().expect("local addr should exist").port();
+        drop(listener);
+        let endpoint = format!("http://127.0.0.1:{port}/api/v1/studio-runner/events");
+
         let response = start_runner_process(StudioRunnerLifecycleRequest {
             repo_path: path_to_string(&runner_repo),
-            endpoint: Some("http://127.0.0.1:45123/api/v1/studio-runner/events".to_string()),
+            endpoint: Some(endpoint.clone()),
+            restart: false,
         })
         .expect("runner should start and pass health");
         assert!(response.started);
-        assert_eq!(response.port, 45123);
+        assert_eq!(response.port, port);
         let status = check_runner_status(StudioRunnerSettings {
             endpoint: response.endpoint.clone(),
             repo_path: Some(path_to_string(&runner_repo)),
@@ -2273,7 +2342,7 @@ PY
         );
 
         let other_endpoint_status = check_runner_status(StudioRunnerSettings {
-            endpoint: "http://127.0.0.1:45124/api/v1/studio-runner/events".to_string(),
+            endpoint: format!("http://127.0.0.1:{}/api/v1/studio-runner/events", port + 1),
             repo_path: Some(path_to_string(&runner_repo)),
         })
         .expect("other endpoint status should be reported");
@@ -2313,7 +2382,7 @@ PY
         );
 
         let stopped = stop_runner_process().expect("runner should stop");
-        assert_eq!(stopped.port, 45123);
+        assert_eq!(stopped.port, port);
 
         if let Some(value) = previous_bin {
             std::env::set_var("OPENSPEC_STUDIO_RUNNER_BIN", value);
