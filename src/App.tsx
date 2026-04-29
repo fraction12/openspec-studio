@@ -64,7 +64,7 @@ import {
 } from "./persistence";
 
 type RepoState = "ready" | "no-workspace" | "cli-failure";
-type BoardView = "changes" | "specs";
+type BoardView = "changes" | "specs" | "runner";
 type ChangePhase = "active" | "archive-ready" | "archived";
 type DetailTab = "proposal" | "design" | "tasks" | "spec-delta" | "status" | "archive-info";
 type Health = ChangeHealth;
@@ -841,6 +841,10 @@ function App() {
     runnerStatus,
     sessionSecretConfigured: runnerSessionSecretConfigured,
   });
+  const repoRunnerDispatchHistory = useMemo(
+    () => (persistedAppState.runnerDispatchAttempts ?? []).filter((attempt) => attempt.repoPath === repo?.path),
+    [persistedAppState.runnerDispatchAttempts, repo?.path],
+  );
 
   useEffect(() => {
     if (view !== "changes") {
@@ -1820,6 +1824,17 @@ function App() {
         onArchiveAll={(changeNames) => void archiveAllChanges(changeNames)}
         onValidate={() => void runValidation()}
         onReload={() => repo && void loadRepository(repo.path)}
+        runnerSettings={runnerSettings}
+        runnerStatus={runnerStatus}
+        runnerAllDispatchHistory={repoRunnerDispatchHistory}
+        runnerSessionSecretConfigured={runnerSessionSecretConfigured}
+        runnerBusy={runnerDispatchBusy || runnerLifecycleBusy}
+        onRunnerSettingsChange={updateRunnerSettings}
+        onConfigureRunnerSessionSecret={() => void configureRunnerSessionSecret()}
+        onClearRunnerSessionSecret={() => void clearRunnerSessionSecret()}
+        onCheckRunnerStatus={() => void checkRunnerStatus()}
+        onStartRunner={() => void startRunner()}
+        onStopRunner={() => void stopRunner()}
       />
 
       <Inspector
@@ -1828,11 +1843,9 @@ function App() {
         view={view}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
-        runnerSettings={runnerSettings}
         runnerStatus={runnerStatus}
         runnerDispatchEligibility={selectedChangeRunnerEligibility}
         runnerDispatchHistory={selectedChangeDispatchHistory}
-        runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
@@ -1840,12 +1853,6 @@ function App() {
         onDetailTabChange={setDetailTab}
         onOpenArtifact={(artifact) => void openArtifact(artifact)}
         onValidate={() => void runValidation()}
-        onRunnerSettingsChange={updateRunnerSettings}
-        onConfigureRunnerSessionSecret={() => void configureRunnerSessionSecret()}
-        onClearRunnerSessionSecret={() => void clearRunnerSessionSecret()}
-        onCheckRunnerStatus={() => void checkRunnerStatus()}
-        onStartRunner={() => void startRunner()}
-        onStopRunner={() => void stopRunner()}
         onDispatchRunner={() => void dispatchSelectedChange()}
         onRetryRunnerDispatch={(attempt) => void dispatchSelectedChange({ retryAttempt: attempt })}
       />
@@ -2008,6 +2015,17 @@ function WorkspaceMain({
   onArchiveAll,
   onValidate,
   onReload,
+  runnerSettings,
+  runnerStatus,
+  runnerAllDispatchHistory,
+  runnerSessionSecretConfigured,
+  runnerBusy,
+  onRunnerSettingsChange,
+  onConfigureRunnerSessionSecret,
+  onClearRunnerSessionSecret,
+  onCheckRunnerStatus,
+  onStartRunner,
+  onStopRunner,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
@@ -2023,6 +2041,11 @@ function WorkspaceMain({
   specSortDirection: BoardTableSortDirection;
   loadState: LoadState;
   archiveBusy: boolean;
+  runnerSettings: RunnerSettings;
+  runnerStatus: RunnerStatus;
+  runnerAllDispatchHistory: RunnerDispatchAttempt[];
+  runnerSessionSecretConfigured: boolean;
+  runnerBusy: boolean;
   onViewChange: (view: BoardView) => void;
   onPhaseChange: (phase: ChangePhase) => void;
   onChangesQueryChange: (query: string) => void;
@@ -2036,6 +2059,12 @@ function WorkspaceMain({
   onArchiveAll: (changeNames: string[]) => void;
   onValidate: () => void;
   onReload: () => void;
+  onRunnerSettingsChange: (settings: RunnerSettings) => void;
+  onConfigureRunnerSessionSecret: () => void;
+  onClearRunnerSessionSecret: () => void;
+  onCheckRunnerStatus: () => void;
+  onStartRunner: () => void;
+  onStopRunner: () => void;
 }) {
   if (!repo) {
     return (
@@ -2104,6 +2133,14 @@ function WorkspaceMain({
             >
               Specs
             </button>
+            <button
+              type="button"
+              aria-pressed={view === "runner"}
+              className={view === "runner" ? "is-active" : ""}
+              onClick={() => onViewChange("runner")}
+            >
+              Runner
+            </button>
           </div>
           <button type="button" className="primary-outline" onClick={onReload} disabled={loadState === "loading"}>
             Refresh files
@@ -2130,7 +2167,7 @@ function WorkspaceMain({
           onArchiveChange={onArchiveChange}
           onArchiveAll={onArchiveAll}
         />
-      ) : (
+      ) : view === "specs" ? (
         <SpecsBrowser
           specs={workspace.specs}
           selectedSpec={selectedSpec}
@@ -2140,6 +2177,21 @@ function WorkspaceMain({
           onQueryChange={onSpecsQueryChange}
           onSelectSpec={onSelectSpec}
           onSortDirectionChange={onSpecSortDirection}
+        />
+      ) : (
+        <RunnerWorkspace
+          repo={repo}
+          settings={runnerSettings}
+          status={runnerStatus}
+          history={runnerAllDispatchHistory}
+          sessionSecretConfigured={runnerSessionSecretConfigured}
+          busy={runnerBusy}
+          onSettingsChange={onRunnerSettingsChange}
+          onConfigureSessionSecret={onConfigureRunnerSessionSecret}
+          onClearSessionSecret={onClearRunnerSessionSecret}
+          onCheckStatus={onCheckRunnerStatus}
+          onStartRunner={onStartRunner}
+          onStopRunner={onStopRunner}
         />
       )}
     </main>
@@ -2797,11 +2849,9 @@ function Inspector({
   view,
   selectedChange,
   selectedSpec,
-  runnerSettings,
   runnerStatus,
   runnerDispatchEligibility,
   runnerDispatchHistory,
-  runnerSessionSecretConfigured,
   runnerDispatchBusy,
   detailTab,
   artifactPreview,
@@ -2809,12 +2859,6 @@ function Inspector({
   onDetailTabChange,
   onOpenArtifact,
   onValidate,
-  onRunnerSettingsChange,
-  onConfigureRunnerSessionSecret,
-  onClearRunnerSessionSecret,
-  onCheckRunnerStatus,
-  onStartRunner,
-  onStopRunner,
   onDispatchRunner,
   onRetryRunnerDispatch,
 }: {
@@ -2823,11 +2867,9 @@ function Inspector({
   view: BoardView;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
-  runnerSettings: RunnerSettings;
   runnerStatus: RunnerStatus;
   runnerDispatchEligibility: RunnerDispatchEligibility;
   runnerDispatchHistory: RunnerDispatchAttempt[];
-  runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
   detailTab: DetailTab;
   artifactPreview: string;
@@ -2835,12 +2877,6 @@ function Inspector({
   onDetailTabChange: (tab: DetailTab) => void;
   onOpenArtifact: (artifact: Artifact | SpecRecord) => void;
   onValidate: () => void;
-  onRunnerSettingsChange: (settings: RunnerSettings) => void;
-  onConfigureRunnerSessionSecret: () => void;
-  onClearRunnerSessionSecret: () => void;
-  onCheckRunnerStatus: () => void;
-  onStartRunner: () => void;
-  onStopRunner: () => void;
   onDispatchRunner: () => void;
   onRetryRunnerDispatch: (attempt: RunnerDispatchAttempt) => void;
 }) {
@@ -2933,19 +2969,11 @@ function Inspector({
         </div>
       </div>
 
-      <RunnerDispatchPanel
-        settings={runnerSettings}
+      <ChangeRunnerActionPanel
         status={runnerStatus}
         eligibility={runnerDispatchEligibility}
         history={runnerDispatchHistory}
-        sessionSecretConfigured={runnerSessionSecretConfigured}
         busy={runnerDispatchBusy}
-        onSettingsChange={onRunnerSettingsChange}
-        onConfigureSessionSecret={onConfigureRunnerSessionSecret}
-        onClearSessionSecret={onClearRunnerSessionSecret}
-        onCheckStatus={onCheckRunnerStatus}
-        onStartRunner={onStartRunner}
-        onStopRunner={onStopRunner}
         onDispatch={onDispatchRunner}
         onRetry={onRetryRunnerDispatch}
       />
@@ -2986,10 +3014,10 @@ function Inspector({
   );
 }
 
-function RunnerDispatchPanel({
+function RunnerWorkspace({
+  repo,
   settings,
   status,
-  eligibility,
   history,
   sessionSecretConfigured,
   busy,
@@ -2999,12 +3027,10 @@ function RunnerDispatchPanel({
   onCheckStatus,
   onStartRunner,
   onStopRunner,
-  onDispatch,
-  onRetry,
 }: {
+  repo: RepositoryView;
   settings: RunnerSettings;
   status: RunnerStatus;
-  eligibility: RunnerDispatchEligibility;
   history: RunnerDispatchAttempt[];
   sessionSecretConfigured: boolean;
   busy: boolean;
@@ -3014,38 +3040,85 @@ function RunnerDispatchPanel({
   onCheckStatus: () => void;
   onStartRunner: () => void;
   onStopRunner: () => void;
-  onDispatch: () => void;
-  onRetry: (attempt: RunnerDispatchAttempt) => void;
 }) {
-  const latestFailedAttempt = history.find((attempt) => attempt.status === "failed");
-
   return (
-    <section className="runner-dispatch-panel" aria-label="Studio Runner dispatch">
-      <div className="runner-dispatch-heading">
+    <section className="runner-workspace" aria-label="Studio Runner workspace">
+      <div className="runner-hero">
         <div>
-          <span>Studio Runner</span>
-          <strong>{status.label}</strong>
-          <p>{status.detail}</p>
+          <span>Repo runner</span>
+          <h2>Studio Runner</h2>
+          <p>Start one local runner for this repository, then dispatch selected changes from the inspector.</p>
         </div>
-        <HealthPill
-          health={status.state === "reachable" ? "valid" : status.state === "checking" || status.state === "starting" ? "stale" : "blocked"}
-          label={status.state === "reachable" ? "Reachable" : status.state === "starting" ? "Starting" : status.state === "checking" ? "Checking" : "Blocked"}
-        />
+        <HealthPill health={runnerHealth(status)} label={runnerStatusLabel(status)} />
       </div>
-      <div className="runner-settings-grid">
-        <label>
-          <span>Endpoint</span>
-          <input
-            value={settings.endpoint}
-            onChange={(event) => onSettingsChange({ ...settings, endpoint: event.target.value })}
-            placeholder="http://127.0.0.1:4000/api/v1/studio-runner/events"
-          />
-        </label>
-        <div className="runner-session-secret-card">
-          <span>Session secret</span>
-          <strong>{sessionSecretConfigured ? "Configured for this session" : "Not generated"}</strong>
-          <p>Studio generates this secret and keeps it in memory only. It is not saved after restart.</p>
-          <div className="runner-session-actions">
+
+      <div className="runner-workspace-grid">
+        <section className="runner-card runner-control-card">
+          <div className="runner-card-heading">
+            <div>
+              <span>Status</span>
+              <h3>{status.label}</h3>
+              <p>{status.detail}</p>
+            </div>
+          </div>
+          <dl className="runner-status-list">
+            <div>
+              <dt>Repository</dt>
+              <dd>{repo.name}</dd>
+            </div>
+            <div>
+              <dt>Managed by Studio</dt>
+              <dd>{status.managed ? "Yes" : "No"}</dd>
+            </div>
+            {status.pid ? (
+              <div>
+                <dt>PID</dt>
+                <dd>{status.pid}</dd>
+              </div>
+            ) : null}
+          </dl>
+          <div className="runner-actions runner-workspace-actions">
+            <button type="button" className="primary-button" onClick={onStartRunner} disabled={busy}>
+              {status.state === "reachable" ? "Restart runner" : status.state === "starting" ? "Starting..." : "Start runner"}
+            </button>
+            <button type="button" className="primary-outline" onClick={onCheckStatus} disabled={busy}>
+              Check status
+            </button>
+            {status.managed ? (
+              <button type="button" className="link-button" onClick={onStopRunner} disabled={busy}>
+                Stop runner
+              </button>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="runner-card">
+          <div className="runner-card-heading">
+            <div>
+              <span>Connection</span>
+              <h3>Endpoint</h3>
+              <p>Localhost only for the alpha. Studio derives health from the events endpoint.</p>
+            </div>
+          </div>
+          <label className="runner-field">
+            <span>Events endpoint</span>
+            <input
+              value={settings.endpoint}
+              onChange={(event) => onSettingsChange({ ...settings, endpoint: event.target.value })}
+              placeholder="http://127.0.0.1:4000/api/v1/studio-runner/events"
+            />
+          </label>
+        </section>
+
+        <section className="runner-card">
+          <div className="runner-card-heading">
+            <div>
+              <span>Session security</span>
+              <h3>{sessionSecretConfigured ? "Secret configured" : "No session secret"}</h3>
+              <p>Studio generates the signing secret and keeps it in memory only. It is never persisted in app settings.</p>
+            </div>
+          </div>
+          <div className="runner-actions">
             <button type="button" className="primary-outline" onClick={onConfigureSessionSecret} disabled={busy}>
               {sessionSecretConfigured ? "Regenerate session secret" : "Generate session secret"}
             </button>
@@ -3055,7 +3128,50 @@ function RunnerDispatchPanel({
               </button>
             ) : null}
           </div>
+        </section>
+      </div>
+
+      <section className="runner-card runner-history-card">
+        <div className="runner-card-heading">
+          <div>
+            <span>Dispatches</span>
+            <h3>Recent build requests</h3>
+            <p>Build requests are still started from an eligible selected change.</p>
+          </div>
+          <strong>{history.length}</strong>
         </div>
+        <RunnerHistoryList history={history} emptyText="No runner dispatches for this repository yet." />
+      </section>
+    </section>
+  );
+}
+
+function ChangeRunnerActionPanel({
+  status,
+  eligibility,
+  history,
+  busy,
+  onDispatch,
+  onRetry,
+}: {
+  status: RunnerStatus;
+  eligibility: RunnerDispatchEligibility;
+  history: RunnerDispatchAttempt[];
+  busy: boolean;
+  onDispatch: () => void;
+  onRetry: (attempt: RunnerDispatchAttempt) => void;
+}) {
+  const latestFailedAttempt = history.find((attempt) => attempt.status === "failed");
+
+  return (
+    <section className="runner-dispatch-panel runner-action-panel" aria-label="Build with agent">
+      <div className="runner-dispatch-heading">
+        <div>
+          <span>Build with agent</span>
+          <strong>{status.label}</strong>
+          <p>{eligibility.eligible ? "Ready to dispatch this change to the repo runner." : (eligibility.reasons[0] ?? status.detail)}</p>
+        </div>
+        <HealthPill health={runnerHealth(status)} label={runnerStatusLabel(status)} />
       </div>
       {!eligibility.eligible ? (
         <ul className="runner-blockers">
@@ -3065,48 +3181,69 @@ function RunnerDispatchPanel({
         </ul>
       ) : null}
       <div className="runner-actions">
-        <button type="button" className="primary-outline" onClick={onStartRunner} disabled={busy}>
-          {status.state === "reachable" ? "Restart runner" : "Start runner"}
-        </button>
-        <button type="button" className="primary-outline" onClick={onCheckStatus} disabled={busy}>
-          Check runner
-        </button>
-        {status.managed ? (
-          <button type="button" className="link-button" onClick={onStopRunner} disabled={busy}>
-            Stop runner
-          </button>
-        ) : null}
         <button type="button" className="primary-button" onClick={onDispatch} disabled={busy || !eligibility.eligible}>
           {busy ? "Dispatching..." : "Build with agent"}
         </button>
+        {latestFailedAttempt ? (
+          <button type="button" className="link-button" onClick={() => onRetry(latestFailedAttempt)} disabled={busy}>
+            Retry failed dispatch
+          </button>
+        ) : null}
       </div>
       {history.length > 0 ? (
-        <details className="runner-history" open>
-          <summary>Dispatch history <span>{history.length}</span></summary>
-          <ul>
-            {history.map((attempt) => (
-              <li key={attempt.eventId}>
-                <div>
-                  <strong>{runnerAttemptLabel(attempt)}</strong>
-                  <span>{formatRunnerDateTime(attempt.updatedAt)}</span>
-                </div>
-                <code>{attempt.eventId}</code>
-                <p>{attempt.message}</p>
-                {attempt.runId ? <span>Run: {attempt.runId}</span> : null}
-              </li>
-            ))}
-          </ul>
+        <details className="runner-history">
+          <summary>Recent dispatches <span>{history.length}</span></summary>
+          <RunnerHistoryList history={history} emptyText="No dispatches for this change yet." />
         </details>
-      ) : null}
-      {latestFailedAttempt ? (
-        <button type="button" className="link-button" onClick={() => onRetry(latestFailedAttempt)} disabled={busy}>
-          Retry failed dispatch
-        </button>
       ) : null}
     </section>
   );
 }
 
+function RunnerHistoryList({ history, emptyText }: { history: RunnerDispatchAttempt[]; emptyText: string }) {
+  if (history.length === 0) {
+    return <p className="muted-copy">{emptyText}</p>;
+  }
+
+  return (
+    <ul className="runner-history-list">
+      {history.map((attempt) => (
+        <li key={attempt.eventId}>
+          <div>
+            <strong>{runnerAttemptLabel(attempt)}</strong>
+            <span>{formatRunnerDateTime(attempt.updatedAt)}</span>
+          </div>
+          <code>{attempt.eventId}</code>
+          <p>{attempt.changeName} — {attempt.message}</p>
+          {attempt.runId ? <span>Run: {attempt.runId}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function runnerHealth(status: RunnerStatus): Health {
+  if (status.state === "reachable") {
+    return "valid";
+  }
+  if (status.state === "checking" || status.state === "starting") {
+    return "stale";
+  }
+  return "blocked";
+}
+
+function runnerStatusLabel(status: RunnerStatus): string {
+  if (status.state === "reachable") {
+    return "Reachable";
+  }
+  if (status.state === "starting") {
+    return "Starting";
+  }
+  if (status.state === "checking") {
+    return "Checking";
+  }
+  return "Blocked";
+}
 
 function formatRunnerDateTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {

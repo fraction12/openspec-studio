@@ -13,8 +13,8 @@
 
 ## 2. Studio Implementation
 
-- [x] 2.1 Add local Studio Runner settings UI/state.
-- [x] 2.2 Add runner status detection and display in the app shell or change detail.
+- [x] 2.1 Add local Studio Runner settings UI/state on a first-class Runner workspace tab.
+- [x] 2.2 Add runner status detection and display on the Runner workspace tab plus compact selected-change dispatch state.
 - [x] 2.3 Add safe start/stop hooks for configured local runner paths where supported.
 - [x] 2.4 Add per-change **Build with agent** action gated by eligibility and runner state.
 - [x] 2.5 Implement thin `build.requested` payload construction without arbitrary file contents.
@@ -22,7 +22,7 @@
 - [x] 2.7 Add bounded timeout, response capture, and error reporting for delivery.
 - [x] 2.8 Persist dispatch delivery attempts/status locally.
 - [x] 2.9 Support manual retry using the same event ID/idempotency key for an existing failed delivery.
-- [x] 2.10 Surface dispatch status/history in the selected change detail.
+- [x] 2.10 Surface repo-wide dispatch history on the Runner tab and selected-change dispatch history in the inspector.
 
 ## 3. Runner Contract
 

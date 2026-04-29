@@ -1,10 +1,16 @@
 ## MODIFIED Requirements
 
-### Requirement: Local Studio Runner settings
-The desktop shell SHALL support local configuration for Studio Runner, an optional companion runner used by explicit agent dispatch.
+### Requirement: Local Studio Runner workspace
+The desktop shell SHALL provide Studio Runner as a first-class workspace-level surface, separate from selected change details, for local runner configuration, lifecycle, status, and repo-wide dispatch history.
+
+#### Scenario: Runner controls live in a workspace tab
+- **GIVEN** a real OpenSpec repository is open
+- **WHEN** the user views workspace-level navigation
+- **THEN** Studio SHALL show a Runner tab alongside Changes and Specs
+- **AND** runner endpoint, session secret, start, stop, status, managed process detail, and repo-wide dispatch history SHALL live on the Runner tab rather than inside every selected-change inspector
 
 #### Scenario: Configured runner is used for dispatch
-- **GIVEN** the user has configured a Studio Runner endpoint and generated a session-only signing secret
+- **GIVEN** the user has configured a Studio Runner endpoint and generated a session-only signing secret from the Runner tab
 - **WHEN** Studio dispatches `build.requested`
 - **THEN** Studio SHALL POST the signed payload to the configured runner push dispatch endpoint
 - **AND** Studio SHALL avoid sending unrelated repository file contents by default

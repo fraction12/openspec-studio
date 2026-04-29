@@ -26,11 +26,11 @@ The change board SHALL provide an explicit **Build with agent** action for an ac
 - **WHEN** Studio refreshes workspace state
 - **THEN** Studio SHALL NOT send `build.requested` unless the user explicitly activates **Build with agent**
 
-#### Scenario: Runner status is visible near dispatch
+#### Scenario: Change inspector keeps runner controls compact
 - **GIVEN** the user views an active change
 - **WHEN** Studio Runner is not configured, stopped, unreachable, incompatible, or reachable
-- **THEN** Studio SHALL show the runner state near the dispatch action
-- **AND** Studio SHALL make clear what action is needed before dispatch can occur
+- **THEN** Studio SHALL show only compact runner state, blocked reasons, and the selected-change Build with agent action near dispatch
+- **AND** Studio SHALL keep endpoint setup, session secret generation, start/stop controls, and repo-wide runner history on the Runner workspace tab
 
 #### Scenario: Dispatch history is visible
 - **GIVEN** a selected change has dispatch attempts
