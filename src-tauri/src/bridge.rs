@@ -3,7 +3,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
-    cmp,
+    cmp, env,
     ffi::{OsStr, OsString},
     fs,
     io::{self, Read},
@@ -22,6 +22,7 @@ use tauri_plugin_dialog::DialogExt;
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const DEFAULT_RUNNER_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_RUNNER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_RUNNER_RESPONSE_BYTES: usize = 64 * 1024;
 const COMMAND_TERMINATION_GRACE: Duration = Duration::from_millis(200);
 const OUTPUT_READER_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -701,6 +702,18 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
     }
 }
 
+fn runner_process_path() -> OsString {
+    let mut entries: Vec<PathBuf> = STANDARD_COMMAND_DIRS.iter().map(PathBuf::from).collect();
+
+    if let Some(existing_path) = env::var_os("PATH") {
+        entries.extend(env::split_paths(&existing_path));
+    }
+
+    env::join_paths(entries).unwrap_or_else(|_| {
+        env::var_os("PATH").unwrap_or_else(|| OsString::from(STANDARD_COMMAND_DIRS.join(":")))
+    })
+}
+
 fn studio_runner_program(repo_path: &Path) -> PathBuf {
     std::env::var_os("OPENSPEC_STUDIO_RUNNER_BIN")
         .map(PathBuf::from)
@@ -775,6 +788,7 @@ fn start_runner_process(
         .arg(&workflow_path)
         .current_dir(&repo_path)
         .env("STUDIO_RUNNER_SIGNING_SECRET", secret)
+        .env("PATH", runner_process_path())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     prepare_command_for_tree_termination(&mut command);
@@ -792,7 +806,7 @@ fn start_runner_process(
         repo_path: repo_path.clone(),
     };
 
-    match wait_for_runner_health(&endpoint, Duration::from_secs(8)) {
+    match wait_for_runner_health(&endpoint, DEFAULT_RUNNER_STARTUP_TIMEOUT) {
         Ok(()) => {
             *store = Some(process);
             Ok(StudioRunnerLifecycleResponse {
@@ -1958,6 +1972,14 @@ mod tests {
         assert_eq!(payload["source"], "openspec-studio");
         assert_eq!(payload["data"]["change"], "add-runner");
         assert!(payload["data"].get("proposal").is_none());
+    }
+
+    #[test]
+    fn runner_process_path_prefers_standard_tool_dirs() {
+        let path = runner_process_path();
+        let entries: Vec<PathBuf> = env::split_paths(&path).collect();
+        assert_eq!(entries.first(), Some(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(entries.contains(&PathBuf::from("/usr/bin")));
     }
 
     #[cfg(unix)]
