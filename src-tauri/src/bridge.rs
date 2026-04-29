@@ -3,6 +3,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
+    cmp,
     ffi::{OsStr, OsString},
     fs,
     io::{self, Read},
@@ -594,20 +595,31 @@ fn dispatch_runner_event(
 }
 
 fn normalize_runner_endpoint(endpoint: &str) -> Result<String, BridgeError> {
-    let endpoint = endpoint.trim().trim_end_matches('/').to_string();
+    let endpoint = endpoint.trim().trim_end_matches('/');
     if endpoint.is_empty() {
-        return Ok(endpoint);
+        return Ok(String::new());
     }
-    if !(endpoint.starts_with("http://127.0.0.1:")
-        || endpoint.starts_with("http://localhost:")
-        || endpoint.starts_with("https://127.0.0.1:")
-        || endpoint.starts_with("https://localhost:"))
-    {
+
+    let parsed = url::Url::parse(endpoint).map_err(|error| BridgeError::RunnerRequest {
+        message: format!("Invalid Studio Runner endpoint: {}", error),
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
         return Err(BridgeError::RunnerRequest {
-            message: "Studio Runner endpoint must be local localhost/127.0.0.1 for this alpha.".to_string(),
+            message: "Studio Runner endpoint must use http or https.".to_string(),
         });
     }
-    Ok(endpoint)
+    if !matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1")) || parsed.port().is_none() {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner endpoint must be local localhost/127.0.0.1 with an explicit port for this alpha.".to_string(),
+        });
+    }
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner endpoint must not include userinfo.".to_string(),
+        });
+    }
+
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
 fn runner_health_endpoint(event_endpoint: &str) -> String {
@@ -664,14 +676,34 @@ fn validate_runner_event_id(event_id: &str) -> Result<(), BridgeError> {
 fn read_bounded_runner_response(
     response: reqwest::blocking::Response,
 ) -> Result<Option<String>, BridgeError> {
-    let bytes = response.bytes().map_err(|error| BridgeError::RunnerRequest {
-        message: error.to_string(),
-    })?;
-    if bytes.len() > DEFAULT_MAX_RUNNER_RESPONSE_BYTES {
-        return Err(BridgeError::RunnerRequest {
-            message: "Studio Runner response exceeded the maximum response size.".to_string(),
-        });
+    let mut reader = response;
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        let remaining = DEFAULT_MAX_RUNNER_RESPONSE_BYTES + 1 - bytes.len();
+        if remaining == 0 {
+            return Err(BridgeError::RunnerRequest {
+                message: "Studio Runner response exceeded the maximum response size.".to_string(),
+            });
+        }
+        let read_limit = cmp::min(buffer.len(), remaining);
+        let read_len = reader
+            .read(&mut buffer[..read_limit])
+            .map_err(|error| BridgeError::RunnerRequest {
+                message: error.to_string(),
+            })?;
+        if read_len == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read_len]);
+        if bytes.len() > DEFAULT_MAX_RUNNER_RESPONSE_BYTES {
+            return Err(BridgeError::RunnerRequest {
+                message: "Studio Runner response exceeded the maximum response size.".to_string(),
+            });
+        }
     }
+
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -1350,6 +1382,14 @@ mod tests {
         assert!(normalize_runner_endpoint("https://localhost:4000/api/v1/studio-runner/events").is_ok());
         assert!(matches!(
             normalize_runner_endpoint("https://example.com/api/v1/studio-runner/events"),
+            Err(BridgeError::RunnerRequest { .. })
+        ));
+        assert!(matches!(
+            normalize_runner_endpoint("http://localhost:4000@evil.com/api/v1/studio-runner/events"),
+            Err(BridgeError::RunnerRequest { .. })
+        ));
+        assert!(matches!(
+            normalize_runner_endpoint("http://localhost/api/v1/studio-runner/events"),
             Err(BridgeError::RunnerRequest { .. })
         ));
     }

@@ -541,6 +541,8 @@ function App() {
     const repoPath = repo.path;
     const changeName = selectedChange.name;
 
+    let pendingAttempt: RunnerDispatchAttempt | undefined;
+
     try {
       let validation = workspaceRef.current?.validation ?? null;
       if (!validation || validation.state !== "pass") {
@@ -575,7 +577,7 @@ function App() {
         validation,
         gitStatus: gitStatusRef.current,
       });
-      const attemptBase = createRunnerDispatchAttempt({
+      pendingAttempt = createRunnerDispatchAttempt({
         eventId,
         repoPath,
         changeName,
@@ -585,7 +587,7 @@ function App() {
         previousAttempt: options.retryAttempt,
       });
 
-      rememberRunnerDispatchAttempt(attemptBase);
+      rememberRunnerDispatchAttempt(pendingAttempt);
       setMessage("Sending signed build.requested to Studio Runner...");
 
       const response = await invoke<RunnerDispatchResponseDto>("dispatch_studio_runner_event", {
@@ -598,7 +600,7 @@ function App() {
       const responseBody = response.response_body ?? response.responseBody ?? null;
       const runId = response.run_id ?? response.runId ?? extractRunId(responseBody);
       const nextAttempt = createRunnerDispatchAttempt({
-        ...attemptBase,
+        ...pendingAttempt,
         status: accepted ? "accepted" : "failed",
         statusCode,
         runId,
@@ -616,15 +618,21 @@ function App() {
           : "Studio Runner dispatch failed: " + response.message,
       );
     } catch (error) {
-      const failedAttempt = createRunnerDispatchAttempt({
-        eventId: options.retryAttempt?.eventId ?? createRunnerEventId(),
-        repoPath,
-        changeName,
-        payload: options.retryAttempt?.payload,
-        status: "failed",
-        message: errorMessage(error),
-        previousAttempt: options.retryAttempt,
-      });
+      const failedAttempt = pendingAttempt
+        ? createRunnerDispatchAttempt({
+            ...pendingAttempt,
+            status: "failed",
+            message: errorMessage(error),
+          })
+        : createRunnerDispatchAttempt({
+            eventId: options.retryAttempt?.eventId ?? createRunnerEventId(),
+            repoPath,
+            changeName,
+            payload: options.retryAttempt?.payload,
+            status: "failed",
+            message: errorMessage(error),
+            previousAttempt: options.retryAttempt,
+          });
       rememberRunnerDispatchAttempt(failedAttempt);
       recordOperationIssue(
         createOpenSpecOperationIssue({
