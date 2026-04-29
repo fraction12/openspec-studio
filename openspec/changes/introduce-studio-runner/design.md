@@ -51,7 +51,7 @@ Preferred v1 posture:
 
 1. Studio detects whether a compatible runner is configured and reachable.
 2. If not configured, Studio offers setup guidance and/or a managed install path.
-3. Studio stores the local endpoint and signing secret/reference.
+3. Studio stores the local endpoint and keeps the generated signing secret in memory for the current app session only.
 4. Studio can start/stop the runner when a safe local command/path is configured.
 5. Studio dispatches to the local runner endpoint once the runner is reachable.
 
@@ -66,7 +66,7 @@ Studio should derive whether **Build with agent** is enabled from local evidence
 3. required planning artifacts are present according to the current change model;
 4. `tasks.md` exists and contains actionable tasks;
 5. latest validation for the change or workspace has passed, or Studio can run validation immediately before dispatch and it passes;
-6. Studio Runner settings are configured;
+6. Studio Runner endpoint and session secret are configured;
 7. Studio Runner is reachable, or Studio can start it successfully before dispatch.
 
 If any requirement fails, Studio should show the blocking reason rather than sending.
@@ -193,7 +193,7 @@ Runner integration should execute through the Tauri/Rust bridge where it touches
 
 Rust should own:
 
-- signing-secret access;
+- session-secret access;
 - HMAC construction;
 - raw-body signing;
 - HTTPS/HTTP POST;
@@ -207,14 +207,14 @@ React should request dispatch for a selected change and render eligibility, runn
 
 ## Security Notes
 
-The endpoint must be explicit and local by default. Studio should not send arbitrary file contents by default. Signing secrets should not be casually exposed to the renderer. Runner start/stop should avoid arbitrary shell execution; if Studio supports managed lifecycle commands, they should use explicit configured paths or bundled metadata rather than freeform command strings.
+The endpoint must be explicit and local by default. Studio should not send arbitrary file contents by default. Signing secrets should be session-only for the alpha and should not be casually exposed to the renderer or persisted to app storage. Runner start/stop should avoid arbitrary shell execution; if Studio supports managed lifecycle commands, they should use explicit configured paths or bundled metadata rather than freeform command strings.
 
-The implementation should support future secret rotation by making verification compatible with key IDs or multiple signatures later, even if v1 stores one secret.
+The implementation should support future secret rotation by making verification compatible with key IDs or multiple signatures later, even if v1 keeps one session secret in memory.
 
 ## Open Questions
 
 - Should the first managed install path download a release artifact, use a checked-out local runner repo, or only document setup?
-- Should the signing secret be stored directly in Tauri store, macOS Keychain later, or supplied via environment variable?
+- Should a later release replace the session-only secret with OS keychain-backed storage?
 - Should Runner return a run ID synchronously on accepted dispatch?
 - Should dispatch history be global, per repo, or per change in local persistence?
 - What is the minimum runner health endpoint Studio should require before enabling dispatch?

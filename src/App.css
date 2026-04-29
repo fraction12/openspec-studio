@@ -2050,9 +2050,37 @@ button:disabled {
   gap: var(--space-8);
 }
 
-.runner-settings-grid label {
+.runner-settings-grid label,
+.runner-session-secret-card {
   display: grid;
   gap: 4px;
+}
+
+.runner-session-secret-card {
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-9);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.runner-session-secret-card strong {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-sm);
+}
+
+.runner-session-secret-card p {
+  margin: 0;
+  color: var(--color-muted-strong);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+}
+
+.runner-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+  margin-top: var(--space-5);
 }
 
 .runner-settings-grid input {

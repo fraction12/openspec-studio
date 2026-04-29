@@ -417,9 +417,8 @@ function normalizeRunnerSettings(value: unknown): RunnerSettings | undefined {
   }
 
   const endpoint = readNonEmptyString(value.endpoint);
-  const signingSecret = typeof value.signingSecret === "string" ? value.signingSecret : "";
 
-  return endpoint ? { endpoint, signingSecret } : undefined;
+  return endpoint ? { endpoint } : undefined;
 }
 
 function normalizeRunnerDispatchAttempts(value: unknown): RunnerDispatchAttempt[] {

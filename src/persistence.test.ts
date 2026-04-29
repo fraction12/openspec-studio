@@ -105,7 +105,7 @@ describe("local app persistence", () => {
       recentRepos: [],
       globalPreferences: {},
       repoStateByPath: {},
-      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events", signingSecret: "secret" },
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events", signingSecret: "legacy-secret-should-not-persist" },
       runnerDispatchAttempts: [
         {
           eventId: "evt_demo",
@@ -122,6 +122,7 @@ describe("local app persistence", () => {
     });
 
     expect(normalized.runnerSettings?.endpoint).toBe("http://127.0.0.1:4000/api/v1/studio-runner/events");
+    expect(normalized.runnerSettings).not.toHaveProperty("signingSecret");
     expect(normalized.runnerDispatchAttempts?.[0]).toMatchObject({
       eventId: "evt_demo",
       status: "accepted",

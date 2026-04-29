@@ -10,7 +10,6 @@ import type { ValidationResult } from "./validation/results";
 
 export interface RunnerSettings {
   endpoint: string;
-  signingSecret: string;
 }
 
 export type RunnerStatusKind = "not-configured" | "checking" | "reachable" | "unavailable" | "incompatible";
@@ -48,6 +47,21 @@ export interface RunnerDispatchPayloadInput {
   change: { name: string; artifacts: { path: string; status: string }[]; taskProgress: { done: number; total: number } | null };
   validation: ValidationResult;
   gitStatus?: { entries?: string[] };
+}
+
+export interface RunnerDispatchRequestInput {
+  eventId: string;
+  repoPath: string;
+  repoName: string;
+  changeName: string;
+  artifactPaths: string[];
+  validation: {
+    state: ValidationResult["state"];
+    checkedAt: string | null;
+    issueCount: number;
+  };
+  gitRef: string;
+  requestedBy: string;
 }
 
 export interface BridgeFileRecord {
@@ -544,12 +558,14 @@ export function deriveRunnerDispatchEligibility({
   validation,
   runnerSettings,
   runnerStatus,
+  sessionSecretConfigured,
 }: {
   repoReady: boolean;
   change: { phase: string; artifacts: { id: string; status: string }[]; taskProgress: { done: number; total: number } | null } | null;
   validation: ValidationResult | null;
   runnerSettings: RunnerSettings;
   runnerStatus: RunnerStatus;
+  sessionSecretConfigured: boolean;
 }): RunnerDispatchEligibility {
   const reasons: string[] = [];
 
@@ -574,6 +590,8 @@ export function deriveRunnerDispatchEligibility({
 
     if (!change.taskProgress || change.taskProgress.total === 0) {
       reasons.push("tasks.md needs actionable tasks.");
+    } else if (change.taskProgress.done >= change.taskProgress.total) {
+      reasons.push("tasks.md has no remaining actionable tasks.");
     }
   }
 
@@ -581,8 +599,12 @@ export function deriveRunnerDispatchEligibility({
     reasons.push("Run passing OpenSpec validation first.");
   }
 
-  if (!runnerSettings.endpoint.trim() || !runnerSettings.signingSecret.trim()) {
-    reasons.push("Configure Studio Runner endpoint and signing secret.");
+  if (!runnerSettings.endpoint.trim()) {
+    reasons.push("Configure Studio Runner endpoint.");
+  }
+
+  if (!sessionSecretConfigured) {
+    reasons.push("Generate a Studio Runner session secret.");
   }
 
   if (runnerStatus.state !== "reachable") {
@@ -601,28 +623,22 @@ export function buildRunnerDispatchPayload({
   change,
   validation,
   gitStatus,
-}: RunnerDispatchPayloadInput): unknown {
+}: RunnerDispatchPayloadInput): RunnerDispatchRequestInput {
   return {
-    id: eventId,
-    type: "build.requested",
-    source: "openspec-studio",
-    time: new Date().toISOString(),
-    data: {
-      runner: "studio-runner",
-      repoPath: repo.path,
-      repoName: repo.name,
-      gitRef: gitStatus?.entries?.length ? "dirty" : "local",
-      change: change.name,
-      artifactPaths: change.artifacts
-        .filter((artifact) => artifact.status === "present")
-        .map((artifact) => artifact.path),
-      validation: {
-        state: validation.state,
-        checkedAt: validation.validatedAt,
-        issueCount: validation.issues.length,
-      },
-      requestedBy: "local-user",
+    eventId,
+    repoPath: repo.path,
+    repoName: repo.name,
+    gitRef: gitStatus?.entries?.length ? "dirty" : "local",
+    changeName: change.name,
+    artifactPaths: change.artifacts
+      .filter((artifact) => artifact.status === "present")
+      .map((artifact) => artifact.path),
+    validation: {
+      state: validation.state,
+      checkedAt: validation.validatedAt,
+      issueCount: validation.issues.length,
     },
+    requestedBy: "local-user",
   };
 }
 

@@ -133,7 +133,7 @@ Delivery SHALL be treated as at-least-once. Studio may retry a failed delivery o
 ## Impact
 
 - Frontend change-detail/action area for **Build with agent** and runner state.
-- Local settings/onboarding for Studio Runner endpoint, secret, and lifecycle.
+- Local settings/onboarding for Studio Runner endpoint, session secret, and lifecycle.
 - Tauri/Rust bridge for runner detection, lifecycle commands where safe, signed outbound delivery, timeouts, and local delivery persistence.
 - Tests for eligibility gating, payload construction, signature behavior, runner availability states, delivery status, duplicate/retry semantics, and failure handling.
 - Documentation that Studio supports an optional local Studio Runner for OpenSpec change execution.

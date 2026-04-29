@@ -461,7 +461,8 @@ describe("Studio Runner dispatch model", () => {
       repoReady: true,
       change: eligibleChange,
       validation: passingValidation,
-      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events", signingSecret: "secret" },
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
+      sessionSecretConfigured: true,
       runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
     })).toEqual({ eligible: true, reasons: [] });
 
@@ -469,7 +470,8 @@ describe("Studio Runner dispatch model", () => {
       repoReady: true,
       change: { ...eligibleChange, taskProgress: { done: 0, total: 0 } },
       validation: passingValidation,
-      runnerSettings: { endpoint: "", signingSecret: "" },
+      runnerSettings: { endpoint: "" },
+      sessionSecretConfigured: false,
       runnerStatus: { state: "not-configured", label: "Missing", detail: "missing" },
     }).reasons).toContain("tasks.md needs actionable tasks.");
   });
@@ -480,13 +482,23 @@ describe("Studio Runner dispatch model", () => {
       repo: { name: "openspec-studio", path: "/repo/openspec-studio" },
       change: { name: "add-runner", ...eligibleChange },
       validation: passingValidation,
-    }) as { id: string; type: string; data: Record<string, unknown> };
+    });
 
-    expect(payload.id).toBe("evt_demo");
-    expect(payload.type).toBe("build.requested");
-    expect(payload.data.change).toBe("add-runner");
-    expect(payload.data.repoPath).toBe("/repo/openspec-studio");
-    expect(payload.data).not.toHaveProperty("proposal");
+    expect(payload.eventId).toBe("evt_demo");
+    expect(payload.changeName).toBe("add-runner");
+    expect(payload.repoPath).toBe("/repo/openspec-studio");
+    expect(payload).not.toHaveProperty("proposal");
+  });
+
+  it("blocks dispatch when tasks are already complete", () => {
+    expect(deriveRunnerDispatchEligibility({
+      repoReady: true,
+      change: { ...eligibleChange, taskProgress: { done: 3, total: 3 } },
+      validation: passingValidation,
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
+      sessionSecretConfigured: true,
+      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+    }).reasons).toContain("tasks.md has no remaining actionable tasks.");
   });
 
   it("filters dispatch history by repo and change with newest first", () => {

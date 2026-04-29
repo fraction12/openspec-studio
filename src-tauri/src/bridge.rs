@@ -12,7 +12,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
-        Arc,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -32,6 +32,12 @@ const STANDARD_COMMAND_DIRS: &[&str] = &[
     "/usr/bin",
     "/bin",
 ];
+
+static STUDIO_RUNNER_SESSION_SECRET: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn studio_runner_session_secret() -> &'static Mutex<Option<String>> {
+    STUDIO_RUNNER_SESSION_SECRET.get_or_init(|| Mutex::new(None))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RepositoryValidation {
@@ -88,8 +94,11 @@ pub struct BridgeErrorDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioRunnerSettings {
     pub endpoint: String,
-    #[serde(rename = "signingSecret")]
-    pub signing_secret: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerSessionSecretResponse {
+    pub configured: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +122,33 @@ pub struct StudioRunnerDispatchResponse {
     pub run_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerDispatchRequest {
+    #[serde(rename = "eventId")]
+    pub event_id: String,
+    #[serde(rename = "repoPath")]
+    pub repo_path: String,
+    #[serde(rename = "repoName")]
+    pub repo_name: String,
+    #[serde(rename = "changeName")]
+    pub change_name: String,
+    #[serde(rename = "artifactPaths")]
+    pub artifact_paths: Vec<String>,
+    pub validation: StudioRunnerDispatchValidation,
+    #[serde(rename = "gitRef")]
+    pub git_ref: String,
+    #[serde(rename = "requestedBy")]
+    pub requested_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerDispatchValidation {
+    pub state: String,
+    #[serde(rename = "checkedAt")]
+    pub checked_at: Option<String>,
+    #[serde(rename = "issueCount")]
+    pub issue_count: usize,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {
@@ -470,6 +506,18 @@ pub async fn get_openspec_git_status(
     run_bridge_task(move || inspect_openspec_git_status(repo_path)).await
 }
 
+#[tauri::command]
+pub async fn configure_studio_runner_session_secret(
+    secret: String,
+) -> Result<StudioRunnerSessionSecretResponse, BridgeErrorDto> {
+    run_bridge_task(move || configure_runner_session_secret(secret)).await
+}
+
+#[tauri::command]
+pub async fn clear_studio_runner_session_secret(
+) -> Result<StudioRunnerSessionSecretResponse, BridgeErrorDto> {
+    run_bridge_task(clear_runner_session_secret).await
+}
 
 #[tauri::command]
 pub async fn check_studio_runner_status(
@@ -481,23 +529,83 @@ pub async fn check_studio_runner_status(
 #[tauri::command]
 pub async fn dispatch_studio_runner_event(
     settings: StudioRunnerSettings,
-    payload: serde_json::Value,
-    event_id: String,
+    request: StudioRunnerDispatchRequest,
 ) -> Result<StudioRunnerDispatchResponse, BridgeErrorDto> {
-    run_bridge_task(move || dispatch_runner_event(settings, payload, event_id)).await
+    run_bridge_task(move || dispatch_runner_event(settings, request)).await
+}
+
+fn configure_runner_session_secret(
+    secret: String,
+) -> Result<StudioRunnerSessionSecretResponse, BridgeError> {
+    let trimmed = secret.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner session secret cannot be empty.".to_string(),
+        });
+    }
+
+    let mut current =
+        studio_runner_session_secret()
+            .lock()
+            .map_err(|_| BridgeError::RunnerRequest {
+                message: "Studio Runner session secret store is unavailable.".to_string(),
+            })?;
+    *current = Some(trimmed);
+
+    Ok(StudioRunnerSessionSecretResponse { configured: true })
+}
+
+fn clear_runner_session_secret() -> Result<StudioRunnerSessionSecretResponse, BridgeError> {
+    let mut current =
+        studio_runner_session_secret()
+            .lock()
+            .map_err(|_| BridgeError::RunnerRequest {
+                message: "Studio Runner session secret store is unavailable.".to_string(),
+            })?;
+    *current = None;
+
+    Ok(StudioRunnerSessionSecretResponse { configured: false })
+}
+
+fn has_runner_session_secret() -> Result<bool, BridgeError> {
+    Ok(studio_runner_session_secret()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner session secret store is unavailable.".to_string(),
+        })?
+        .as_deref()
+        .is_some_and(|secret| !secret.trim().is_empty()))
+}
+
+fn get_runner_session_secret() -> Result<String, BridgeError> {
+    studio_runner_session_secret()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner session secret store is unavailable.".to_string(),
+        })?
+        .clone()
+        .filter(|secret| !secret.trim().is_empty())
+        .ok_or_else(|| BridgeError::RunnerRequest {
+            message: "Studio Runner session secret is not configured for this app session."
+                .to_string(),
+        })
 }
 
 fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerStatus, BridgeError> {
     let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
 
-    if endpoint.is_empty() || settings.signing_secret.trim().is_empty() {
+    if endpoint.is_empty() || !has_runner_session_secret()? {
         return Ok(StudioRunnerStatus {
             configured: false,
             reachable: false,
             status: "not-configured".to_string(),
-            endpoint: if endpoint.is_empty() { None } else { Some(endpoint) },
+            endpoint: if endpoint.is_empty() {
+                None
+            } else {
+                Some(endpoint)
+            },
             status_code: None,
-            message: "Studio Runner endpoint and signing secret are required.".to_string(),
+            message: "Studio Runner endpoint and session secret are required.".to_string(),
             response_body: None,
         });
     }
@@ -543,21 +651,23 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
 
 fn dispatch_runner_event(
     settings: StudioRunnerSettings,
-    payload: serde_json::Value,
-    event_id: String,
+    request: StudioRunnerDispatchRequest,
 ) -> Result<StudioRunnerDispatchResponse, BridgeError> {
     let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
-    if endpoint.is_empty() || settings.signing_secret.trim().is_empty() {
+    let signing_secret = get_runner_session_secret()?;
+    if endpoint.is_empty() {
         return Err(BridgeError::RunnerRequest {
-            message: "Studio Runner endpoint and signing secret are required.".to_string(),
+            message: "Studio Runner endpoint is required.".to_string(),
         });
     }
-    validate_runner_event_id(&event_id)?;
+    validate_runner_dispatch_request(&request)?;
+    let event_id = request.event_id.clone();
+    let payload = build_runner_dispatch_payload(&request)?;
     let body = serde_json::to_vec(&payload).map_err(|error| BridgeError::RunnerRequest {
         message: error.to_string(),
     })?;
     let timestamp = unix_timestamp_seconds()?;
-    let signature = sign_runner_body(&settings.signing_secret, &event_id, timestamp, &body)?;
+    let signature = sign_runner_body(&signing_secret, &event_id, timestamp, &body)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(DEFAULT_RUNNER_HTTP_TIMEOUT)
         .build()
@@ -594,6 +704,63 @@ fn dispatch_runner_event(
     })
 }
 
+fn validate_runner_dispatch_request(
+    request: &StudioRunnerDispatchRequest,
+) -> Result<(), BridgeError> {
+    validate_runner_event_id(&request.event_id)?;
+    if request.repo_path.trim().is_empty() || request.repo_name.trim().is_empty() {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner dispatch requires repository identity.".to_string(),
+        });
+    }
+    validate_change_name(&request.change_name).map_err(|_| BridgeError::RunnerRequest {
+        message: "Studio Runner dispatch requires a valid change name.".to_string(),
+    })?;
+    if !matches!(request.validation.state.as_str(), "pass" | "fail" | "stale") {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner dispatch validation state is invalid.".to_string(),
+        });
+    }
+    if request.artifact_paths.iter().any(|path| {
+        path.trim().is_empty()
+            || path.contains('\0')
+            || path.contains("..")
+            || !path.starts_with("openspec/changes/")
+    }) {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner dispatch artifact paths must stay under openspec/changes/."
+                .to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn build_runner_dispatch_payload(
+    request: &StudioRunnerDispatchRequest,
+) -> Result<serde_json::Value, BridgeError> {
+    Ok(serde_json::json!({
+        "id": request.event_id,
+        "type": "build.requested",
+        "source": "openspec-studio",
+        "time": unix_timestamp_seconds()?.to_string(),
+        "data": {
+            "runner": "studio-runner",
+            "repoPath": request.repo_path,
+            "repoName": request.repo_name,
+            "gitRef": request.git_ref,
+            "change": request.change_name,
+            "artifactPaths": request.artifact_paths,
+            "validation": {
+                "state": request.validation.state,
+                "checkedAt": request.validation.checked_at,
+                "issueCount": request.validation.issue_count,
+            },
+            "requestedBy": request.requested_by,
+        }
+    }))
+}
+
 fn normalize_runner_endpoint(endpoint: &str) -> Result<String, BridgeError> {
     let endpoint = endpoint.trim().trim_end_matches('/');
     if endpoint.is_empty() {
@@ -608,7 +775,9 @@ fn normalize_runner_endpoint(endpoint: &str) -> Result<String, BridgeError> {
             message: "Studio Runner endpoint must use http or https.".to_string(),
         });
     }
-    if !matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1")) || parsed.port().is_none() {
+    if !matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"))
+        || parsed.port().is_none()
+    {
         return Err(BridgeError::RunnerRequest {
             message: "Studio Runner endpoint must be local localhost/127.0.0.1 with an explicit port for this alpha.".to_string(),
         });
@@ -688,11 +857,12 @@ fn read_bounded_runner_response(
             });
         }
         let read_limit = cmp::min(buffer.len(), remaining);
-        let read_len = reader
-            .read(&mut buffer[..read_limit])
-            .map_err(|error| BridgeError::RunnerRequest {
-                message: error.to_string(),
-            })?;
+        let read_len =
+            reader
+                .read(&mut buffer[..read_limit])
+                .map_err(|error| BridgeError::RunnerRequest {
+                    message: error.to_string(),
+                })?;
         if read_len == 0 {
             break;
         }
@@ -1335,8 +1505,11 @@ mod tests {
         fs,
         path::PathBuf,
         process,
+        sync::mpsc,
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
+    use tiny_http::{Header, Response, Server};
 
     fn temp_repo(name: &str, with_openspec: bool) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1366,11 +1539,85 @@ mod tests {
             .expect("script should be executable");
     }
 
+    fn runner_request(event_id: &str) -> StudioRunnerDispatchRequest {
+        StudioRunnerDispatchRequest {
+            event_id: event_id.to_string(),
+            repo_path: "/tmp/openspec-studio".to_string(),
+            repo_name: "openspec-studio".to_string(),
+            change_name: "add-runner".to_string(),
+            artifact_paths: vec![
+                "openspec/changes/add-runner/proposal.md".to_string(),
+                "openspec/changes/add-runner/tasks.md".to_string(),
+            ],
+            validation: StudioRunnerDispatchValidation {
+                state: "pass".to_string(),
+                checked_at: Some("2026-04-29T12:00:00.000Z".to_string()),
+                issue_count: 0,
+            },
+            git_ref: "local".to_string(),
+            requested_by: "local-user".to_string(),
+        }
+    }
+
+    fn mock_runner_response(
+        status_code: u16,
+        body: String,
+    ) -> (
+        String,
+        mpsc::Receiver<(String, Vec<(String, String)>, String)>,
+        thread::JoinHandle<()>,
+    ) {
+        let server = Server::http("127.0.0.1:0").expect("mock runner should bind");
+        let endpoint = format!(
+            "http://127.0.0.1:{}/api/v1/studio-runner/events",
+            server
+                .server_addr()
+                .to_ip()
+                .expect("mock runner should bind to tcp")
+                .port()
+        );
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut request = server.recv().expect("mock runner should receive request");
+            let mut request_body = String::new();
+            request
+                .as_reader()
+                .read_to_string(&mut request_body)
+                .expect("request body should be readable");
+            let headers = request
+                .headers()
+                .iter()
+                .map(|header| {
+                    (
+                        header.field.as_str().to_string(),
+                        header.value.as_str().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            tx.send((request.url().to_string(), headers, request_body))
+                .expect("captured request should be sent");
+            let response = Response::from_string(body)
+                .with_status_code(status_code)
+                .with_header(
+                    Header::from_bytes(&b"content-type"[..], &b"application/json"[..]).unwrap(),
+                );
+            request
+                .respond(response)
+                .expect("mock response should send");
+        });
+
+        (endpoint, rx, handle)
+    }
 
     #[test]
     fn signs_runner_body_with_standard_webhooks_message() {
-        let signature = sign_runner_body("secret", "evt_demo", 1_714_000_000, br#"{"type":"build.requested"}"#)
-            .expect("signature should be created");
+        let signature = sign_runner_body(
+            "secret",
+            "evt_demo",
+            1_714_000_000,
+            br#"{"type":"build.requested"}"#,
+        )
+        .expect("signature should be created");
 
         assert!(signature.starts_with("v1,"));
         assert_eq!(signature, "v1,bfnTTaozpRBENwyatlSmXfjGN2VC4vUYM23PsFmqlFs=");
@@ -1378,8 +1625,12 @@ mod tests {
 
     #[test]
     fn runner_endpoint_is_limited_to_localhost() {
-        assert!(normalize_runner_endpoint("http://127.0.0.1:4000/api/v1/studio-runner/events").is_ok());
-        assert!(normalize_runner_endpoint("https://localhost:4000/api/v1/studio-runner/events").is_ok());
+        assert!(
+            normalize_runner_endpoint("http://127.0.0.1:4000/api/v1/studio-runner/events").is_ok()
+        );
+        assert!(
+            normalize_runner_endpoint("https://localhost:4000/api/v1/studio-runner/events").is_ok()
+        );
         assert!(matches!(
             normalize_runner_endpoint("https://example.com/api/v1/studio-runner/events"),
             Err(BridgeError::RunnerRequest { .. })
@@ -1392,6 +1643,92 @@ mod tests {
             normalize_runner_endpoint("http://localhost/api/v1/studio-runner/events"),
             Err(BridgeError::RunnerRequest { .. })
         ));
+    }
+
+    #[test]
+    fn builds_runner_payload_in_bridge_and_dispatches_signed_request() {
+        clear_runner_session_secret().expect("secret should start clear");
+        let (endpoint, rx, handle) =
+            mock_runner_response(202, r#"{"run_id":"run_demo"}"#.to_string());
+        configure_runner_session_secret("secret".to_string()).expect("secret should configure");
+        let response = dispatch_runner_event(
+            StudioRunnerSettings { endpoint },
+            runner_request("evt_mock"),
+        )
+        .expect("dispatch should succeed");
+
+        assert!(response.accepted);
+        assert_eq!(response.run_id.as_deref(), Some("run_demo"));
+        let (url, headers, body) = rx.recv().expect("mock request should be captured");
+        handle.join().expect("mock runner thread should finish");
+        assert_eq!(url, "/api/v1/studio-runner/events");
+        assert!(headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("webhook-id") && value == "evt_mock"));
+        assert!(headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("webhook-timestamp")));
+        assert!(headers.iter().any(
+            |(name, value)| name.eq_ignore_ascii_case("webhook-signature")
+                && value.starts_with("v1,")
+        ));
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&body).expect("payload should be valid json");
+        assert_eq!(payload["id"], "evt_mock");
+        assert_eq!(payload["type"], "build.requested");
+        assert_eq!(payload["source"], "openspec-studio");
+        assert_eq!(payload["data"]["change"], "add-runner");
+        assert!(payload["data"].get("proposal").is_none());
+    }
+
+    #[test]
+    fn runner_dispatch_requires_session_secret() {
+        clear_runner_session_secret().expect("secret should clear");
+        let result = dispatch_runner_event(
+            StudioRunnerSettings {
+                endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events".to_string(),
+            },
+            runner_request("evt_no_secret"),
+        );
+
+        assert!(matches!(result, Err(BridgeError::RunnerRequest { .. })));
+    }
+
+    #[test]
+    fn runner_dispatch_reports_non_accepted_status() {
+        clear_runner_session_secret().expect("secret should start clear");
+        let (endpoint, _rx, handle) =
+            mock_runner_response(409, r#"{"error":"duplicate"}"#.to_string());
+        configure_runner_session_secret("secret".to_string()).expect("secret should configure");
+        let response = dispatch_runner_event(
+            StudioRunnerSettings { endpoint },
+            runner_request("evt_conflict"),
+        )
+        .expect("dispatch should return bounded response metadata");
+        handle.join().expect("mock runner thread should finish");
+
+        assert!(!response.accepted);
+        assert_eq!(response.status_code, 409);
+        assert_eq!(
+            response.response_body.as_deref(),
+            Some(r#"{"error":"duplicate"}"#)
+        );
+    }
+
+    #[test]
+    fn runner_dispatch_rejects_oversized_response() {
+        clear_runner_session_secret().expect("secret should start clear");
+        let (endpoint, _rx, handle) =
+            mock_runner_response(202, "x".repeat(DEFAULT_MAX_RUNNER_RESPONSE_BYTES + 1));
+        configure_runner_session_secret("secret".to_string()).expect("secret should configure");
+        let result = dispatch_runner_event(
+            StudioRunnerSettings { endpoint },
+            runner_request("evt_large"),
+        );
+        handle.join().expect("mock runner thread should finish");
+
+        assert!(matches!(result, Err(BridgeError::RunnerRequest { .. })));
     }
 
     #[test]

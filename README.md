@@ -161,9 +161,10 @@ Studio can hand one selected active change to a local Studio Runner companion pr
 To use it in the current alpha:
 
 1. Start a compatible Studio Runner endpoint locally.
-2. Configure the endpoint and shared signing secret in the selected change inspector.
-3. Run validation until the workspace is clean.
-4. Click **Build with agent**.
+2. Configure the endpoint in the selected change inspector.
+3. Generate a session-only signing secret in Studio and pass the same secret to the local runner for this app session. Studio does not persist the secret after restart.
+4. Run validation until the workspace is clean.
+5. Click **Build with agent**.
 
 Studio sends `build.requested` to `POST /api/v1/studio-runner/events` with `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers. The signature is HMAC-SHA256 over `webhook-id.webhook-timestamp.raw-body`. Payloads are intentionally thin: repo path, change name, validation state, and artifact paths, not full repository contents.
 

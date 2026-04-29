@@ -4,7 +4,7 @@
 The desktop shell SHALL support local configuration for Studio Runner, an optional companion runner used by explicit agent dispatch.
 
 #### Scenario: Configured runner is used for dispatch
-- **GIVEN** the user has configured a Studio Runner endpoint and signing secret
+- **GIVEN** the user has configured a Studio Runner endpoint and generated a session-only signing secret
 - **WHEN** Studio dispatches `build.requested`
 - **THEN** Studio SHALL POST the signed payload to the configured runner push dispatch endpoint
 - **AND** Studio SHALL avoid sending unrelated repository file contents by default
@@ -22,7 +22,7 @@ The desktop shell SHALL support local configuration for Studio Runner, an option
 - **AND** Studio SHALL report bounded success or failure detail
 
 #### Scenario: Delivery failure is visible
-- **GIVEN** Studio Runner settings are configured
+- **GIVEN** Studio Runner endpoint and session secret are configured
 - **WHEN** a `build.requested` delivery fails
 - **THEN** Studio SHALL show the failure state for that delivery attempt
 - **AND** Studio SHALL preserve enough local detail for the user to retry or diagnose the issue

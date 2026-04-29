@@ -7,7 +7,7 @@ The change board SHALL provide an explicit **Build with agent** action for an ac
 - **GIVEN** a real OpenSpec repository is open
 - **AND** an active change is selected
 - **AND** the change is eligible for build dispatch
-- **AND** Studio Runner settings are configured
+- **AND** Studio Runner endpoint and session secret are configured
 - **AND** Studio Runner is reachable or can be started successfully
 - **WHEN** the user activates **Build with agent**
 - **THEN** Studio SHALL send exactly one `build.requested` event for the selected change to Studio Runner's push dispatch endpoint

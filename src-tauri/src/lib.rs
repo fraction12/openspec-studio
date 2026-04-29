@@ -42,6 +42,8 @@ pub fn run() {
             bridge::pick_repository_folder,
             bridge::run_openspec_command,
             bridge::validate_repo,
+            bridge::configure_studio_runner_session_secret,
+            bridge::clear_studio_runner_session_secret,
             bridge::check_studio_runner_status,
             bridge::dispatch_studio_runner_event
         ])

@@ -26,6 +26,7 @@ import {
   runnerDispatchHistoryForChange,
   type RunnerDispatchAttempt,
   type RunnerDispatchEligibility,
+  type RunnerDispatchRequestInput,
   type RunnerSettings,
   type RunnerStatus,
 } from "./appModel";
@@ -113,6 +114,21 @@ interface RunnerDispatchResponseDto {
   responseBody?: string | null;
   run_id?: string | null;
   runId?: string | null;
+}
+
+interface RunnerDispatchRequestDto {
+  eventId: string;
+  repoPath: string;
+  repoName: string;
+  changeName: string;
+  artifactPaths: string[];
+  validation: {
+    state: ValidationResult["state"];
+    checkedAt: string | null;
+    issueCount: number;
+  };
+  gitRef: string;
+  requestedBy: string;
 }
 
 interface OpenSpecGitStatusDto {
@@ -280,13 +296,12 @@ const ROW_RENDER_BATCH_SIZE = 250;
 
 const defaultRunnerSettings: RunnerSettings = {
   endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events",
-  signingSecret: "",
 };
 
 const unknownRunnerStatus: RunnerStatus = {
   state: "not-configured",
   label: "Runner not configured",
-  detail: "Add a local Studio Runner endpoint and signing secret to enable Build with agent.",
+  detail: "Add a local Studio Runner endpoint and generate a session secret to enable Build with agent.",
 };
 
 const unknownGitStatus: OpenSpecGitStatus = {
@@ -345,6 +360,7 @@ function App() {
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [runnerSettings, setRunnerSettings] = useState<RunnerSettings>(defaultRunnerSettings);
   const [runnerStatus, setRunnerStatus] = useState<RunnerStatus>(unknownRunnerStatus);
+  const [runnerSessionSecretConfigured, setRunnerSessionSecretConfigured] = useState(false);
   const [runnerDispatchBusy, setRunnerDispatchBusy] = useState(false);
   const [message, setMessage] = useState("Loading local workspace...");
   const [operationIssues, setOperationIssues] = useState<OpenSpecOperationIssue[]>([]);
@@ -438,7 +454,6 @@ function App() {
   function updateRunnerSettings(nextSettings: RunnerSettings) {
     const normalized = {
       endpoint: nextSettings.endpoint.trim(),
-      signingSecret: nextSettings.signingSecret,
     };
 
     setRunnerSettings(normalized);
@@ -448,11 +463,42 @@ function App() {
     }));
   }
 
+  async function configureRunnerSessionSecret() {
+    if (!isTauriRuntime()) {
+      setMessage("Studio Runner session setup requires the Tauri desktop runtime.");
+      return;
+    }
+
+    try {
+      const secret = createRunnerSessionSecret();
+      await invoke("configure_studio_runner_session_secret", { secret });
+      setRunnerSessionSecretConfigured(true);
+      setMessage("Studio Runner session secret generated for this app session.");
+      await checkRunnerStatus({ quiet: true });
+    } catch (error) {
+      setRunnerSessionSecretConfigured(false);
+      setMessage("Studio Runner session setup failed: " + errorMessage(error));
+    }
+  }
+
+  async function clearRunnerSessionSecret() {
+    if (isTauriRuntime()) {
+      try {
+        await invoke("clear_studio_runner_session_secret");
+      } catch (error) {
+        console.warn("Studio Runner session secret could not be cleared.", error);
+      }
+    }
+    setRunnerSessionSecretConfigured(false);
+    setRunnerStatus(unknownRunnerStatus);
+    setMessage("Studio Runner session secret cleared.");
+  }
+
   async function checkRunnerStatus(options: { quiet?: boolean } = {}) {
     const settings = runnerSettingsRef.current;
     const requestId = ++runnerStatusGenerationRef.current;
 
-    if (!settings.endpoint.trim() || !settings.signingSecret.trim()) {
+    if (!settings.endpoint.trim() || !runnerSessionSecretConfigured) {
       const nextStatus = { ...unknownRunnerStatus };
       if (!options.quiet) {
         setMessage(nextStatus.detail);
@@ -529,6 +575,7 @@ function App() {
       validation: workspace.validation,
       runnerSettings,
       runnerStatus,
+      sessionSecretConfigured: runnerSessionSecretConfigured,
     });
 
     if (!options.retryAttempt && !initialEligibility.eligible) {
@@ -562,6 +609,7 @@ function App() {
         runnerStatus: runnerStatus.state === "reachable"
           ? runnerStatus
           : await checkRunnerStatus({ quiet: true }),
+        sessionSecretConfigured: runnerSessionSecretConfigured,
       });
 
       if (!latestEligibility.eligible) {
@@ -592,8 +640,7 @@ function App() {
 
       const response = await invoke<RunnerDispatchResponseDto>("dispatch_studio_runner_event", {
         settings: runnerSettings,
-        payload,
-        eventId,
+        request: toRunnerDispatchRequestDto(payload),
       });
       const accepted = Boolean(response.accepted);
       const statusCode = response.status_code ?? response.statusCode;
@@ -618,22 +665,14 @@ function App() {
           : "Studio Runner dispatch failed: " + response.message,
       );
     } catch (error) {
-      const failedAttempt = pendingAttempt
-        ? createRunnerDispatchAttempt({
-            ...pendingAttempt,
-            status: "failed",
-            message: errorMessage(error),
-          })
-        : createRunnerDispatchAttempt({
-            eventId: options.retryAttempt?.eventId ?? createRunnerEventId(),
-            repoPath,
-            changeName,
-            payload: options.retryAttempt?.payload,
-            status: "failed",
-            message: errorMessage(error),
-            previousAttempt: options.retryAttempt,
-          });
-      rememberRunnerDispatchAttempt(failedAttempt);
+      if (pendingAttempt) {
+        const failedAttempt = createRunnerDispatchAttempt({
+          ...pendingAttempt,
+          status: "failed",
+          message: errorMessage(error),
+        });
+        rememberRunnerDispatchAttempt(failedAttempt);
+      }
       recordOperationIssue(
         createOpenSpecOperationIssue({
           kind: "runner-dispatch",
@@ -685,7 +724,7 @@ function App() {
 
   useEffect(() => {
     void checkRunnerStatus({ quiet: true });
-  }, [runnerSettings.endpoint, runnerSettings.signingSecret]);
+  }, [runnerSettings.endpoint, runnerSessionSecretConfigured]);
 
   useEffect(() => {
     if (!repo || repo.state !== "ready" || !workspace || !isTauriRuntime()) {
@@ -724,6 +763,7 @@ function App() {
     validation: workspace?.validation ?? null,
     runnerSettings,
     runnerStatus,
+    sessionSecretConfigured: runnerSessionSecretConfigured,
   });
 
   useEffect(() => {
@@ -1716,6 +1756,7 @@ function App() {
         runnerStatus={runnerStatus}
         runnerDispatchEligibility={selectedChangeRunnerEligibility}
         runnerDispatchHistory={selectedChangeDispatchHistory}
+        runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
@@ -1724,6 +1765,8 @@ function App() {
         onOpenArtifact={(artifact) => void openArtifact(artifact)}
         onValidate={() => void runValidation()}
         onRunnerSettingsChange={updateRunnerSettings}
+        onConfigureRunnerSessionSecret={() => void configureRunnerSessionSecret()}
+        onClearRunnerSessionSecret={() => void clearRunnerSessionSecret()}
         onCheckRunnerStatus={() => void checkRunnerStatus()}
         onDispatchRunner={() => void dispatchSelectedChange()}
         onRetryRunnerDispatch={(attempt) => void dispatchSelectedChange({ retryAttempt: attempt })}
@@ -2680,6 +2723,7 @@ function Inspector({
   runnerStatus,
   runnerDispatchEligibility,
   runnerDispatchHistory,
+  runnerSessionSecretConfigured,
   runnerDispatchBusy,
   detailTab,
   artifactPreview,
@@ -2688,6 +2732,8 @@ function Inspector({
   onOpenArtifact,
   onValidate,
   onRunnerSettingsChange,
+  onConfigureRunnerSessionSecret,
+  onClearRunnerSessionSecret,
   onCheckRunnerStatus,
   onDispatchRunner,
   onRetryRunnerDispatch,
@@ -2701,6 +2747,7 @@ function Inspector({
   runnerStatus: RunnerStatus;
   runnerDispatchEligibility: RunnerDispatchEligibility;
   runnerDispatchHistory: RunnerDispatchAttempt[];
+  runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
   detailTab: DetailTab;
   artifactPreview: string;
@@ -2709,6 +2756,8 @@ function Inspector({
   onOpenArtifact: (artifact: Artifact | SpecRecord) => void;
   onValidate: () => void;
   onRunnerSettingsChange: (settings: RunnerSettings) => void;
+  onConfigureRunnerSessionSecret: () => void;
+  onClearRunnerSessionSecret: () => void;
   onCheckRunnerStatus: () => void;
   onDispatchRunner: () => void;
   onRetryRunnerDispatch: (attempt: RunnerDispatchAttempt) => void;
@@ -2807,8 +2856,11 @@ function Inspector({
         status={runnerStatus}
         eligibility={runnerDispatchEligibility}
         history={runnerDispatchHistory}
+        sessionSecretConfigured={runnerSessionSecretConfigured}
         busy={runnerDispatchBusy}
         onSettingsChange={onRunnerSettingsChange}
+        onConfigureSessionSecret={onConfigureRunnerSessionSecret}
+        onClearSessionSecret={onClearRunnerSessionSecret}
         onCheckStatus={onCheckRunnerStatus}
         onDispatch={onDispatchRunner}
         onRetry={onRetryRunnerDispatch}
@@ -2855,8 +2907,11 @@ function RunnerDispatchPanel({
   status,
   eligibility,
   history,
+  sessionSecretConfigured,
   busy,
   onSettingsChange,
+  onConfigureSessionSecret,
+  onClearSessionSecret,
   onCheckStatus,
   onDispatch,
   onRetry,
@@ -2865,8 +2920,11 @@ function RunnerDispatchPanel({
   status: RunnerStatus;
   eligibility: RunnerDispatchEligibility;
   history: RunnerDispatchAttempt[];
+  sessionSecretConfigured: boolean;
   busy: boolean;
   onSettingsChange: (settings: RunnerSettings) => void;
+  onConfigureSessionSecret: () => void;
+  onClearSessionSecret: () => void;
   onCheckStatus: () => void;
   onDispatch: () => void;
   onRetry: (attempt: RunnerDispatchAttempt) => void;
@@ -2895,15 +2953,21 @@ function RunnerDispatchPanel({
             placeholder="http://127.0.0.1:4000/api/v1/studio-runner/events"
           />
         </label>
-        <label>
-          <span>Signing secret</span>
-          <input
-            value={settings.signingSecret}
-            onChange={(event) => onSettingsChange({ ...settings, signingSecret: event.target.value })}
-            placeholder="Shared local secret"
-            type="password"
-          />
-        </label>
+        <div className="runner-session-secret-card">
+          <span>Session secret</span>
+          <strong>{sessionSecretConfigured ? "Configured for this session" : "Not generated"}</strong>
+          <p>Studio generates this secret and keeps it in memory only. It is not saved after restart.</p>
+          <div className="runner-session-actions">
+            <button type="button" className="primary-outline" onClick={onConfigureSessionSecret} disabled={busy}>
+              {sessionSecretConfigured ? "Regenerate session secret" : "Generate session secret"}
+            </button>
+            {sessionSecretConfigured ? (
+              <button type="button" className="link-button" onClick={onClearSessionSecret} disabled={busy}>
+                Clear session secret
+              </button>
+            ) : null}
+          </div>
+        </div>
       </div>
       {!eligibility.eligible ? (
         <ul className="runner-blockers">
@@ -4347,6 +4411,38 @@ function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
     detail: dto.message || "Studio Runner did not respond successfully.",
     statusCode: dto.status_code ?? dto.statusCode ?? null,
     endpoint: dto.endpoint ?? undefined,
+  };
+}
+
+
+function createRunnerSessionSecret(): string {
+  const bytes = new Uint8Array(32);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+
+  return btoa(binary);
+}
+
+function toRunnerDispatchRequestDto(request: RunnerDispatchRequestInput): RunnerDispatchRequestDto {
+  return {
+    eventId: request.eventId,
+    repoPath: request.repoPath,
+    repoName: request.repoName,
+    changeName: request.changeName,
+    artifactPaths: request.artifactPaths,
+    validation: request.validation,
+    gitRef: request.gitRef,
+    requestedBy: request.requestedBy,
   };
 }
 
