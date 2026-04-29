@@ -22,6 +22,8 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **WHEN** Studio checks runner availability
 - **THEN** Studio SHALL classify the runner state as reachable or unavailable with bounded error detail
 - **AND** Studio SHALL avoid blocking the app indefinitely while checking status
+- **AND** Studio SHALL preserve Studio-managed runner ownership and PID metadata across status checks when the configured endpoint is still served by the Studio Runner process
+- **AND** Studio SHALL NOT mark a random reachable local endpoint as Studio-managed unless the process matches the expected Studio Runner binary/workflow path
 
 #### Scenario: Runner lifecycle uses safe local commands
 - **GIVEN** Studio supports starting or stopping a local runner

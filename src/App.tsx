@@ -96,6 +96,10 @@ interface RunnerStatusDto {
   reachable: boolean;
   status: string;
   endpoint?: string | null;
+  runner_endpoint?: string | null;
+  runnerEndpoint?: string | null;
+  runner_repo_path?: string | null;
+  runnerRepoPath?: string | null;
   status_code?: number | null;
   statusCode?: number | null;
   message: string;
@@ -642,12 +646,15 @@ function App() {
 
     try {
       const dto = await invoke<RunnerStatusDto>("check_studio_runner_status", {
-        settings,
+        settings: {
+          ...settings,
+          repoPath: runnerRepoPath(),
+        },
       });
       if (runnerStatusGenerationRef.current !== requestId) {
         return runnerStatusRef.current;
       }
-      const nextStatus = runnerStatusFromDto(dto);
+      const nextStatus = runnerStatusFromDto(dto, runnerStatusRef.current);
       runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       if (!options.quiet) {
@@ -4763,9 +4770,22 @@ function boundedRows<T extends { id: string }>(
   };
 }
 
-function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
+function runnerStatusFromDto(dto: RunnerStatusDto, previousStatus?: RunnerStatus): RunnerStatus {
+  const endpoint = dto.endpoint ?? dto.runnerEndpoint ?? dto.runner_endpoint ?? previousStatus?.endpoint;
+  const statusCode = dto.status_code ?? dto.statusCode ?? null;
+  const managed = Boolean(dto.managed);
+  const pid = dto.pid ?? null;
+
   if (!dto.configured) {
-    return { ...unknownRunnerStatus };
+    if (previousStatus?.managed && endpoint && previousStatus.endpoint === endpoint) {
+      return {
+        ...unknownRunnerStatus,
+        endpoint,
+        managed: previousStatus.managed,
+        pid: previousStatus.pid ?? null,
+      };
+    }
+    return { ...unknownRunnerStatus, endpoint };
   }
 
   if (dto.reachable) {
@@ -4773,10 +4793,10 @@ function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
       state: "reachable",
       label: "Runner reachable",
       detail: dto.message || "Studio Runner responded to health check.",
-      statusCode: dto.status_code ?? dto.statusCode ?? null,
-      endpoint: dto.endpoint ?? undefined,
-      managed: Boolean(dto.managed),
-      pid: dto.pid ?? null,
+      statusCode,
+      endpoint,
+      managed,
+      pid,
     };
   }
 
@@ -4784,10 +4804,10 @@ function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
     state: "unavailable",
     label: "Runner unavailable",
     detail: dto.message || "Studio Runner did not respond successfully.",
-    statusCode: dto.status_code ?? dto.statusCode ?? null,
-    endpoint: dto.endpoint ?? undefined,
-    managed: Boolean(dto.managed),
-    pid: dto.pid ?? null,
+    statusCode,
+    endpoint,
+    managed,
+    pid,
   };
 }
 

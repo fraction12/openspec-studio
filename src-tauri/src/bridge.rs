@@ -100,6 +100,8 @@ pub struct BridgeErrorDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioRunnerSettings {
     pub endpoint: String,
+    #[serde(rename = "repoPath", default)]
+    pub repo_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,7 +111,8 @@ pub struct StudioRunnerSessionSecretResponse {
 
 #[derive(Debug)]
 struct StudioRunnerProcess {
-    child: Child,
+    child: Option<Child>,
+    pid: u32,
     endpoint: String,
     port: u16,
     repo_path: PathBuf,
@@ -140,6 +143,8 @@ pub struct StudioRunnerStatus {
     pub reachable: bool,
     pub status: String,
     pub endpoint: Option<String>,
+    pub runner_endpoint: Option<String>,
+    pub runner_repo_path: Option<String>,
     pub status_code: Option<u16>,
     pub message: String,
     pub response_body: Option<String>,
@@ -642,7 +647,7 @@ fn get_runner_session_secret() -> Result<String, BridgeError> {
 fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerStatus, BridgeError> {
     reap_finished_runner_process()?;
     let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
-    let managed = managed_runner_snapshot()?;
+    let mut managed = managed_runner_snapshot()?;
 
     if endpoint.is_empty() || !has_runner_session_secret()? {
         return Ok(StudioRunnerStatus {
@@ -650,15 +655,25 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
             reachable: false,
             status: "not-configured".to_string(),
             endpoint: if endpoint.is_empty() {
-                None
+                runner_snapshot_endpoint(managed.as_ref())
             } else {
-                Some(endpoint)
+                Some(endpoint.clone())
             },
+            runner_endpoint: runner_snapshot_endpoint(managed.as_ref()),
+            runner_repo_path: runner_snapshot_repo_path(managed.as_ref()),
             status_code: None,
             message: "Studio Runner endpoint and session secret are required.".to_string(),
             response_body: None,
-            managed: managed.is_some(),
-            pid: managed.as_ref().map(|process| process.pid),
+            managed: if endpoint.is_empty() {
+                managed.is_some()
+            } else {
+                runner_managed_for_endpoint(managed.as_ref(), &endpoint)
+            },
+            pid: if endpoint.is_empty() {
+                managed.as_ref().map(|process| process.pid)
+            } else {
+                runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint)
+            },
         });
     }
 
@@ -675,11 +690,17 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
             let status_code = response.status().as_u16();
             let success = response.status().is_success();
             let body = read_bounded_runner_response(response)?;
+            if success && !runner_managed_for_endpoint(managed.as_ref(), &endpoint) {
+                managed =
+                    recover_managed_runner_from_endpoint(&endpoint, settings.repo_path.as_deref())?;
+            }
             Ok(StudioRunnerStatus {
                 configured: true,
                 reachable: success,
                 status: if success { "reachable" } else { "unavailable" }.to_string(),
-                endpoint: Some(endpoint),
+                endpoint: Some(endpoint.clone()),
+                runner_endpoint: runner_snapshot_endpoint(managed.as_ref()),
+                runner_repo_path: runner_snapshot_repo_path(managed.as_ref()),
                 status_code: Some(status_code),
                 message: if success {
                     "Studio Runner health endpoint responded.".to_string()
@@ -687,20 +708,22 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
                     format!("Studio Runner health check returned HTTP {}", status_code)
                 },
                 response_body: body,
-                managed: managed.is_some(),
-                pid: managed.as_ref().map(|process| process.pid),
+                managed: runner_managed_for_endpoint(managed.as_ref(), &endpoint),
+                pid: runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint),
             })
         }
         Err(error) => Ok(StudioRunnerStatus {
             configured: true,
             reachable: false,
             status: "unavailable".to_string(),
-            endpoint: Some(endpoint),
+            endpoint: Some(endpoint.clone()),
+            runner_endpoint: runner_snapshot_endpoint(managed.as_ref()),
+            runner_repo_path: runner_snapshot_repo_path(managed.as_ref()),
             status_code: None,
             message: error.to_string(),
             response_body: None,
-            managed: managed.is_some(),
-            pid: managed.as_ref().map(|process| process.pid),
+            managed: runner_managed_for_endpoint(managed.as_ref(), &endpoint),
+            pid: runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint),
         }),
     }
 }
@@ -761,18 +784,23 @@ fn start_runner_process(
     if let Some(existing) = store.as_mut() {
         if existing
             .child
-            .try_wait()
+            .as_mut()
+            .map(|child| child.try_wait())
+            .transpose()
             .map_err(|error| BridgeError::RunnerRequest {
                 message: error.to_string(),
             })?
+            .flatten()
             .is_none()
         {
-            if existing.endpoint == endpoint && existing.repo_path == repo_path {
+            if existing.endpoint == endpoint
+                && (existing.repo_path == repo_path || existing.child.is_none())
+            {
                 return Ok(StudioRunnerLifecycleResponse {
                     started: false,
                     endpoint: existing.endpoint.clone(),
                     port: existing.port,
-                    pid: Some(existing.child.id()),
+                    pid: Some(existing.pid),
                     message: "Studio Runner is already managed by Studio.".to_string(),
                 });
             }
@@ -794,7 +822,6 @@ fn start_runner_process(
         .env("PATH", runner_process_path())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    prepare_command_for_tree_termination(&mut command);
 
     let child = command
         .spawn()
@@ -803,7 +830,8 @@ fn start_runner_process(
         })?;
     let pid = child.id();
     let mut process = StudioRunnerProcess {
-        child,
+        child: Some(child),
+        pid,
         endpoint: endpoint.clone(),
         port,
         repo_path: repo_path.clone(),
@@ -821,7 +849,7 @@ fn start_runner_process(
             })
         }
         Err(error) => {
-            terminate_child_tree(&mut process.child, pid);
+            terminate_runner_process(pid, process.child.as_mut());
             Err(error)
         }
     }
@@ -844,8 +872,8 @@ fn stop_runner_process() -> Result<StudioRunnerLifecycleResponse, BridgeError> {
     };
     let endpoint = process.endpoint.clone();
     let port = process.port;
-    let pid = process.child.id();
-    terminate_child_tree(&mut process.child, pid);
+    let pid = process.pid;
+    terminate_runner_process(pid, process.child.as_mut());
     Ok(StudioRunnerLifecycleResponse {
         started: false,
         endpoint,
@@ -1089,15 +1117,16 @@ fn reap_finished_runner_process() -> Result<(), BridgeError> {
             message: "Studio Runner process store is unavailable.".to_string(),
         })?;
     if let Some(process) = store.as_mut() {
-        if process
-            .child
-            .try_wait()
-            .map_err(|error| BridgeError::RunnerRequest {
-                message: error.to_string(),
-            })?
-            .is_some()
-        {
-            *store = None;
+        if let Some(child) = process.child.as_mut() {
+            if child
+                .try_wait()
+                .map_err(|error| BridgeError::RunnerRequest {
+                    message: error.to_string(),
+                })?
+                .is_some()
+            {
+                process.child = None;
+            }
         }
     }
     Ok(())
@@ -1110,13 +1139,154 @@ fn managed_runner_snapshot() -> Result<Option<StudioRunnerProcessSnapshot>, Brid
             message: "Studio Runner process store is unavailable.".to_string(),
         })?;
     Ok(store.as_ref().map(|process| StudioRunnerProcessSnapshot {
-        pid: process.child.id(),
+        pid: process.pid,
+        endpoint: process.endpoint.clone(),
+        repo_path: process.repo_path.clone(),
     }))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct StudioRunnerProcessSnapshot {
     pid: u32,
+    endpoint: String,
+    repo_path: PathBuf,
+}
+
+fn runner_managed_for_endpoint(
+    snapshot: Option<&StudioRunnerProcessSnapshot>,
+    endpoint: &str,
+) -> bool {
+    snapshot
+        .map(|process| process.endpoint == endpoint)
+        .unwrap_or(false)
+}
+
+fn runner_managed_pid_for_endpoint(
+    snapshot: Option<&StudioRunnerProcessSnapshot>,
+    endpoint: &str,
+) -> Option<u32> {
+    snapshot
+        .filter(|process| process.endpoint == endpoint)
+        .map(|process| process.pid)
+}
+
+fn runner_snapshot_endpoint(snapshot: Option<&StudioRunnerProcessSnapshot>) -> Option<String> {
+    snapshot.map(|process| process.endpoint.clone())
+}
+
+fn runner_snapshot_repo_path(snapshot: Option<&StudioRunnerProcessSnapshot>) -> Option<String> {
+    snapshot.map(|process| path_to_string(&process.repo_path))
+}
+
+fn recover_managed_runner_from_endpoint(
+    endpoint: &str,
+    expected_repo_path: Option<&str>,
+) -> Result<Option<StudioRunnerProcessSnapshot>, BridgeError> {
+    let port = runner_endpoint_port(endpoint)?;
+    let Some(pid) = runner_listener_pid(port) else {
+        return managed_runner_snapshot();
+    };
+    let recovered_repo_path = recovered_runner_repo_path(pid, expected_repo_path)?;
+    if recovered_repo_path.is_none() {
+        return managed_runner_snapshot();
+    }
+    let recovered_repo_path = recovered_repo_path.expect("checked above");
+
+    let mut store = studio_runner_process()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner process store is unavailable.".to_string(),
+        })?;
+
+    if let Some(existing) = store.as_ref() {
+        if existing.endpoint != endpoint {
+            return Ok(Some(StudioRunnerProcessSnapshot {
+                pid: existing.pid,
+                endpoint: existing.endpoint.clone(),
+                repo_path: existing.repo_path.clone(),
+            }));
+        }
+    }
+
+    *store = Some(StudioRunnerProcess {
+        child: None,
+        pid,
+        endpoint: endpoint.to_string(),
+        port,
+        repo_path: recovered_repo_path.clone(),
+    });
+
+    Ok(Some(StudioRunnerProcessSnapshot {
+        pid,
+        endpoint: endpoint.to_string(),
+        repo_path: recovered_repo_path,
+    }))
+}
+
+fn runner_listener_pid(port: u16) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        let output = Command::new("/usr/sbin/lsof")
+            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| line.trim().parse::<u32>().ok())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = port;
+        None
+    }
+}
+
+fn recovered_runner_repo_path(
+    pid: u32,
+    expected_repo_path: Option<&str>,
+) -> Result<Option<PathBuf>, BridgeError> {
+    let Some(command) = runner_process_command(pid) else {
+        return Ok(None);
+    };
+    if !(command.contains("bin/symphony") || command.contains("/symphony ")) {
+        return Ok(None);
+    }
+
+    if let Some(expected_repo_path) = expected_repo_path {
+        let expected = canonicalize_runner_dir(expected_repo_path, "Studio Runner repository")?;
+        if command.contains(&path_to_string(&expected)) {
+            return Ok(Some(expected));
+        }
+        return Ok(None);
+    }
+
+    Ok(command
+        .split_whitespace()
+        .find(|part| part.ends_with("/WORKFLOW.md"))
+        .and_then(|workflow_path| Path::new(workflow_path).parent())
+        .map(Path::to_path_buf))
+}
+
+fn runner_process_command(pid: u32) -> Option<String> {
+    #[cfg(unix)]
+    {
+        let output = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
 }
 
 fn canonicalize_runner_dir(path: &str, label: &str) -> Result<PathBuf, BridgeError> {
@@ -1492,6 +1662,22 @@ fn terminate_child_tree(child: &mut Child, child_id: u32) {
     let _ = wait_child_for(child, COMMAND_TERMINATION_GRACE);
 }
 
+fn terminate_runner_process(pid: u32, child: Option<&mut Child>) {
+    if let Some(child) = child {
+        let _ = child.kill();
+        if wait_child_for(child, COMMAND_TERMINATION_GRACE).is_some() {
+            return;
+        }
+        let _ = child.kill();
+        let _ = wait_child_for(child, COMMAND_TERMINATION_GRACE);
+        return;
+    }
+
+    terminate_pid_gracefully(pid);
+    thread::sleep(COMMAND_TERMINATION_GRACE);
+    terminate_pid_forcefully(pid);
+}
+
 fn wait_child_for(child: &mut Child, timeout: Duration) -> Option<()> {
     let start = Instant::now();
 
@@ -1516,10 +1702,27 @@ fn terminate_process_group_forcefully(child_id: u32) {
     terminate_process_group(child_id, libc::SIGKILL);
 }
 
+fn terminate_pid_gracefully(pid: u32) {
+    #[cfg(unix)]
+    terminate_pid(pid, libc::SIGTERM);
+}
+
+fn terminate_pid_forcefully(pid: u32) {
+    #[cfg(unix)]
+    terminate_pid(pid, libc::SIGKILL);
+}
+
 #[cfg(unix)]
 fn terminate_process_group(child_id: u32, signal: i32) {
     unsafe {
         libc::kill(-(child_id as libc::pid_t), signal);
+    }
+}
+
+#[cfg(unix)]
+fn terminate_pid(pid: u32, signal: i32) {
+    unsafe {
+        libc::kill(pid as libc::pid_t, signal);
     }
 }
 
@@ -1827,6 +2030,14 @@ mod tests {
         let _ = fs::remove_dir_all(path);
     }
 
+    fn reset_studio_runner_process_for_test() {
+        if let Ok(mut store) = studio_runner_process().lock() {
+            if let Some(mut process) = store.take() {
+                terminate_runner_process(process.pid, process.child.as_mut());
+            }
+        }
+    }
+
     #[cfg(unix)]
     fn write_executable(path: &Path, contents: &str) {
         fs::write(path, contents).expect("script should be written");
@@ -1947,7 +2158,10 @@ mod tests {
             mock_runner_response(202, r#"{"run_id":"run_demo"}"#.to_string());
         configure_runner_session_secret("secret".to_string()).expect("secret should configure");
         let response = dispatch_runner_event(
-            StudioRunnerSettings { endpoint },
+            StudioRunnerSettings {
+                endpoint,
+                repo_path: None,
+            },
             runner_request("evt_mock"),
         )
         .expect("dispatch should succeed");
@@ -1988,6 +2202,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn starts_and_stops_managed_studio_runner_process() {
+        reset_studio_runner_process_for_test();
         clear_runner_session_secret().expect("secret should start clear");
         configure_runner_session_secret("secret".to_string()).expect("secret should configure");
         let runner_repo = temp_repo("runner-lifecycle", false);
@@ -2039,10 +2254,29 @@ PY
         assert_eq!(response.port, 45123);
         let status = check_runner_status(StudioRunnerSettings {
             endpoint: response.endpoint.clone(),
+            repo_path: Some(path_to_string(&runner_repo)),
         })
         .expect("status should be available");
         assert!(status.reachable);
         assert!(status.managed);
+        assert_eq!(status.pid, response.pid);
+        assert_eq!(
+            status.runner_endpoint.as_deref(),
+            Some(response.endpoint.as_str())
+        );
+
+        let other_endpoint_status = check_runner_status(StudioRunnerSettings {
+            endpoint: "http://127.0.0.1:45124/api/v1/studio-runner/events".to_string(),
+            repo_path: Some(path_to_string(&runner_repo)),
+        })
+        .expect("other endpoint status should be reported");
+        assert!(!other_endpoint_status.managed);
+        assert_eq!(other_endpoint_status.pid, None);
+        assert_eq!(
+            other_endpoint_status.runner_endpoint.as_deref(),
+            Some(response.endpoint.as_str())
+        );
+
         let stopped = stop_runner_process().expect("runner should stop");
         assert_eq!(stopped.port, 45123);
 
@@ -2051,6 +2285,7 @@ PY
         } else {
             std::env::remove_var("OPENSPEC_STUDIO_RUNNER_BIN");
         }
+        reset_studio_runner_process_for_test();
         cleanup(runner_repo);
     }
 
@@ -2060,6 +2295,7 @@ PY
         let result = dispatch_runner_event(
             StudioRunnerSettings {
                 endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events".to_string(),
+                repo_path: None,
             },
             runner_request("evt_no_secret"),
         );
@@ -2074,7 +2310,10 @@ PY
             mock_runner_response(409, r#"{"error":"duplicate"}"#.to_string());
         configure_runner_session_secret("secret".to_string()).expect("secret should configure");
         let response = dispatch_runner_event(
-            StudioRunnerSettings { endpoint },
+            StudioRunnerSettings {
+                endpoint,
+                repo_path: None,
+            },
             runner_request("evt_conflict"),
         )
         .expect("dispatch should return bounded response metadata");
@@ -2095,7 +2334,10 @@ PY
             mock_runner_response(202, "x".repeat(DEFAULT_MAX_RUNNER_RESPONSE_BYTES + 1));
         configure_runner_session_secret("secret".to_string()).expect("secret should configure");
         let result = dispatch_runner_event(
-            StudioRunnerSettings { endpoint },
+            StudioRunnerSettings {
+                endpoint,
+                repo_path: None,
+            },
             runner_request("evt_large"),
         );
         handle.join().expect("mock runner thread should finish");
