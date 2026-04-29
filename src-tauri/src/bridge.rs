@@ -124,6 +124,7 @@ pub struct StudioRunnerLifecycleRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct StudioRunnerLifecycleResponse {
     pub started: bool,
     pub endpoint: String,
@@ -133,6 +134,7 @@ pub struct StudioRunnerLifecycleResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct StudioRunnerStatus {
     pub configured: bool,
     pub reachable: bool,
@@ -146,6 +148,7 @@ pub struct StudioRunnerStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct StudioRunnerDispatchResponse {
     pub event_id: String,
     pub status_code: u16,
