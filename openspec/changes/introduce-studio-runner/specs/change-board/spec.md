@@ -30,7 +30,8 @@ The change board SHALL provide an explicit **Build with agent** action for an ac
 - **GIVEN** the user views an active change
 - **WHEN** Studio Runner is not configured, stopped, unreachable, incompatible, or reachable
 - **THEN** Studio SHALL show only compact runner state, blocked reasons, and the selected-change Build with agent action near dispatch
-- **AND** Studio SHALL keep endpoint setup, session secret generation, start/stop controls, and repo-wide runner history in the Runner page inspector
+- **AND** Studio SHALL keep endpoint setup, session secret generation, and start/stop controls in the Runner page inspector
+- **AND** Studio SHALL keep repo-wide runner history in the main Runner workspace as a build log
 
 #### Scenario: Dispatch history is visible
 - **GIVEN** a selected change has dispatch attempts

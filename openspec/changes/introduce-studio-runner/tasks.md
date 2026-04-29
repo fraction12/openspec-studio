@@ -22,7 +22,7 @@
 - [x] 2.7 Add bounded timeout, response capture, and error reporting for delivery.
 - [x] 2.8 Persist dispatch delivery attempts/status locally.
 - [x] 2.9 Support manual retry using the same event ID/idempotency key for an existing failed delivery.
-- [x] 2.10 Surface repo-wide dispatch history in the Runner page inspector and selected-change dispatch history in the change inspector.
+- [x] 2.10 Surface repo-wide dispatch history as a main Runner workspace log and selected-change dispatch history in the change inspector.
 
 ## 3. Runner Contract
 

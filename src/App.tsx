@@ -1824,6 +1824,7 @@ function App() {
         onArchiveAll={(changeNames) => void archiveAllChanges(changeNames)}
         onValidate={() => void runValidation()}
         onReload={() => repo && void loadRepository(repo.path)}
+        runnerAllDispatchHistory={repoRunnerDispatchHistory}
       />
 
       <Inspector
@@ -1835,7 +1836,6 @@ function App() {
         runnerStatus={runnerStatus}
         runnerDispatchEligibility={selectedChangeRunnerEligibility}
         runnerDispatchHistory={selectedChangeDispatchHistory}
-        runnerAllDispatchHistory={repoRunnerDispatchHistory}
         runnerSettings={runnerSettings}
         runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
@@ -2013,6 +2013,7 @@ function WorkspaceMain({
   onArchiveAll,
   onValidate,
   onReload,
+  runnerAllDispatchHistory,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
@@ -2041,6 +2042,7 @@ function WorkspaceMain({
   onArchiveAll: (changeNames: string[]) => void;
   onValidate: () => void;
   onReload: () => void;
+  runnerAllDispatchHistory: RunnerDispatchAttempt[];
 }) {
   if (!repo) {
     return (
@@ -2155,7 +2157,7 @@ function WorkspaceMain({
           onSortDirectionChange={onSpecSortDirection}
         />
       ) : (
-        <RunnerWorkspace repo={repo} />
+        <RunnerWorkspace repo={repo} history={runnerAllDispatchHistory} />
       )}
     </main>
   );
@@ -2815,7 +2817,6 @@ function Inspector({
   runnerStatus,
   runnerDispatchEligibility,
   runnerDispatchHistory,
-  runnerAllDispatchHistory,
   runnerSettings,
   runnerSessionSecretConfigured,
   runnerDispatchBusy,
@@ -2842,7 +2843,6 @@ function Inspector({
   runnerStatus: RunnerStatus;
   runnerDispatchEligibility: RunnerDispatchEligibility;
   runnerDispatchHistory: RunnerDispatchAttempt[];
-  runnerAllDispatchHistory: RunnerDispatchAttempt[];
   runnerSettings: RunnerSettings;
   runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
@@ -2896,7 +2896,6 @@ function Inspector({
         repo={repo}
         settings={runnerSettings}
         status={runnerStatus}
-        history={runnerAllDispatchHistory}
         sessionSecretConfigured={runnerSessionSecretConfigured}
         busy={runnerDispatchBusy}
         onSettingsChange={onRunnerSettingsChange}
@@ -3015,38 +3014,97 @@ function Inspector({
   );
 }
 
-function RunnerWorkspace({ repo }: { repo: RepositoryView }) {
+function RunnerWorkspace({ repo, history }: { repo: RepositoryView; history: RunnerDispatchAttempt[] }) {
+  const latestAttempt = history[0] ?? null;
+
   return (
     <section className="board-panel runner-board" aria-label="Studio Runner workspace">
       <div className="board-toolbar board-toolbar-compact">
         <div>
           <h2>Studio Runner</h2>
-          <p>One local runner per repo/session. Start it here, then dispatch eligible selected changes from their inspector.</p>
+          <p>One local runner per repo/session. Start it from the inspector, then dispatch eligible selected changes.</p>
         </div>
       </div>
-      <div className="runner-overview">
-        <section className="inspector-section runner-overview-card">
-          <h3>Repository runner</h3>
-          <p>{repo.name} uses one managed local runner for all selected-change build requests in this session.</p>
-        </section>
-        <section className="inspector-section runner-overview-card">
-          <h3>Execution model</h3>
-          <p>Studio sends a signed, thin `build.requested` event. The runner reads OpenSpec artifacts from disk and owns execution.</p>
-        </section>
-        <section className="inspector-section runner-overview-card">
-          <h3>Safety boundary</h3>
-          <p>Endpoints stay localhost-only, the signing secret is session-only, and dispatch is never automatic.</p>
+      <div className="runner-main-content">
+        <div className="runner-overview">
+          <section className="inspector-section runner-overview-card">
+            <h3>Repository runner</h3>
+            <p>{repo.name} uses one managed local runner for all selected-change build requests in this session.</p>
+          </section>
+          <section className="inspector-section runner-overview-card">
+            <h3>Execution model</h3>
+            <p>Studio sends a signed, thin `build.requested` event. The runner reads OpenSpec artifacts from disk and owns execution.</p>
+          </section>
+          <section className="inspector-section runner-overview-card">
+            <h3>Safety boundary</h3>
+            <p>Endpoints stay localhost-only, the signing secret is session-only, and dispatch is never automatic.</p>
+          </section>
+        </div>
+
+        <section className="runner-log-panel" aria-label="Studio Runner log">
+          <div className="runner-log-header">
+            <div>
+              <span>Runner log</span>
+              <h3>Build requests</h3>
+              <p>Recent Studio Runner events. This becomes the natural home for live runner output as the runner emits it.</p>
+            </div>
+            <strong>{history.length}</strong>
+          </div>
+          <RunnerLog history={history} latestAttempt={latestAttempt} />
         </section>
       </div>
     </section>
   );
 }
 
+function RunnerLog({
+  history,
+  latestAttempt,
+}: {
+  history: RunnerDispatchAttempt[];
+  latestAttempt: RunnerDispatchAttempt | null;
+}) {
+  if (history.length === 0) {
+    return (
+      <div className="runner-log-empty">
+        <strong>No build requests yet.</strong>
+        <p>Dispatch an eligible change and its accepted, failed, or retry events will appear here.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="runner-log-shell">
+      <div className="runner-log-summary">
+        <span>Latest</span>
+        <strong>{latestAttempt?.changeName ?? "No change"}</strong>
+        <p>{latestAttempt ? runnerAttemptLine(latestAttempt) : "Waiting for runner activity."}</p>
+      </div>
+      <ol className="runner-log-lines">
+        {history.map((attempt) => (
+          <li key={`${attempt.eventId}-${attempt.updatedAt}-${attempt.status}`} className={`runner-log-line is-${attempt.status}`}>
+            <time>{formatRunnerDateTime(attempt.updatedAt)}</time>
+            <span>{attempt.status}</span>
+            <code>{attempt.eventId}</code>
+            <p>{runnerAttemptLine(attempt)}</p>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function runnerAttemptLine(attempt: RunnerDispatchAttempt) {
+  const statusCode = attempt.statusCode ? `HTTP ${attempt.statusCode}` : "no status";
+  const run = attempt.runId ? ` · run ${attempt.runId}` : "";
+  const message = attempt.message ? ` · ${attempt.message}` : "";
+  return `${attempt.changeName} · ${statusCode}${run}${message}`;
+}
+
 function RunnerInspector({
   repo,
   settings,
   status,
-  history,
   sessionSecretConfigured,
   busy,
   onSettingsChange,
@@ -3059,7 +3117,6 @@ function RunnerInspector({
   repo: RepositoryView;
   settings: RunnerSettings;
   status: RunnerStatus;
-  history: RunnerDispatchAttempt[];
   sessionSecretConfigured: boolean;
   busy: boolean;
   onSettingsChange: (settings: RunnerSettings) => void;
@@ -3138,13 +3195,6 @@ function RunnerInspector({
               </button>
             ) : null}
           </div>
-        </section>
-        <section className="inspector-section">
-          <div className="section-title-row">
-            <h3>Recent build requests</h3>
-            <span>{history.length}</span>
-          </div>
-          <RunnerHistoryList history={history} emptyText="No runner dispatches for this repository yet." />
         </section>
       </div>
     </aside>
