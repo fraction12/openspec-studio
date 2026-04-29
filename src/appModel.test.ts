@@ -310,7 +310,7 @@ describe("deriveChangeHealth", () => {
 
 describe("recent repo path guards", () => {
   it("accepts absolute local paths and rejects browser preview identifiers", () => {
-    expect(isPersistableLocalRepoPath("/Volumes/MacSSD/Projects/openspec-studio")).toBe(true);
+    expect(isPersistableLocalRepoPath("/tmp/openspec-studio")).toBe(true);
     expect(isPersistableLocalRepoPath("browser-preview://openspec-studio")).toBe(false);
     expect(isPersistableLocalRepoPath("relative/path")).toBe(false);
   });

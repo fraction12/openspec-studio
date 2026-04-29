@@ -10,7 +10,30 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+coverage
+.cache
+.vite
+.worktrees
 *.local
+.env
+.env.*
+!.env.example
+
+# Test/build output
+playwright-report
+test-results
+tmp
+temp
+
+# Local app state and scratch data
+*.db
+*.sqlite
+*.sqlite3
+openspec-studio-state.json
+
+# Tauri/Rust generated output
+src-tauri/target
+src-tauri/gen/schemas
 
 # Editor directories and files
 .vscode/*

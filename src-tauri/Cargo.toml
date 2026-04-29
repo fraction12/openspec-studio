@@ -3,6 +3,9 @@ name = "openspec-studio"
 version = "0.1.0"
 description = "A local-first desktop companion for OpenSpec"
 authors = ["OpenSpec Studio contributors"]
+license = "MIT"
+repository = "https://github.com/fraction12/openspec-studio"
+homepage = "https://github.com/fraction12/openspec-studio#readme"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

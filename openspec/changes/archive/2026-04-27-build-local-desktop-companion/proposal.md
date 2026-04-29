@@ -31,7 +31,7 @@ None. This is a new product surface.
 
 ## Impact
 
-- New app repository under `/Volumes/MacSSD/Projects/openspec-studio`.
+- New app repository under the local `openspec-studio` project checkout.
 - New Tauri desktop app shell with a React/TypeScript frontend.
 - Local filesystem reads for selected repositories.
 - Integration with the installed `openspec` CLI, especially JSON commands such as `list`, `show`, `status`, and `validate`.

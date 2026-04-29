@@ -2,6 +2,24 @@
   "name": "openspec-studio",
   "private": true,
   "version": "0.1.0",
+  "description": "A local-first desktop workbench for inspecting OpenSpec repositories.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fraction12/openspec-studio.git"
+  },
+  "homepage": "https://github.com/fraction12/openspec-studio#readme",
+  "bugs": {
+    "url": "https://github.com/fraction12/openspec-studio/issues"
+  },
+  "keywords": [
+    "openspec",
+    "spec-driven-development",
+    "tauri",
+    "react",
+    "desktop",
+    "local-first"
+  ],
   "type": "module",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"

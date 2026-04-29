@@ -7,7 +7,7 @@ These local measurements use the helper scripts added with this change. They are
 Command:
 
 ```sh
-node scripts/measure-openspec-workspace.mjs /Volumes/MacSSD/Projects/openspec-studio
+node scripts/measure-openspec-workspace.mjs /path/to/openspec-studio
 ```
 
 Result:
