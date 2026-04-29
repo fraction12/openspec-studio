@@ -7,6 +7,7 @@ import {
   createOpenSpecOperationIssue,
   decideRepositoryCandidateOpen,
   deriveChangeHealth,
+  deriveRunnerDispatchEligibility,
   deriveValidationTrustState,
   extractJsonPayload,
   isPersistableLocalRepoPath,
@@ -16,6 +17,8 @@ import {
   selectVisibleItemId,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
+  buildRunnerDispatchPayload,
+  runnerDispatchHistoryForChange,
 } from "./appModel";
 
 describe("OpenSpec operation issues", () => {
@@ -430,5 +433,67 @@ describe("validation trust labels", () => {
       label: "Validation problem",
       attentionKnown: false,
     });
+  });
+});
+
+describe("Studio Runner dispatch model", () => {
+  const passingValidation = {
+    state: "pass" as const,
+    validatedAt: "2026-04-29T12:00:00.000Z",
+    summary: { total: 1, passed: 1, failed: 0 },
+    issues: [],
+    diagnostics: [],
+    raw: { valid: true },
+  };
+
+  const eligibleChange = {
+    phase: "active",
+    artifacts: [
+      { id: "proposal", path: "openspec/changes/add-runner/proposal.md", status: "present" },
+      { id: "design", path: "openspec/changes/add-runner/design.md", status: "present" },
+      { id: "tasks", path: "openspec/changes/add-runner/tasks.md", status: "present" },
+    ],
+    taskProgress: { done: 0, total: 3 },
+  };
+
+  it("gates dispatch on artifacts, validation, settings, and reachable runner", () => {
+    expect(deriveRunnerDispatchEligibility({
+      repoReady: true,
+      change: eligibleChange,
+      validation: passingValidation,
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events", signingSecret: "secret" },
+      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+    })).toEqual({ eligible: true, reasons: [] });
+
+    expect(deriveRunnerDispatchEligibility({
+      repoReady: true,
+      change: { ...eligibleChange, taskProgress: { done: 0, total: 0 } },
+      validation: passingValidation,
+      runnerSettings: { endpoint: "", signingSecret: "" },
+      runnerStatus: { state: "not-configured", label: "Missing", detail: "missing" },
+    }).reasons).toContain("tasks.md needs actionable tasks.");
+  });
+
+  it("builds a thin change-scoped build.requested payload", () => {
+    const payload = buildRunnerDispatchPayload({
+      eventId: "evt_demo",
+      repo: { name: "openspec-studio", path: "/repo/openspec-studio" },
+      change: { name: "add-runner", ...eligibleChange },
+      validation: passingValidation,
+    }) as { id: string; type: string; data: Record<string, unknown> };
+
+    expect(payload.id).toBe("evt_demo");
+    expect(payload.type).toBe("build.requested");
+    expect(payload.data.change).toBe("add-runner");
+    expect(payload.data.repoPath).toBe("/repo/openspec-studio");
+    expect(payload.data).not.toHaveProperty("proposal");
+  });
+
+  it("filters dispatch history by repo and change with newest first", () => {
+    expect(runnerDispatchHistoryForChange([
+      { eventId: "evt_old", repoPath: "/repo", changeName: "demo", status: "failed", message: "old", createdAt: "2026-04-29T12:00:00Z", updatedAt: "2026-04-29T12:00:00Z" },
+      { eventId: "evt_other", repoPath: "/repo", changeName: "other", status: "accepted", message: "other", createdAt: "2026-04-29T12:01:00Z", updatedAt: "2026-04-29T12:01:00Z" },
+      { eventId: "evt_new", repoPath: "/repo", changeName: "demo", status: "accepted", message: "new", createdAt: "2026-04-29T12:02:00Z", updatedAt: "2026-04-29T12:02:00Z" },
+    ], "/repo", "demo").map((attempt) => attempt.eventId)).toEqual(["evt_new", "evt_old"]);
   });
 });

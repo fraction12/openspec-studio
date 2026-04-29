@@ -1,4 +1,4 @@
-import type { OpenSpecFileSignature } from "./appModel";
+import type { OpenSpecFileSignature, RunnerDispatchAttempt, RunnerSettings } from "./appModel";
 import { isPersistableLocalRepoPath } from "./appModel";
 import {
   markValidationStaleAfterFileChange,
@@ -20,6 +20,8 @@ export interface PersistedAppState {
   lastRepoPath?: string;
   globalPreferences: PersistedGlobalPreferences;
   repoStateByPath: Record<string, PersistedRepoState>;
+  runnerSettings?: RunnerSettings;
+  runnerDispatchAttempts?: RunnerDispatchAttempt[];
 }
 
 export interface PersistedRecentRepo {
@@ -67,6 +69,7 @@ export function createDefaultPersistedAppState(): PersistedAppState {
     recentRepos: [],
     globalPreferences: {},
     repoStateByPath: {},
+    runnerDispatchAttempts: [],
   };
 }
 
@@ -101,6 +104,8 @@ export function normalizePersistedAppState(value: unknown): PersistedAppState {
     ...(lastRepoPath ? { lastRepoPath } : {}),
     globalPreferences: normalizeGlobalPreferences(value.globalPreferences),
     repoStateByPath,
+    runnerSettings: normalizeRunnerSettings(value.runnerSettings),
+    runnerDispatchAttempts: normalizeRunnerDispatchAttempts(value.runnerDispatchAttempts),
   };
 }
 
@@ -205,6 +210,22 @@ export function updatePersistedValidationSnapshot(
         lastValidation: createPersistedValidationSnapshot(validation, fileSignature),
       },
     },
+  });
+}
+
+
+export function upsertRunnerDispatchAttempt(
+  state: PersistedAppState,
+  attempt: RunnerDispatchAttempt,
+): PersistedAppState {
+  const attempts = [
+    attempt,
+    ...(state.runnerDispatchAttempts ?? []).filter((item) => item.eventId !== attempt.eventId),
+  ].slice(0, 50);
+
+  return normalizePersistedAppState({
+    ...state,
+    runnerDispatchAttempts: attempts,
   });
 }
 
@@ -387,6 +408,63 @@ function normalizeValidationSnapshot(value: unknown): PersistedValidationSnapsho
     latestModifiedTimeMs: readFiniteNumber(value.latestModifiedTimeMs) ?? null,
     result: value.result,
   };
+}
+
+
+function normalizeRunnerSettings(value: unknown): RunnerSettings | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const endpoint = readNonEmptyString(value.endpoint);
+  const signingSecret = typeof value.signingSecret === "string" ? value.signingSecret : "";
+
+  return endpoint ? { endpoint, signingSecret } : undefined;
+}
+
+function normalizeRunnerDispatchAttempts(value: unknown): RunnerDispatchAttempt[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const attempts: RunnerDispatchAttempt[] = [];
+
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+
+    const eventId = readNonEmptyString(item.eventId);
+    const repoPath = readNonEmptyString(item.repoPath);
+    const changeName = readNonEmptyString(item.changeName);
+    const status = item.status === "pending" || item.status === "accepted" || item.status === "failed" ? item.status : undefined;
+    const createdAt = readNonEmptyString(item.createdAt);
+    const updatedAt = readNonEmptyString(item.updatedAt);
+
+    if (!eventId || !repoPath || !changeName || !status || !createdAt || !updatedAt) {
+      continue;
+    }
+
+    attempts.push({
+      eventId,
+      repoPath,
+      changeName,
+      status,
+      createdAt,
+      updatedAt,
+      message: typeof item.message === "string" ? item.message : "",
+      statusCode: readFiniteNumber(item.statusCode) ?? null,
+      responseBody: typeof item.responseBody === "string" ? item.responseBody : null,
+      runId: typeof item.runId === "string" ? item.runId : null,
+      payload: item.payload,
+    });
+
+    if (attempts.length === 50) {
+      break;
+    }
+  }
+
+  return attempts;
 }
 
 function normalizeGlobalPreferences(value: unknown): PersistedGlobalPreferences {

@@ -41,7 +41,9 @@ pub fn run() {
             bridge::get_openspec_git_status,
             bridge::pick_repository_folder,
             bridge::run_openspec_command,
-            bridge::validate_repo
+            bridge::validate_repo,
+            bridge::check_studio_runner_status,
+            bridge::dispatch_studio_runner_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,4 +1,7 @@
+use base64::{engine::general_purpose, Engine as _};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::{
     ffi::{OsStr, OsString},
     fs,
@@ -11,12 +14,14 @@ use std::{
         Arc,
     },
     thread,
-    time::{Duration, Instant, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri_plugin_dialog::DialogExt;
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
+const DEFAULT_RUNNER_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_MAX_RUNNER_RESPONSE_BYTES: usize = 64 * 1024;
 const COMMAND_TERMINATION_GRACE: Duration = Duration::from_millis(200);
 const OUTPUT_READER_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 const STANDARD_COMMAND_DIRS: &[&str] = &[
@@ -79,6 +84,35 @@ pub struct BridgeErrorDto {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerSettings {
+    pub endpoint: String,
+    #[serde(rename = "signingSecret")]
+    pub signing_secret: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerStatus {
+    pub configured: bool,
+    pub reachable: bool,
+    pub status: String,
+    pub endpoint: Option<String>,
+    pub status_code: Option<u16>,
+    pub message: String,
+    pub response_body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerDispatchResponse {
+    pub event_id: String,
+    pub status_code: u16,
+    pub accepted: bool,
+    pub message: String,
+    pub response_body: Option<String>,
+    pub run_id: Option<String>,
+}
+
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {
     InvalidRepository {
@@ -114,6 +148,9 @@ pub enum BridgeError {
         path: String,
         message: String,
     },
+    RunnerRequest {
+        message: String,
+    },
 }
 
 impl BridgeError {
@@ -128,6 +165,7 @@ impl BridgeError {
             Self::CommandOutputReadTimedOut { .. } => "command_output_read_timeout",
             Self::PathOutsideOpenSpec { .. } => "path_outside_openspec",
             Self::Io { .. } => "io_error",
+            Self::RunnerRequest { .. } => "runner_request_failed",
         }
     }
 
@@ -166,6 +204,7 @@ impl BridgeError {
                 )
             }
             Self::Io { path, message } => format!("I/O error for '{}': {}", path, message),
+            Self::RunnerRequest { message } => message.clone(),
         }
     }
 }
@@ -428,6 +467,224 @@ pub async fn get_openspec_git_status(
     repo_path: String,
 ) -> Result<OpenSpecGitStatus, BridgeErrorDto> {
     run_bridge_task(move || inspect_openspec_git_status(repo_path)).await
+}
+
+
+#[tauri::command]
+pub async fn check_studio_runner_status(
+    settings: StudioRunnerSettings,
+) -> Result<StudioRunnerStatus, BridgeErrorDto> {
+    run_bridge_task(move || check_runner_status(settings)).await
+}
+
+#[tauri::command]
+pub async fn dispatch_studio_runner_event(
+    settings: StudioRunnerSettings,
+    payload: serde_json::Value,
+    event_id: String,
+) -> Result<StudioRunnerDispatchResponse, BridgeErrorDto> {
+    run_bridge_task(move || dispatch_runner_event(settings, payload, event_id)).await
+}
+
+fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerStatus, BridgeError> {
+    let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
+
+    if endpoint.is_empty() || settings.signing_secret.trim().is_empty() {
+        return Ok(StudioRunnerStatus {
+            configured: false,
+            reachable: false,
+            status: "not-configured".to_string(),
+            endpoint: if endpoint.is_empty() { None } else { Some(endpoint) },
+            status_code: None,
+            message: "Studio Runner endpoint and signing secret are required.".to_string(),
+            response_body: None,
+        });
+    }
+
+    let health_endpoint = runner_health_endpoint(&endpoint);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(DEFAULT_RUNNER_HTTP_TIMEOUT)
+        .build()
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: error.to_string(),
+        })?;
+
+    match client.get(&health_endpoint).send() {
+        Ok(response) => {
+            let status_code = response.status().as_u16();
+            let success = response.status().is_success();
+            let body = read_bounded_runner_response(response)?;
+            Ok(StudioRunnerStatus {
+                configured: true,
+                reachable: success,
+                status: if success { "reachable" } else { "unavailable" }.to_string(),
+                endpoint: Some(endpoint),
+                status_code: Some(status_code),
+                message: if success {
+                    "Studio Runner health endpoint responded.".to_string()
+                } else {
+                    format!("Studio Runner health check returned HTTP {}", status_code)
+                },
+                response_body: body,
+            })
+        }
+        Err(error) => Ok(StudioRunnerStatus {
+            configured: true,
+            reachable: false,
+            status: "unavailable".to_string(),
+            endpoint: Some(endpoint),
+            status_code: None,
+            message: error.to_string(),
+            response_body: None,
+        }),
+    }
+}
+
+fn dispatch_runner_event(
+    settings: StudioRunnerSettings,
+    payload: serde_json::Value,
+    event_id: String,
+) -> Result<StudioRunnerDispatchResponse, BridgeError> {
+    let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
+    if endpoint.is_empty() || settings.signing_secret.trim().is_empty() {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner endpoint and signing secret are required.".to_string(),
+        });
+    }
+    validate_runner_event_id(&event_id)?;
+    let body = serde_json::to_vec(&payload).map_err(|error| BridgeError::RunnerRequest {
+        message: error.to_string(),
+    })?;
+    let timestamp = unix_timestamp_seconds()?;
+    let signature = sign_runner_body(&settings.signing_secret, &event_id, timestamp, &body)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(DEFAULT_RUNNER_HTTP_TIMEOUT)
+        .build()
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: error.to_string(),
+        })?;
+    let response = client
+        .post(&endpoint)
+        .header("content-type", "application/json")
+        .header("webhook-id", &event_id)
+        .header("webhook-timestamp", timestamp.to_string())
+        .header("webhook-signature", signature)
+        .body(body)
+        .send()
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: error.to_string(),
+        })?;
+    let status_code = response.status().as_u16();
+    let body = read_bounded_runner_response(response)?;
+    let run_id = body.as_deref().and_then(extract_run_id);
+    let accepted = status_code == 202;
+
+    Ok(StudioRunnerDispatchResponse {
+        event_id,
+        status_code,
+        accepted,
+        message: if accepted {
+            "Studio Runner accepted the build request.".to_string()
+        } else {
+            format!("Studio Runner returned HTTP {}", status_code)
+        },
+        response_body: body,
+        run_id,
+    })
+}
+
+fn normalize_runner_endpoint(endpoint: &str) -> Result<String, BridgeError> {
+    let endpoint = endpoint.trim().trim_end_matches('/').to_string();
+    if endpoint.is_empty() {
+        return Ok(endpoint);
+    }
+    if !(endpoint.starts_with("http://127.0.0.1:")
+        || endpoint.starts_with("http://localhost:")
+        || endpoint.starts_with("https://127.0.0.1:")
+        || endpoint.starts_with("https://localhost:"))
+    {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner endpoint must be local localhost/127.0.0.1 for this alpha.".to_string(),
+        });
+    }
+    Ok(endpoint)
+}
+
+fn runner_health_endpoint(event_endpoint: &str) -> String {
+    event_endpoint
+        .strip_suffix("/events")
+        .map(|base| format!("{}/health", base))
+        .unwrap_or_else(|| format!("{}/health", event_endpoint.trim_end_matches('/')))
+}
+
+fn sign_runner_body(
+    secret: &str,
+    event_id: &str,
+    timestamp: u64,
+    body: &[u8],
+) -> Result<String, BridgeError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|error| {
+        BridgeError::RunnerRequest {
+            message: error.to_string(),
+        }
+    })?;
+    mac.update(event_id.as_bytes());
+    mac.update(b".");
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let digest = mac.finalize().into_bytes();
+    Ok(format!("v1,{}", general_purpose::STANDARD.encode(digest)))
+}
+
+fn unix_timestamp_seconds() -> Result<u64, BridgeError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: error.to_string(),
+        })
+}
+
+fn validate_runner_event_id(event_id: &str) -> Result<(), BridgeError> {
+    if event_id.starts_with("evt_")
+        && event_id.len() <= 96
+        && event_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        Ok(())
+    } else {
+        Err(BridgeError::RunnerRequest {
+            message: "Invalid Studio Runner event id.".to_string(),
+        })
+    }
+}
+
+fn read_bounded_runner_response(
+    response: reqwest::blocking::Response,
+) -> Result<Option<String>, BridgeError> {
+    let bytes = response.bytes().map_err(|error| BridgeError::RunnerRequest {
+        message: error.to_string(),
+    })?;
+    if bytes.len() > DEFAULT_MAX_RUNNER_RESPONSE_BYTES {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner response exceeded the maximum response size.".to_string(),
+        });
+    }
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn extract_run_id(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    value
+        .get("run_id")
+        .or_else(|| value.get("runId"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
 }
 
 async fn run_bridge_task<T, F>(task: F) -> Result<T, BridgeErrorDto>
@@ -1075,6 +1332,34 @@ mod tests {
         fs::write(path, contents).expect("script should be written");
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .expect("script should be executable");
+    }
+
+
+    #[test]
+    fn signs_runner_body_with_standard_webhooks_message() {
+        let signature = sign_runner_body("secret", "evt_demo", 1_714_000_000, br#"{"type":"build.requested"}"#)
+            .expect("signature should be created");
+
+        assert!(signature.starts_with("v1,"));
+        assert_eq!(signature, "v1,bfnTTaozpRBENwyatlSmXfjGN2VC4vUYM23PsFmqlFs=");
+    }
+
+    #[test]
+    fn runner_endpoint_is_limited_to_localhost() {
+        assert!(normalize_runner_endpoint("http://127.0.0.1:4000/api/v1/studio-runner/events").is_ok());
+        assert!(normalize_runner_endpoint("https://localhost:4000/api/v1/studio-runner/events").is_ok());
+        assert!(matches!(
+            normalize_runner_endpoint("https://example.com/api/v1/studio-runner/events"),
+            Err(BridgeError::RunnerRequest { .. })
+        ));
+    }
+
+    #[test]
+    fn derives_runner_health_endpoint_from_events_endpoint() {
+        assert_eq!(
+            runner_health_endpoint("http://127.0.0.1:4000/api/v1/studio-runner/events"),
+            "http://127.0.0.1:4000/api/v1/studio-runner/health"
+        );
     }
 
     #[test]

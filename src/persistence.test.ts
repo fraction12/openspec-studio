@@ -44,6 +44,8 @@ describe("local app persistence", () => {
       repoStateByPath: {
         "/repo/one": { lastOpenedAt: 2, changeSort: "updated-asc" },
       },
+      runnerSettings: undefined,
+      runnerDispatchAttempts: [],
     });
   });
 
@@ -94,6 +96,38 @@ describe("local app persistence", () => {
       specSort: "updated-desc",
     });
     expect(directionFromSortPreference(state.repoStateByPath["/repo/current"]?.changeSort)).toBe("asc");
+  });
+
+
+  it("persists runner settings and dispatch attempts", () => {
+    const normalized = normalizePersistedAppState({
+      version: 1,
+      recentRepos: [],
+      globalPreferences: {},
+      repoStateByPath: {},
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events", signingSecret: "secret" },
+      runnerDispatchAttempts: [
+        {
+          eventId: "evt_demo",
+          repoPath: "/repo/current",
+          changeName: "add-runner",
+          status: "accepted",
+          message: "Accepted",
+          createdAt: "2026-04-29T12:00:00.000Z",
+          updatedAt: "2026-04-29T12:00:01.000Z",
+          statusCode: 202,
+          runId: "run_demo",
+        },
+      ],
+    });
+
+    expect(normalized.runnerSettings?.endpoint).toBe("http://127.0.0.1:4000/api/v1/studio-runner/events");
+    expect(normalized.runnerDispatchAttempts?.[0]).toMatchObject({
+      eventId: "evt_demo",
+      status: "accepted",
+      statusCode: 202,
+      runId: "run_demo",
+    });
   });
 
   it("restores matching validation snapshots as current cached validation", () => {

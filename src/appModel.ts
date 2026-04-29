@@ -7,6 +7,49 @@ import {
 
 import type { ValidationResult } from "./validation/results";
 
+
+export interface RunnerSettings {
+  endpoint: string;
+  signingSecret: string;
+}
+
+export type RunnerStatusKind = "not-configured" | "checking" | "reachable" | "unavailable" | "incompatible";
+
+export interface RunnerStatus {
+  state: RunnerStatusKind;
+  label: string;
+  detail: string;
+  endpoint?: string;
+  statusCode?: number | null;
+}
+
+export interface RunnerDispatchAttempt {
+  eventId: string;
+  repoPath: string;
+  changeName: string;
+  status: "pending" | "accepted" | "failed";
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+  statusCode?: number | null;
+  responseBody?: string | null;
+  runId?: string | null;
+  payload?: unknown;
+}
+
+export interface RunnerDispatchEligibility {
+  eligible: boolean;
+  reasons: string[];
+}
+
+export interface RunnerDispatchPayloadInput {
+  eventId: string;
+  repo: { name: string; path: string };
+  change: { name: string; artifacts: { path: string; status: string }[]; taskProgress: { done: number; total: number } | null };
+  validation: ValidationResult;
+  gitStatus?: { entries?: string[] };
+}
+
 export interface BridgeFileRecord {
   path: string;
   kind?: "file" | "directory";
@@ -40,7 +83,8 @@ export type OpenSpecOperationKind =
   | "archive"
   | "status"
   | "artifact-read"
-  | "repository-read";
+  | "repository-read"
+  | "runner-dispatch";
 
 export interface OpenSpecOperationIssue {
   id: string;
@@ -492,4 +536,107 @@ function readStringArray(value: unknown): string[] | undefined {
   }
 
   return value.filter((item): item is string => typeof item === "string");
+}
+
+export function deriveRunnerDispatchEligibility({
+  repoReady,
+  change,
+  validation,
+  runnerSettings,
+  runnerStatus,
+}: {
+  repoReady: boolean;
+  change: { phase: string; artifacts: { id: string; status: string }[]; taskProgress: { done: number; total: number } | null } | null;
+  validation: ValidationResult | null;
+  runnerSettings: RunnerSettings;
+  runnerStatus: RunnerStatus;
+}): RunnerDispatchEligibility {
+  const reasons: string[] = [];
+
+  if (!repoReady) {
+    reasons.push("Open a real OpenSpec repository.");
+  }
+
+  if (!change) {
+    reasons.push("Select one active change.");
+  } else {
+    if (change.phase !== "active") {
+      reasons.push("Build dispatch is only available for active changes.");
+    }
+
+    const required = ["proposal", "design", "tasks"];
+    const missingArtifacts = required.filter((id) =>
+      !change.artifacts.some((artifact) => artifact.id === id && artifact.status === "present"),
+    );
+    if (missingArtifacts.length > 0) {
+      reasons.push("Missing required artifacts: " + missingArtifacts.join(", ") + ".");
+    }
+
+    if (!change.taskProgress || change.taskProgress.total === 0) {
+      reasons.push("tasks.md needs actionable tasks.");
+    }
+  }
+
+  if (!validation || validation.state !== "pass" || validation.diagnostics.length > 0) {
+    reasons.push("Run passing OpenSpec validation first.");
+  }
+
+  if (!runnerSettings.endpoint.trim() || !runnerSettings.signingSecret.trim()) {
+    reasons.push("Configure Studio Runner endpoint and signing secret.");
+  }
+
+  if (runnerStatus.state !== "reachable") {
+    reasons.push("Studio Runner must be reachable.");
+  }
+
+  return {
+    eligible: reasons.length === 0,
+    reasons,
+  };
+}
+
+export function buildRunnerDispatchPayload({
+  eventId,
+  repo,
+  change,
+  validation,
+  gitStatus,
+}: RunnerDispatchPayloadInput): unknown {
+  return {
+    id: eventId,
+    type: "build.requested",
+    source: "openspec-studio",
+    time: new Date().toISOString(),
+    data: {
+      runner: "studio-runner",
+      repoPath: repo.path,
+      repoName: repo.name,
+      gitRef: gitStatus?.entries?.length ? "dirty" : "local",
+      change: change.name,
+      artifactPaths: change.artifacts
+        .filter((artifact) => artifact.status === "present")
+        .map((artifact) => artifact.path),
+      validation: {
+        state: validation.state,
+        checkedAt: validation.validatedAt,
+        issueCount: validation.issues.length,
+      },
+      requestedBy: "local-user",
+    },
+  };
+}
+
+export function runnerDispatchHistoryForChange(
+  attempts: RunnerDispatchAttempt[] | undefined,
+  repoPath: string | null | undefined,
+  changeName: string | null | undefined,
+): RunnerDispatchAttempt[] {
+  if (!repoPath || !changeName) {
+    return [];
+  }
+
+  return (attempts ?? [])
+    .filter((attempt) => attempt.repoPath === repoPath && attempt.changeName === changeName)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, 5);
 }

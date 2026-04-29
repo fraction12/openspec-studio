@@ -21,6 +21,13 @@ import {
   type BridgeFileRecord,
   type OpenSpecOperationIssue,
   type OpenSpecFileSignature,
+  buildRunnerDispatchPayload,
+  deriveRunnerDispatchEligibility,
+  runnerDispatchHistoryForChange,
+  type RunnerDispatchAttempt,
+  type RunnerDispatchEligibility,
+  type RunnerSettings,
+  type RunnerStatus,
 } from "./appModel";
 import {
   indexOpenSpecWorkspace,
@@ -49,6 +56,7 @@ import {
   updatePersistedRepoSelection,
   updatePersistedRepoSort,
   updatePersistedValidationSnapshot,
+  upsertRunnerDispatchAttempt,
   validationFromPersistedSnapshot,
   type PersistedAppState,
   type PersistedRecentRepo,
@@ -79,6 +87,32 @@ interface CommandResultDto {
   status_code?: number | null;
   statusCode?: number | null;
   success: boolean;
+}
+
+
+interface RunnerStatusDto {
+  configured: boolean;
+  reachable: boolean;
+  status: string;
+  endpoint?: string | null;
+  status_code?: number | null;
+  statusCode?: number | null;
+  message: string;
+  response_body?: string | null;
+  responseBody?: string | null;
+}
+
+interface RunnerDispatchResponseDto {
+  event_id: string;
+  eventId?: string;
+  status_code: number;
+  statusCode?: number;
+  accepted: boolean;
+  message: string;
+  response_body?: string | null;
+  responseBody?: string | null;
+  run_id?: string | null;
+  runId?: string | null;
 }
 
 interface OpenSpecGitStatusDto {
@@ -244,6 +278,17 @@ const STATUS_CACHE_LIMIT = 300;
 const MARKDOWN_BLOCK_CACHE_LIMIT = 40;
 const ROW_RENDER_BATCH_SIZE = 250;
 
+const defaultRunnerSettings: RunnerSettings = {
+  endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events",
+  signingSecret: "",
+};
+
+const unknownRunnerStatus: RunnerStatus = {
+  state: "not-configured",
+  label: "Runner not configured",
+  detail: "Add a local Studio Runner endpoint and signing secret to enable Build with agent.",
+};
+
 const unknownGitStatus: OpenSpecGitStatus = {
   state: "unknown",
   dirtyCount: 0,
@@ -298,11 +343,15 @@ function App() {
   const [gitStatus, setGitStatus] = useState<OpenSpecGitStatus>(unknownGitStatus);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const [runnerSettings, setRunnerSettings] = useState<RunnerSettings>(defaultRunnerSettings);
+  const [runnerStatus, setRunnerStatus] = useState<RunnerStatus>(unknownRunnerStatus);
+  const [runnerDispatchBusy, setRunnerDispatchBusy] = useState(false);
   const [message, setMessage] = useState("Loading local workspace...");
   const [operationIssues, setOperationIssues] = useState<OpenSpecOperationIssue[]>([]);
   const repoLoadGenerationRef = useRef(0);
   const refreshGenerationRef = useRef(0);
   const gitStatusGenerationRef = useRef(0);
+  const runnerStatusGenerationRef = useRef(0);
   const artifactPreviewGenerationRef = useRef(0);
   const validationGenerationRef = useRef(0);
   const archiveInFlightRef = useRef(false);
@@ -314,6 +363,7 @@ function App() {
   const workspaceRef = useRef<WorkspaceView | null>(workspace);
   const repoRef = useRef<RepositoryView | null>(repo);
   const gitStatusRef = useRef<OpenSpecGitStatus>(gitStatus);
+  const runnerSettingsRef = useRef<RunnerSettings>(runnerSettings);
   const deferredChangesQuery = useDeferredValue(changesQuery);
   const deferredSpecsQuery = useDeferredValue(specsQuery);
 
@@ -324,6 +374,7 @@ function App() {
   workspaceRef.current = workspace;
   repoRef.current = repo;
   gitStatusRef.current = gitStatus;
+  runnerSettingsRef.current = runnerSettings;
   chooseRepositoryFolderRef.current = chooseRepositoryFolder;
 
   function recordOperationIssue(issue: OpenSpecOperationIssue) {
@@ -355,6 +406,7 @@ function App() {
     persistenceReadyRef.current = true;
     persistedAppStateRef.current = initialState;
     setPersistedAppState(initialState);
+    setRunnerSettings(initialState.runnerSettings ?? defaultRunnerSettings);
 
     const lastRepoPath = initialState.lastRepoPath ?? initialState.recentRepos[0]?.path;
 
@@ -381,6 +433,217 @@ function App() {
     void savePersistedAppState(nextState).catch((error) => {
       console.warn("OpenSpec Studio persistence could not be saved.", error);
     });
+  }
+
+  function updateRunnerSettings(nextSettings: RunnerSettings) {
+    const normalized = {
+      endpoint: nextSettings.endpoint.trim(),
+      signingSecret: nextSettings.signingSecret,
+    };
+
+    setRunnerSettings(normalized);
+    updatePersistedState((current) => ({
+      ...current,
+      runnerSettings: normalized,
+    }));
+  }
+
+  async function checkRunnerStatus(options: { quiet?: boolean } = {}) {
+    const settings = runnerSettingsRef.current;
+    const requestId = ++runnerStatusGenerationRef.current;
+
+    if (!settings.endpoint.trim() || !settings.signingSecret.trim()) {
+      const nextStatus = { ...unknownRunnerStatus };
+      if (!options.quiet) {
+        setMessage(nextStatus.detail);
+      }
+      setRunnerStatus(nextStatus);
+      return nextStatus;
+    }
+
+    if (!isTauriRuntime()) {
+      const nextStatus: RunnerStatus = {
+        state: "unavailable",
+        label: "Desktop runtime required",
+        detail: "Runner status checks require the Tauri desktop runtime.",
+      };
+      setRunnerStatus(nextStatus);
+      if (!options.quiet) {
+        setMessage(nextStatus.detail);
+      }
+      return nextStatus;
+    }
+
+    if (!options.quiet) {
+      setRunnerStatus({
+        state: "checking",
+        label: "Checking runner",
+        detail: "Checking the configured Studio Runner endpoint.",
+      });
+    }
+
+    try {
+      const dto = await invoke<RunnerStatusDto>("check_studio_runner_status", {
+        settings,
+      });
+      if (runnerStatusGenerationRef.current !== requestId) {
+        return runnerStatus;
+      }
+      const nextStatus = runnerStatusFromDto(dto);
+      setRunnerStatus(nextStatus);
+      if (!options.quiet) {
+        setMessage(nextStatus.detail);
+      }
+      return nextStatus;
+    } catch (error) {
+      if (runnerStatusGenerationRef.current !== requestId) {
+        return runnerStatus;
+      }
+      const nextStatus: RunnerStatus = {
+        state: "unavailable",
+        label: "Runner unavailable",
+        detail: errorMessage(error),
+      };
+      setRunnerStatus(nextStatus);
+      if (!options.quiet) {
+        setMessage(nextStatus.detail);
+      }
+      return nextStatus;
+    }
+  }
+
+  async function dispatchSelectedChange(options: { retryAttempt?: RunnerDispatchAttempt } = {}) {
+    if (!repo || repo.state !== "ready" || !workspace || !selectedChange) {
+      setMessage("Select an active OpenSpec change before dispatching.");
+      return;
+    }
+
+    if (!isTauriRuntime()) {
+      setMessage("Build with agent requires the Tauri desktop runtime.");
+      return;
+    }
+
+    const initialEligibility = deriveRunnerDispatchEligibility({
+      repoReady: true,
+      change: selectedChange,
+      validation: workspace.validation,
+      runnerSettings,
+      runnerStatus,
+    });
+
+    if (!options.retryAttempt && !initialEligibility.eligible) {
+      setMessage(initialEligibility.reasons[0] ?? "This change is not ready for runner dispatch.");
+      return;
+    }
+
+    setRunnerDispatchBusy(true);
+    setMessage(options.retryAttempt ? "Retrying Studio Runner dispatch..." : "Preparing Studio Runner dispatch...");
+    const repoPath = repo.path;
+    const changeName = selectedChange.name;
+
+    try {
+      let validation = workspaceRef.current?.validation ?? null;
+      if (!validation || validation.state !== "pass") {
+        setMessage("Validating before Studio Runner dispatch...");
+        validation = await runValidationCommand(repoPath);
+        applyValidationResult(validation);
+        recordValidationOperationResult(repoPath, validation);
+        rememberValidationSnapshot(repoPath, validation);
+      }
+
+      const latestChange = workspaceRef.current?.changes.find((change) => change.name === changeName) ?? selectedChange;
+      const latestEligibility = deriveRunnerDispatchEligibility({
+        repoReady: true,
+        change: latestChange,
+        validation,
+        runnerSettings,
+        runnerStatus: runnerStatus.state === "reachable"
+          ? runnerStatus
+          : await checkRunnerStatus({ quiet: true }),
+      });
+
+      if (!latestEligibility.eligible) {
+        setMessage(latestEligibility.reasons[0] ?? "This change is not ready for runner dispatch.");
+        return;
+      }
+
+      const eventId = options.retryAttempt?.eventId ?? createRunnerEventId();
+      const payload = buildRunnerDispatchPayload({
+        eventId,
+        repo,
+        change: latestChange,
+        validation,
+        gitStatus: gitStatusRef.current,
+      });
+      const attemptBase = createRunnerDispatchAttempt({
+        eventId,
+        repoPath,
+        changeName,
+        payload,
+        status: "pending",
+        message: options.retryAttempt ? "Retrying dispatch." : "Dispatch queued.",
+        previousAttempt: options.retryAttempt,
+      });
+
+      rememberRunnerDispatchAttempt(attemptBase);
+      setMessage("Sending signed build.requested to Studio Runner...");
+
+      const response = await invoke<RunnerDispatchResponseDto>("dispatch_studio_runner_event", {
+        settings: runnerSettings,
+        payload,
+        eventId,
+      });
+      const accepted = Boolean(response.accepted);
+      const statusCode = response.status_code ?? response.statusCode;
+      const responseBody = response.response_body ?? response.responseBody ?? null;
+      const runId = response.run_id ?? response.runId ?? extractRunId(responseBody);
+      const nextAttempt = createRunnerDispatchAttempt({
+        ...attemptBase,
+        status: accepted ? "accepted" : "failed",
+        statusCode,
+        runId,
+        responseBody,
+        message: response.message,
+      });
+
+      rememberRunnerDispatchAttempt(nextAttempt);
+      clearOperationIssues(
+        (issue) => issue.kind === "runner-dispatch" && issue.repoPath === repoPath && issue.target === changeName,
+      );
+      setMessage(
+        accepted
+          ? "Studio Runner accepted " + changeName + (runId ? " as " + runId + "." : ".")
+          : "Studio Runner dispatch failed: " + response.message,
+      );
+    } catch (error) {
+      const failedAttempt = createRunnerDispatchAttempt({
+        eventId: options.retryAttempt?.eventId ?? createRunnerEventId(),
+        repoPath,
+        changeName,
+        payload: options.retryAttempt?.payload,
+        status: "failed",
+        message: errorMessage(error),
+        previousAttempt: options.retryAttempt,
+      });
+      rememberRunnerDispatchAttempt(failedAttempt);
+      recordOperationIssue(
+        createOpenSpecOperationIssue({
+          kind: "runner-dispatch",
+          title: "Runner dispatch failed",
+          message: errorMessage(error),
+          fallbackMessage: "Studio Runner dispatch did not complete.",
+          repoPath,
+          target: changeName,
+        }),
+      );
+      setMessage("Studio Runner dispatch failed: " + errorMessage(error));
+    } finally {
+      setRunnerDispatchBusy(false);
+    }
+  }
+
+  function rememberRunnerDispatchAttempt(attempt: RunnerDispatchAttempt) {
+    updatePersistedState((current) => upsertRunnerDispatchAttempt(current, attempt));
   }
 
   useEffect(() => {
@@ -413,6 +676,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    void checkRunnerStatus({ quiet: true });
+  }, [runnerSettings.endpoint, runnerSettings.signingSecret]);
+
+  useEffect(() => {
     if (!repo || repo.state !== "ready" || !workspace || !isTauriRuntime()) {
       return;
     }
@@ -436,6 +703,20 @@ function App() {
   const selectedSpec =
     specs.find((spec) => spec.id === selectedSpecId && matchesSpecFilters(spec, deferredSpecsQuery)) ??
     null;
+  const selectedChangeDispatchHistory = selectedChange
+    ? runnerDispatchHistoryForChange(
+        persistedAppState.runnerDispatchAttempts,
+        repo?.path,
+        selectedChange.name,
+      )
+    : [];
+  const selectedChangeRunnerEligibility = deriveRunnerDispatchEligibility({
+    repoReady: Boolean(repo && repo.state === "ready" && isPersistableLocalRepoPath(repo.path)),
+    change: selectedChange,
+    validation: workspace?.validation ?? null,
+    runnerSettings,
+    runnerStatus,
+  });
 
   useEffect(() => {
     if (view !== "changes") {
@@ -1423,12 +1704,21 @@ function App() {
         view={view}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
+        runnerSettings={runnerSettings}
+        runnerStatus={runnerStatus}
+        runnerDispatchEligibility={selectedChangeRunnerEligibility}
+        runnerDispatchHistory={selectedChangeDispatchHistory}
+        runnerDispatchBusy={runnerDispatchBusy}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
         operationIssues={operationIssues}
         onDetailTabChange={setDetailTab}
         onOpenArtifact={(artifact) => void openArtifact(artifact)}
         onValidate={() => void runValidation()}
+        onRunnerSettingsChange={updateRunnerSettings}
+        onCheckRunnerStatus={() => void checkRunnerStatus()}
+        onDispatchRunner={() => void dispatchSelectedChange()}
+        onRetryRunnerDispatch={(attempt) => void dispatchSelectedChange({ retryAttempt: attempt })}
       />
 
       <StatusBand
@@ -2378,24 +2668,42 @@ function Inspector({
   view,
   selectedChange,
   selectedSpec,
+  runnerSettings,
+  runnerStatus,
+  runnerDispatchEligibility,
+  runnerDispatchHistory,
+  runnerDispatchBusy,
   detailTab,
   artifactPreview,
   operationIssues,
   onDetailTabChange,
   onOpenArtifact,
   onValidate,
+  onRunnerSettingsChange,
+  onCheckRunnerStatus,
+  onDispatchRunner,
+  onRetryRunnerDispatch,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
   view: BoardView;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
+  runnerSettings: RunnerSettings;
+  runnerStatus: RunnerStatus;
+  runnerDispatchEligibility: RunnerDispatchEligibility;
+  runnerDispatchHistory: RunnerDispatchAttempt[];
+  runnerDispatchBusy: boolean;
   detailTab: DetailTab;
   artifactPreview: string;
   operationIssues: OpenSpecOperationIssue[];
   onDetailTabChange: (tab: DetailTab) => void;
   onOpenArtifact: (artifact: Artifact | SpecRecord) => void;
   onValidate: () => void;
+  onRunnerSettingsChange: (settings: RunnerSettings) => void;
+  onCheckRunnerStatus: () => void;
+  onDispatchRunner: () => void;
+  onRetryRunnerDispatch: (attempt: RunnerDispatchAttempt) => void;
 }) {
   const tabs = selectedChange ? detailTabsForChange(selectedChange) : [];
   const selectedDetailTab =
@@ -2486,6 +2794,18 @@ function Inspector({
         </div>
       </div>
 
+      <RunnerDispatchPanel
+        settings={runnerSettings}
+        status={runnerStatus}
+        eligibility={runnerDispatchEligibility}
+        history={runnerDispatchHistory}
+        busy={runnerDispatchBusy}
+        onSettingsChange={onRunnerSettingsChange}
+        onCheckStatus={onCheckRunnerStatus}
+        onDispatch={onDispatchRunner}
+        onRetry={onRetryRunnerDispatch}
+      />
+
       <div className="tabs artifact-tabs" aria-label="Change artifacts">
         {tabs.map((tab) => (
           <button
@@ -2520,6 +2840,121 @@ function Inspector({
       </div>
     </aside>
   );
+}
+
+function RunnerDispatchPanel({
+  settings,
+  status,
+  eligibility,
+  history,
+  busy,
+  onSettingsChange,
+  onCheckStatus,
+  onDispatch,
+  onRetry,
+}: {
+  settings: RunnerSettings;
+  status: RunnerStatus;
+  eligibility: RunnerDispatchEligibility;
+  history: RunnerDispatchAttempt[];
+  busy: boolean;
+  onSettingsChange: (settings: RunnerSettings) => void;
+  onCheckStatus: () => void;
+  onDispatch: () => void;
+  onRetry: (attempt: RunnerDispatchAttempt) => void;
+}) {
+  const latestFailedAttempt = history.find((attempt) => attempt.status === "failed");
+
+  return (
+    <section className="runner-dispatch-panel" aria-label="Studio Runner dispatch">
+      <div className="runner-dispatch-heading">
+        <div>
+          <span>Studio Runner</span>
+          <strong>{status.label}</strong>
+          <p>{status.detail}</p>
+        </div>
+        <HealthPill
+          health={status.state === "reachable" ? "valid" : status.state === "checking" ? "stale" : "blocked"}
+          label={status.state === "reachable" ? "Reachable" : status.state === "checking" ? "Checking" : "Blocked"}
+        />
+      </div>
+      <div className="runner-settings-grid">
+        <label>
+          <span>Endpoint</span>
+          <input
+            value={settings.endpoint}
+            onChange={(event) => onSettingsChange({ ...settings, endpoint: event.target.value })}
+            placeholder="http://127.0.0.1:4000/api/v1/studio-runner/events"
+          />
+        </label>
+        <label>
+          <span>Signing secret</span>
+          <input
+            value={settings.signingSecret}
+            onChange={(event) => onSettingsChange({ ...settings, signingSecret: event.target.value })}
+            placeholder="Shared local secret"
+            type="password"
+          />
+        </label>
+      </div>
+      {!eligibility.eligible ? (
+        <ul className="runner-blockers">
+          {eligibility.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="runner-actions">
+        <button type="button" className="primary-outline" onClick={onCheckStatus} disabled={busy}>
+          Check runner
+        </button>
+        <button type="button" className="primary-button" onClick={onDispatch} disabled={busy || !eligibility.eligible}>
+          {busy ? "Dispatching..." : "Build with agent"}
+        </button>
+      </div>
+      {history.length > 0 ? (
+        <details className="runner-history" open>
+          <summary>Dispatch history <span>{history.length}</span></summary>
+          <ul>
+            {history.map((attempt) => (
+              <li key={attempt.eventId}>
+                <div>
+                  <strong>{runnerAttemptLabel(attempt)}</strong>
+                  <span>{formatRunnerDateTime(attempt.updatedAt)}</span>
+                </div>
+                <code>{attempt.eventId}</code>
+                <p>{attempt.message}</p>
+                {attempt.runId ? <span>Run: {attempt.runId}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+      {latestFailedAttempt ? (
+        <button type="button" className="link-button" onClick={() => onRetry(latestFailedAttempt)} disabled={busy}>
+          Retry failed dispatch
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+
+function formatRunnerDateTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function runnerAttemptLabel(attempt: RunnerDispatchAttempt): string {
+  if (attempt.status === "accepted") {
+    return "Accepted";
+  }
+  if (attempt.status === "pending") {
+    return "Pending";
+  }
+  return "Failed";
 }
 
 function renderDetailTab(
@@ -3642,6 +4077,7 @@ function operationKindLabel(kind: OpenSpecOperationIssue["kind"]): string {
     status: "change status",
     "artifact-read": "artifact read",
     "repository-read": "repository read",
+    "runner-dispatch": "runner dispatch",
   };
 
   return labels[kind];
@@ -3880,6 +4316,85 @@ function boundedRows<T extends { id: string }>(
     rows: bounded,
     hiddenCount: rows.length - bounded.length,
   };
+}
+
+function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
+  if (!dto.configured) {
+    return { ...unknownRunnerStatus };
+  }
+
+  if (dto.reachable) {
+    return {
+      state: "reachable",
+      label: "Runner reachable",
+      detail: dto.message || "Studio Runner responded to health check.",
+      statusCode: dto.status_code ?? dto.statusCode ?? null,
+      endpoint: dto.endpoint ?? undefined,
+    };
+  }
+
+  return {
+    state: "unavailable",
+    label: "Runner unavailable",
+    detail: dto.message || "Studio Runner did not respond successfully.",
+    statusCode: dto.status_code ?? dto.statusCode ?? null,
+    endpoint: dto.endpoint ?? undefined,
+  };
+}
+
+function createRunnerEventId(): string {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+
+  return "evt_" + random.replace(/-/g, "");
+}
+
+function createRunnerDispatchAttempt(input: {
+  eventId: string;
+  repoPath: string;
+  changeName: string;
+  payload?: unknown;
+  status: RunnerDispatchAttempt["status"];
+  message: string;
+  statusCode?: number | null;
+  responseBody?: string | null;
+  runId?: string | null;
+  previousAttempt?: RunnerDispatchAttempt;
+}): RunnerDispatchAttempt {
+  return {
+    eventId: input.eventId,
+    repoPath: input.repoPath,
+    changeName: input.changeName,
+    status: input.status,
+    message: input.message,
+    statusCode: input.statusCode ?? null,
+    responseBody: input.responseBody ?? null,
+    runId: input.runId ?? null,
+    payload: input.payload ?? input.previousAttempt?.payload,
+    createdAt: input.previousAttempt?.createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function extractRunId(responseBody: string | null): string | null {
+  if (!responseBody) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(responseBody) as unknown;
+    if (parsed && typeof parsed === "object" && "run_id" in parsed && typeof parsed.run_id === "string") {
+      return parsed.run_id;
+    }
+    if (parsed && typeof parsed === "object" && "runId" in parsed && typeof parsed.runId === "string") {
+      return parsed.runId;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function absoluteArtifactPath(repoPath: string, artifactPath: string): string {

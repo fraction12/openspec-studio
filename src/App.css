@@ -1995,3 +1995,128 @@ button:disabled {
     justify-self: stretch;
   }
 }
+
+.runner-dispatch-panel {
+  display: grid;
+  gap: var(--space-11);
+  margin: var(--space-12) var(--inspector-gutter) 0;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-lg);
+  padding: var(--space-12);
+  background: linear-gradient(180deg, #fbfcfa 0%, #f6f8f5 100%);
+}
+
+.runner-dispatch-heading,
+.runner-actions {
+  display: flex;
+  gap: var(--space-10);
+  align-items: start;
+  justify-content: space-between;
+}
+
+.runner-dispatch-heading div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.runner-dispatch-heading span,
+.runner-settings-grid span {
+  color: var(--color-muted);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.runner-dispatch-heading strong {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-md);
+}
+
+.runner-dispatch-heading p,
+.runner-blockers,
+.runner-history p,
+.runner-history span {
+  margin: 0;
+  color: var(--color-muted-strong);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+}
+
+.runner-settings-grid {
+  display: grid;
+  gap: var(--space-8);
+}
+
+.runner-settings-grid label {
+  display: grid;
+  gap: 4px;
+}
+
+.runner-settings-grid input {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 7px 9px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  font: inherit;
+  font-size: var(--font-size-xs);
+}
+
+.runner-blockers {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: var(--space-14);
+}
+
+.runner-actions {
+  align-items: center;
+}
+
+.runner-history {
+  border-top: 1px solid var(--color-border-soft);
+  padding-top: var(--space-9);
+}
+
+.runner-history summary {
+  cursor: pointer;
+  color: var(--color-text-strong);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+}
+
+.runner-history ul {
+  display: grid;
+  gap: var(--space-8);
+  margin: var(--space-8) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runner-history li {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-8);
+  background: var(--color-surface);
+}
+
+.runner-history li div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
+.runner-history code {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

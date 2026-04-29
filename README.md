@@ -87,6 +87,7 @@ Archive when ready
 - OpenSpec Git-status awareness for local workspace changes
 - Sortable tables and keyboard-friendly row navigation
 - App-local persistence for recent repositories, selection, sorting, and validation freshness
+- Optional Studio Runner dispatch for sending one selected change to a local signed runner
 
 ## Supported Platforms
 
@@ -152,6 +153,20 @@ npm run tauri:build
 6. Run validation to refresh trust state from the OpenSpec CLI.
 7. Archive from the archive-ready board when tasks are complete and validation passes.
 
+
+## Optional Studio Runner
+
+Studio can hand one selected active change to a local Studio Runner companion process. This is explicit and push-based: Studio does not poll, does not require Linear for the OpenSpec path, and does not automatically dispatch when a change becomes valid.
+
+To use it in the current alpha:
+
+1. Start a compatible Studio Runner endpoint locally.
+2. Configure the endpoint and shared signing secret in the selected change inspector.
+3. Run validation until the workspace is clean.
+4. Click **Build with agent**.
+
+Studio sends `build.requested` to `POST /api/v1/studio-runner/events` with `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers. The signature is HMAC-SHA256 over `webhook-id.webhook-timestamp.raw-body`. Payloads are intentionally thin: repo path, change name, validation state, and artifact paths, not full repository contents.
+
 ## Development
 
 Run checks:
@@ -202,11 +217,11 @@ Studio can:
 - run narrowly allowed OpenSpec CLI commands for validation, status, and archive
 - run Git status scoped to `openspec/`
 - open artifact files in your system editor
-- store recent repository paths, UI state, and validation snapshots in local app state
+- store recent repository paths, UI state, validation snapshots, runner settings, and bounded dispatch history in local app state
 
 Persisted validation snapshots may include OpenSpec diagnostics with file paths and command output. Clear local app data if you want to remove those records before sharing a machine or debugging profile.
 
-The Tauri bridge intentionally keeps command and file operations narrow: repository paths are canonicalized, artifact reads are bounded to `openspec/`, OpenSpec command shapes are allowlisted, archive validates the change name, and command output/time are bounded.
+The Tauri bridge intentionally keeps command, file, and runner operations narrow: repository paths are canonicalized, artifact reads are bounded to `openspec/`, OpenSpec command shapes are allowlisted, archive validates the change name, and command output/time are bounded.
 
 The Content Security Policy keeps production assets local and allows Tauri IPC. Localhost connection allowances remain because the same Tauri config supports development/HMR workflows; production code should not depend on hosted services.
 
