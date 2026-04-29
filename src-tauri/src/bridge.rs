@@ -746,6 +746,23 @@ fn studio_runner_program(repo_path: &Path) -> PathBuf {
         .unwrap_or_else(|| repo_path.join("bin/symphony"))
 }
 
+fn runner_process_is_active(process: &mut StudioRunnerProcess) -> Result<bool, BridgeError> {
+    if let Some(child) = process.child.as_mut() {
+        if child
+            .try_wait()
+            .map_err(|error| BridgeError::RunnerRequest {
+                message: error.to_string(),
+            })?
+            .is_none()
+        {
+            return Ok(true);
+        }
+        process.child = None;
+    }
+
+    Ok(runner_process_command(process.pid).is_some())
+}
+
 fn start_runner_process(
     request: StudioRunnerLifecycleRequest,
 ) -> Result<StudioRunnerLifecycleResponse, BridgeError> {
@@ -782,17 +799,7 @@ fn start_runner_process(
         })?;
 
     if let Some(existing) = store.as_mut() {
-        if existing
-            .child
-            .as_mut()
-            .map(|child| child.try_wait())
-            .transpose()
-            .map_err(|error| BridgeError::RunnerRequest {
-                message: error.to_string(),
-            })?
-            .flatten()
-            .is_none()
-        {
+        if runner_process_is_active(existing)? {
             if existing.endpoint == endpoint
                 && (existing.repo_path == repo_path || existing.child.is_none())
             {
@@ -2222,7 +2229,7 @@ while [ "$#" -gt 0 ]; do
   fi
   shift
 done
-python3 -u - "$port" <<'PY'
+python3 -u - "$port" "$PWD/WORKFLOW.md" <<'PY'
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import sys
 port = int(sys.argv[1])
@@ -2275,6 +2282,34 @@ PY
         assert_eq!(
             other_endpoint_status.runner_endpoint.as_deref(),
             Some(response.endpoint.as_str())
+        );
+
+        let recovered_status = {
+            let mut store = studio_runner_process()
+                .lock()
+                .expect("runner process store should lock");
+            if let Some(process) = store.as_mut() {
+                process.child = None;
+            }
+            drop(store);
+            check_runner_status(StudioRunnerSettings {
+                endpoint: response.endpoint.clone(),
+                repo_path: Some(path_to_string(&runner_repo)),
+            })
+            .expect("detached managed runner should recover")
+        };
+        assert!(recovered_status.reachable);
+        assert!(recovered_status.managed);
+        assert_eq!(recovered_status.pid, response.pid);
+        assert_eq!(
+            recovered_status.runner_repo_path.as_deref(),
+            Some(
+                path_to_string(
+                    &canonicalize_runner_dir(&path_to_string(&runner_repo), "test runner repo")
+                        .expect("runner repo should canonicalize")
+                )
+                .as_str()
+            )
         );
 
         let stopped = stop_runner_process().expect("runner should stop");
