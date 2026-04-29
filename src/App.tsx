@@ -2408,7 +2408,7 @@ function SpecsBrowser({
 
   return (
     <section className="board-panel artifact-board specs-board" aria-label="Specs board">
-      <div className="board-toolbar board-toolbar-compact">
+      <div className="board-toolbar board-toolbar-compact specs-toolbar">
         <div>
           <h2>Specs</h2>
           <p>{specs.length} source files indexed from openspec/specs/.</p>

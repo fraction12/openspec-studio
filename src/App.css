@@ -2157,7 +2157,12 @@ button:disabled {
 .section-actions {
   justify-content: flex-start;
   flex-wrap: wrap;
+  align-items: center;
   margin-top: var(--space-10);
+}
+
+.specs-toolbar .search-field {
+  justify-self: end;
 }
 
 .runner-dispatch-heading div {
