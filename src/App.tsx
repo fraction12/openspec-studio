@@ -534,7 +534,7 @@ function App() {
     try {
       const dto = await invoke<RunnerLifecycleResponseDto>("start_studio_runner", {
         request: {
-          repoPath: "/Volumes/MacSSD/Projects/symphony/elixir",
+          repoPath: runnerRepoPath(),
           endpoint,
         },
       });
@@ -4514,6 +4514,15 @@ function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
   };
 }
 
+
+
+function runnerRepoPath(): string {
+  if (typeof import.meta !== "undefined" && import.meta.env?.VITE_OPENSPEC_STUDIO_RUNNER_REPO) {
+    return import.meta.env.VITE_OPENSPEC_STUDIO_RUNNER_REPO;
+  }
+
+  return "/Volumes/MacSSD/Projects/symphony/elixir";
+}
 
 function createRunnerSessionSecret(): string {
   const bytes = new Uint8Array(32);

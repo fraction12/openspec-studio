@@ -160,9 +160,9 @@ Studio can hand one selected active change to a local Studio Runner companion pr
 
 To use it in the current alpha:
 
-1. Start a compatible Studio Runner endpoint locally.
-2. Configure the endpoint in the selected change inspector.
-3. Generate a session-only signing secret in Studio and pass the same secret to the local runner for this app session. Studio does not persist the secret after restart.
+1. Configure the local runner endpoint, or keep the default `http://127.0.0.1:4000/api/v1/studio-runner/events`.
+2. Click **Generate session secret**. Studio keeps the secret in memory only.
+3. Click **Start runner**. Studio starts the Studio-owned Symphony runner, passes `STUDIO_RUNNER_SIGNING_SECRET`, and waits for `/health` before marking it reachable.
 4. Run validation until the workspace is clean.
 5. Click **Build with agent**.
 

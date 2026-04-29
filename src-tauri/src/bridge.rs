@@ -111,6 +111,7 @@ struct StudioRunnerProcess {
     child: Child,
     endpoint: String,
     port: u16,
+    repo_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -750,7 +751,7 @@ fn start_runner_process(
             })?
             .is_none()
         {
-            if existing.endpoint == endpoint {
+            if existing.endpoint == endpoint && existing.repo_path == repo_path {
                 return Ok(StudioRunnerLifecycleResponse {
                     started: false,
                     endpoint: existing.endpoint.clone(),
@@ -760,7 +761,7 @@ fn start_runner_process(
                 });
             }
             return Err(BridgeError::RunnerRequest {
-                message: "A managed Studio Runner is already running for a different endpoint. Stop it before starting another.".to_string(),
+                message: "A managed Studio Runner is already running for a different repository or endpoint. Stop it before starting another.".to_string(),
             });
         }
         *store = None;
@@ -788,6 +789,7 @@ fn start_runner_process(
         child,
         endpoint: endpoint.clone(),
         port,
+        repo_path: repo_path.clone(),
     };
 
     match wait_for_runner_health(&endpoint, Duration::from_secs(8)) {
