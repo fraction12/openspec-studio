@@ -18,7 +18,9 @@ The desktop shell SHALL support local configuration for Studio Runner, an option
 #### Scenario: Runner lifecycle uses safe local commands
 - **GIVEN** Studio supports starting or stopping a local runner
 - **WHEN** the user requests a lifecycle action
-- **THEN** Studio SHALL use explicit configured runner paths or bundled metadata rather than arbitrary shell command text
+- **THEN** Studio SHALL start the Studio-owned Symphony runner using an explicit local runner path or bundled metadata rather than arbitrary shell command text
+- **AND** Studio SHALL pass the current session-only signing secret to the runner process without persisting it in app settings
+- **AND** Studio SHALL wait for the runner health endpoint before marking the runner reachable
 - **AND** Studio SHALL report bounded success or failure detail
 
 #### Scenario: Delivery failure is visible

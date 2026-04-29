@@ -34,9 +34,14 @@ const STANDARD_COMMAND_DIRS: &[&str] = &[
 ];
 
 static STUDIO_RUNNER_SESSION_SECRET: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static STUDIO_RUNNER_PROCESS: OnceLock<Mutex<Option<StudioRunnerProcess>>> = OnceLock::new();
 
 fn studio_runner_session_secret() -> &'static Mutex<Option<String>> {
     STUDIO_RUNNER_SESSION_SECRET.get_or_init(|| Mutex::new(None))
+}
+
+fn studio_runner_process() -> &'static Mutex<Option<StudioRunnerProcess>> {
+    STUDIO_RUNNER_PROCESS.get_or_init(|| Mutex::new(None))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,6 +106,30 @@ pub struct StudioRunnerSessionSecretResponse {
     pub configured: bool,
 }
 
+#[derive(Debug)]
+struct StudioRunnerProcess {
+    child: Child,
+    endpoint: String,
+    port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerLifecycleRequest {
+    #[serde(rename = "repoPath")]
+    pub repo_path: String,
+    #[serde(rename = "endpoint", default)]
+    pub endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioRunnerLifecycleResponse {
+    pub started: bool,
+    pub endpoint: String,
+    pub port: u16,
+    pub pid: Option<u32>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioRunnerStatus {
     pub configured: bool,
@@ -110,6 +139,8 @@ pub struct StudioRunnerStatus {
     pub status_code: Option<u16>,
     pub message: String,
     pub response_body: Option<String>,
+    pub managed: bool,
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -520,6 +551,18 @@ pub async fn clear_studio_runner_session_secret(
 }
 
 #[tauri::command]
+pub async fn start_studio_runner(
+    request: StudioRunnerLifecycleRequest,
+) -> Result<StudioRunnerLifecycleResponse, BridgeErrorDto> {
+    run_bridge_task(move || start_runner_process(request)).await
+}
+
+#[tauri::command]
+pub async fn stop_studio_runner() -> Result<StudioRunnerLifecycleResponse, BridgeErrorDto> {
+    run_bridge_task(stop_runner_process).await
+}
+
+#[tauri::command]
 pub async fn check_studio_runner_status(
     settings: StudioRunnerSettings,
 ) -> Result<StudioRunnerStatus, BridgeErrorDto> {
@@ -592,7 +635,9 @@ fn get_runner_session_secret() -> Result<String, BridgeError> {
 }
 
 fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerStatus, BridgeError> {
+    reap_finished_runner_process()?;
     let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
+    let managed = managed_runner_snapshot()?;
 
     if endpoint.is_empty() || !has_runner_session_secret()? {
         return Ok(StudioRunnerStatus {
@@ -607,6 +652,8 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
             status_code: None,
             message: "Studio Runner endpoint and session secret are required.".to_string(),
             response_body: None,
+            managed: managed.is_some(),
+            pid: managed.as_ref().map(|process| process.pid),
         });
     }
 
@@ -635,6 +682,8 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
                     format!("Studio Runner health check returned HTTP {}", status_code)
                 },
                 response_body: body,
+                managed: managed.is_some(),
+                pid: managed.as_ref().map(|process| process.pid),
             })
         }
         Err(error) => Ok(StudioRunnerStatus {
@@ -645,8 +694,146 @@ fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerSta
             status_code: None,
             message: error.to_string(),
             response_body: None,
+            managed: managed.is_some(),
+            pid: managed.as_ref().map(|process| process.pid),
         }),
     }
+}
+
+fn studio_runner_program(repo_path: &Path) -> PathBuf {
+    std::env::var_os("OPENSPEC_STUDIO_RUNNER_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_path.join("bin/symphony"))
+}
+
+fn start_runner_process(
+    request: StudioRunnerLifecycleRequest,
+) -> Result<StudioRunnerLifecycleResponse, BridgeError> {
+    reap_finished_runner_process()?;
+    let secret = get_runner_session_secret()?;
+    let repo_path = canonicalize_runner_dir(&request.repo_path, "Studio Runner repository")?;
+    let workflow_path = repo_path.join("WORKFLOW.md");
+    if !workflow_path.is_file() {
+        return Err(BridgeError::RunnerRequest {
+            message: format!(
+                "Studio Runner workflow file was not found at {}.",
+                workflow_path.display()
+            ),
+        });
+    }
+
+    let endpoint = normalize_runner_endpoint(
+        request
+            .endpoint
+            .as_deref()
+            .unwrap_or("http://127.0.0.1:4000/api/v1/studio-runner/events"),
+    )?;
+    if endpoint.is_empty() {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner endpoint is required.".to_string(),
+        });
+    }
+    let port = runner_endpoint_port(&endpoint)?;
+
+    let mut store = studio_runner_process()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner process store is unavailable.".to_string(),
+        })?;
+
+    if let Some(existing) = store.as_mut() {
+        if existing
+            .child
+            .try_wait()
+            .map_err(|error| BridgeError::RunnerRequest {
+                message: error.to_string(),
+            })?
+            .is_none()
+        {
+            if existing.endpoint == endpoint {
+                return Ok(StudioRunnerLifecycleResponse {
+                    started: false,
+                    endpoint: existing.endpoint.clone(),
+                    port: existing.port,
+                    pid: Some(existing.child.id()),
+                    message: "Studio Runner is already managed by Studio.".to_string(),
+                });
+            }
+            return Err(BridgeError::RunnerRequest {
+                message: "A managed Studio Runner is already running for a different endpoint. Stop it before starting another.".to_string(),
+            });
+        }
+        *store = None;
+    }
+
+    let mut command = Command::new(studio_runner_program(&repo_path));
+    command
+        .arg("--i-understand-that-this-will-be-running-without-the-usual-guardrails")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg(&workflow_path)
+        .current_dir(&repo_path)
+        .env("STUDIO_RUNNER_SIGNING_SECRET", secret)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    prepare_command_for_tree_termination(&mut command);
+
+    let child = command
+        .spawn()
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: format!("Studio Runner could not be started: {}", error),
+        })?;
+    let pid = child.id();
+    let mut process = StudioRunnerProcess {
+        child,
+        endpoint: endpoint.clone(),
+        port,
+    };
+
+    match wait_for_runner_health(&endpoint, Duration::from_secs(8)) {
+        Ok(()) => {
+            *store = Some(process);
+            Ok(StudioRunnerLifecycleResponse {
+                started: true,
+                endpoint,
+                port,
+                pid: Some(pid),
+                message: "Studio Runner started and passed health check.".to_string(),
+            })
+        }
+        Err(error) => {
+            terminate_child_tree(&mut process.child, pid);
+            Err(error)
+        }
+    }
+}
+
+fn stop_runner_process() -> Result<StudioRunnerLifecycleResponse, BridgeError> {
+    let mut store = studio_runner_process()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner process store is unavailable.".to_string(),
+        })?;
+    let Some(mut process) = store.take() else {
+        return Ok(StudioRunnerLifecycleResponse {
+            started: false,
+            endpoint: String::new(),
+            port: 0,
+            pid: None,
+            message: "No Studio-managed runner is running.".to_string(),
+        });
+    };
+    let endpoint = process.endpoint.clone();
+    let port = process.port;
+    let pid = process.child.id();
+    terminate_child_tree(&mut process.child, pid);
+    Ok(StudioRunnerLifecycleResponse {
+        started: false,
+        endpoint,
+        port,
+        pid: Some(pid),
+        message: "Studio Runner stopped.".to_string(),
+    })
 }
 
 fn dispatch_runner_event(
@@ -791,6 +978,15 @@ fn normalize_runner_endpoint(endpoint: &str) -> Result<String, BridgeError> {
     Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
+fn runner_endpoint_port(endpoint: &str) -> Result<u16, BridgeError> {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.port())
+        .ok_or_else(|| BridgeError::RunnerRequest {
+            message: "Studio Runner endpoint must include an explicit port.".to_string(),
+        })
+}
+
 fn runner_health_endpoint(event_endpoint: &str) -> String {
     event_endpoint
         .strip_suffix("/events")
@@ -840,6 +1036,86 @@ fn validate_runner_event_id(event_id: &str) -> Result<(), BridgeError> {
             message: "Invalid Studio Runner event id.".to_string(),
         })
     }
+}
+
+fn wait_for_runner_health(endpoint: &str, timeout: Duration) -> Result<(), BridgeError> {
+    let deadline = Instant::now() + timeout;
+    let health_endpoint = runner_health_endpoint(endpoint);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(600))
+        .build()
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: error.to_string(),
+        })?;
+
+    let mut last_error = String::new();
+    while Instant::now() < deadline {
+        match client.get(&health_endpoint).send() {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => last_error = format!("HTTP {}", response.status().as_u16()),
+            Err(error) => last_error = error.to_string(),
+        }
+        thread::sleep(Duration::from_millis(150));
+    }
+
+    Err(BridgeError::RunnerRequest {
+        message: format!("Studio Runner did not become reachable: {}", last_error),
+    })
+}
+
+fn reap_finished_runner_process() -> Result<(), BridgeError> {
+    let mut store = studio_runner_process()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner process store is unavailable.".to_string(),
+        })?;
+    if let Some(process) = store.as_mut() {
+        if process
+            .child
+            .try_wait()
+            .map_err(|error| BridgeError::RunnerRequest {
+                message: error.to_string(),
+            })?
+            .is_some()
+        {
+            *store = None;
+        }
+    }
+    Ok(())
+}
+
+fn managed_runner_snapshot() -> Result<Option<StudioRunnerProcessSnapshot>, BridgeError> {
+    let store = studio_runner_process()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner process store is unavailable.".to_string(),
+        })?;
+    Ok(store.as_ref().map(|process| StudioRunnerProcessSnapshot {
+        pid: process.child.id(),
+    }))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StudioRunnerProcessSnapshot {
+    pid: u32,
+}
+
+fn canonicalize_runner_dir(path: &str, label: &str) -> Result<PathBuf, BridgeError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(BridgeError::RunnerRequest {
+            message: format!("{} path is required.", label),
+        });
+    }
+    let canonical = fs::canonicalize(trimmed).map_err(|error| BridgeError::RunnerRequest {
+        message: format!("{} path is invalid: {}", label, error),
+    })?;
+    if !canonical.is_dir() {
+        return Err(BridgeError::RunnerRequest {
+            message: format!("{} path must be a directory.", label),
+        });
+    }
+    Ok(canonical)
 }
 
 fn read_bounded_runner_response(
@@ -1680,6 +1956,75 @@ mod tests {
         assert_eq!(payload["source"], "openspec-studio");
         assert_eq!(payload["data"]["change"], "add-runner");
         assert!(payload["data"].get("proposal").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn starts_and_stops_managed_studio_runner_process() {
+        clear_runner_session_secret().expect("secret should start clear");
+        configure_runner_session_secret("secret".to_string()).expect("secret should configure");
+        let runner_repo = temp_repo("runner-lifecycle", false);
+        fs::write(runner_repo.join("WORKFLOW.md"), "# Workflow\n")
+            .expect("workflow should be written");
+        let bin_dir = runner_repo.join("bin");
+        fs::create_dir_all(&bin_dir).expect("bin dir should be created");
+        let runner_bin = bin_dir.join("symphony");
+        write_executable(
+            &runner_bin,
+            r#"#!/bin/sh
+port=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--port" ]; then
+    shift
+    port="$1"
+  fi
+  shift
+done
+python3 -u - "$port" <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import sys
+port = int(sys.argv[1])
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/v1/studio-runner/health':
+            self.send_response(200)
+            self.send_header('content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    def log_message(self, *args):
+        pass
+HTTPServer(('127.0.0.1', port), Handler).serve_forever()
+PY
+"#,
+        );
+        let previous_bin = std::env::var_os("OPENSPEC_STUDIO_RUNNER_BIN");
+        std::env::set_var("OPENSPEC_STUDIO_RUNNER_BIN", &runner_bin);
+
+        let response = start_runner_process(StudioRunnerLifecycleRequest {
+            repo_path: path_to_string(&runner_repo),
+            endpoint: Some("http://127.0.0.1:45123/api/v1/studio-runner/events".to_string()),
+        })
+        .expect("runner should start and pass health");
+        assert!(response.started);
+        assert_eq!(response.port, 45123);
+        let status = check_runner_status(StudioRunnerSettings {
+            endpoint: response.endpoint.clone(),
+        })
+        .expect("status should be available");
+        assert!(status.reachable);
+        assert!(status.managed);
+        let stopped = stop_runner_process().expect("runner should stop");
+        assert_eq!(stopped.port, 45123);
+
+        if let Some(value) = previous_bin {
+            std::env::set_var("OPENSPEC_STUDIO_RUNNER_BIN", value);
+        } else {
+            std::env::remove_var("OPENSPEC_STUDIO_RUNNER_BIN");
+        }
+        cleanup(runner_repo);
     }
 
     #[test]

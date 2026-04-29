@@ -101,6 +101,16 @@ interface RunnerStatusDto {
   message: string;
   response_body?: string | null;
   responseBody?: string | null;
+  managed?: boolean;
+  pid?: number | null;
+}
+
+interface RunnerLifecycleResponseDto {
+  started: boolean;
+  endpoint: string;
+  port: number;
+  pid?: number | null;
+  message: string;
 }
 
 interface RunnerDispatchResponseDto {
@@ -362,6 +372,7 @@ function App() {
   const [runnerStatus, setRunnerStatus] = useState<RunnerStatus>(unknownRunnerStatus);
   const [runnerSessionSecretConfigured, setRunnerSessionSecretConfigured] = useState(false);
   const [runnerDispatchBusy, setRunnerDispatchBusy] = useState(false);
+  const [runnerLifecycleBusy, setRunnerLifecycleBusy] = useState(false);
   const [message, setMessage] = useState("Loading local workspace...");
   const [operationIssues, setOperationIssues] = useState<OpenSpecOperationIssue[]>([]);
   const repoLoadGenerationRef = useRef(0);
@@ -492,6 +503,71 @@ function App() {
     setRunnerSessionSecretConfigured(false);
     setRunnerStatus(unknownRunnerStatus);
     setMessage("Studio Runner session secret cleared.");
+  }
+
+  async function startRunner() {
+    if (!isTauriRuntime()) {
+      setMessage("Starting Studio Runner requires the Tauri desktop runtime.");
+      return;
+    }
+    if (!runnerSessionSecretConfigured) {
+      try {
+        const secret = createRunnerSessionSecret();
+        await invoke("configure_studio_runner_session_secret", { secret });
+        setRunnerSessionSecretConfigured(true);
+      } catch (error) {
+        setRunnerSessionSecretConfigured(false);
+        setMessage("Studio Runner session setup failed: " + errorMessage(error));
+        return;
+      }
+    }
+    const endpoint = runnerSettingsRef.current.endpoint.trim() || defaultRunnerSettings.endpoint;
+    if (!runnerSettingsRef.current.endpoint.trim()) {
+      updateRunnerSettings(defaultRunnerSettings);
+    }
+    setRunnerLifecycleBusy(true);
+    setRunnerStatus({
+      state: "starting",
+      label: "Starting runner",
+      detail: "Starting local Studio Runner and waiting for health check.",
+    });
+    try {
+      const dto = await invoke<RunnerLifecycleResponseDto>("start_studio_runner", {
+        request: {
+          repoPath: "/Volumes/MacSSD/Projects/symphony/elixir",
+          endpoint,
+        },
+      });
+      setMessage(dto.message);
+      await checkRunnerStatus({ quiet: true });
+    } catch (error) {
+      const nextStatus: RunnerStatus = {
+        state: "unavailable",
+        label: "Runner unavailable",
+        detail: errorMessage(error),
+      };
+      setRunnerStatus(nextStatus);
+      setMessage("Studio Runner start failed: " + errorMessage(error));
+    } finally {
+      setRunnerLifecycleBusy(false);
+    }
+  }
+
+  async function stopRunner() {
+    if (!isTauriRuntime()) {
+      setMessage("Stopping Studio Runner requires the Tauri desktop runtime.");
+      return;
+    }
+    setRunnerLifecycleBusy(true);
+    try {
+      const dto = await invoke<RunnerLifecycleResponseDto>("stop_studio_runner");
+      setMessage(dto.message);
+      setRunnerStatus(unknownRunnerStatus);
+    } catch (error) {
+      setMessage("Studio Runner stop failed: " + errorMessage(error));
+    } finally {
+      setRunnerLifecycleBusy(false);
+    }
   }
 
   async function checkRunnerStatus(options: { quiet?: boolean } = {}) {
@@ -1757,7 +1833,7 @@ function App() {
         runnerDispatchEligibility={selectedChangeRunnerEligibility}
         runnerDispatchHistory={selectedChangeDispatchHistory}
         runnerSessionSecretConfigured={runnerSessionSecretConfigured}
-        runnerDispatchBusy={runnerDispatchBusy}
+        runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
         operationIssues={operationIssues}
@@ -1768,6 +1844,8 @@ function App() {
         onConfigureRunnerSessionSecret={() => void configureRunnerSessionSecret()}
         onClearRunnerSessionSecret={() => void clearRunnerSessionSecret()}
         onCheckRunnerStatus={() => void checkRunnerStatus()}
+        onStartRunner={() => void startRunner()}
+        onStopRunner={() => void stopRunner()}
         onDispatchRunner={() => void dispatchSelectedChange()}
         onRetryRunnerDispatch={(attempt) => void dispatchSelectedChange({ retryAttempt: attempt })}
       />
@@ -2735,6 +2813,8 @@ function Inspector({
   onConfigureRunnerSessionSecret,
   onClearRunnerSessionSecret,
   onCheckRunnerStatus,
+  onStartRunner,
+  onStopRunner,
   onDispatchRunner,
   onRetryRunnerDispatch,
 }: {
@@ -2759,6 +2839,8 @@ function Inspector({
   onConfigureRunnerSessionSecret: () => void;
   onClearRunnerSessionSecret: () => void;
   onCheckRunnerStatus: () => void;
+  onStartRunner: () => void;
+  onStopRunner: () => void;
   onDispatchRunner: () => void;
   onRetryRunnerDispatch: (attempt: RunnerDispatchAttempt) => void;
 }) {
@@ -2862,6 +2944,8 @@ function Inspector({
         onConfigureSessionSecret={onConfigureRunnerSessionSecret}
         onClearSessionSecret={onClearRunnerSessionSecret}
         onCheckStatus={onCheckRunnerStatus}
+        onStartRunner={onStartRunner}
+        onStopRunner={onStopRunner}
         onDispatch={onDispatchRunner}
         onRetry={onRetryRunnerDispatch}
       />
@@ -2913,6 +2997,8 @@ function RunnerDispatchPanel({
   onConfigureSessionSecret,
   onClearSessionSecret,
   onCheckStatus,
+  onStartRunner,
+  onStopRunner,
   onDispatch,
   onRetry,
 }: {
@@ -2926,6 +3012,8 @@ function RunnerDispatchPanel({
   onConfigureSessionSecret: () => void;
   onClearSessionSecret: () => void;
   onCheckStatus: () => void;
+  onStartRunner: () => void;
+  onStopRunner: () => void;
   onDispatch: () => void;
   onRetry: (attempt: RunnerDispatchAttempt) => void;
 }) {
@@ -2940,8 +3028,8 @@ function RunnerDispatchPanel({
           <p>{status.detail}</p>
         </div>
         <HealthPill
-          health={status.state === "reachable" ? "valid" : status.state === "checking" ? "stale" : "blocked"}
-          label={status.state === "reachable" ? "Reachable" : status.state === "checking" ? "Checking" : "Blocked"}
+          health={status.state === "reachable" ? "valid" : status.state === "checking" || status.state === "starting" ? "stale" : "blocked"}
+          label={status.state === "reachable" ? "Reachable" : status.state === "starting" ? "Starting" : status.state === "checking" ? "Checking" : "Blocked"}
         />
       </div>
       <div className="runner-settings-grid">
@@ -2977,9 +3065,17 @@ function RunnerDispatchPanel({
         </ul>
       ) : null}
       <div className="runner-actions">
+        <button type="button" className="primary-outline" onClick={onStartRunner} disabled={busy}>
+          {status.state === "reachable" ? "Restart runner" : "Start runner"}
+        </button>
         <button type="button" className="primary-outline" onClick={onCheckStatus} disabled={busy}>
           Check runner
         </button>
+        {status.managed ? (
+          <button type="button" className="link-button" onClick={onStopRunner} disabled={busy}>
+            Stop runner
+          </button>
+        ) : null}
         <button type="button" className="primary-button" onClick={onDispatch} disabled={busy || !eligibility.eligible}>
           {busy ? "Dispatching..." : "Build with agent"}
         </button>
@@ -4402,6 +4498,8 @@ function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
       detail: dto.message || "Studio Runner responded to health check.",
       statusCode: dto.status_code ?? dto.statusCode ?? null,
       endpoint: dto.endpoint ?? undefined,
+      managed: Boolean(dto.managed),
+      pid: dto.pid ?? null,
     };
   }
 
@@ -4411,6 +4509,8 @@ function runnerStatusFromDto(dto: RunnerStatusDto): RunnerStatus {
     detail: dto.message || "Studio Runner did not respond successfully.",
     statusCode: dto.status_code ?? dto.statusCode ?? null,
     endpoint: dto.endpoint ?? undefined,
+    managed: Boolean(dto.managed),
+    pid: dto.pid ?? null,
   };
 }
 

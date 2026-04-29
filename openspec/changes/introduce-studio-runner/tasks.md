@@ -15,7 +15,7 @@
 
 - [x] 2.1 Add local Studio Runner settings UI/state.
 - [x] 2.2 Add runner status detection and display in the app shell or change detail.
-- [ ] 2.3 Add safe start/stop hooks for configured local runner paths where supported.
+- [x] 2.3 Add safe start/stop hooks for configured local runner paths where supported.
 - [x] 2.4 Add per-change **Build with agent** action gated by eligibility and runner state.
 - [x] 2.5 Implement thin `build.requested` payload construction without arbitrary file contents.
 - [x] 2.6 Implement signed webhook delivery in the Tauri/Rust bridge.
@@ -38,7 +38,7 @@
 
 - [x] 4.1 Add unit tests for eligibility, runner status mapping, and payload construction.
 - [x] 4.2 Add bridge tests for signature construction, timestamp handling, and raw-body signing.
-- [ ] 4.3 Add bridge tests for runner status checks and bounded lifecycle command handling where implemented.
+- [x] 4.3 Add bridge tests for runner status checks and bounded lifecycle command handling where implemented.
 - [x] 4.4 Add tests for delivery failure, non-2xx response handling, and bounded error capture.
 - [x] 4.5 Add tests proving manual retry reuses the existing event ID/idempotency key.
 - [x] 4.6 Verify dispatch is never automatic on change creation/update/validation/archive-readiness.

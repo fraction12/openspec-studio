@@ -44,6 +44,8 @@ pub fn run() {
             bridge::validate_repo,
             bridge::configure_studio_runner_session_secret,
             bridge::clear_studio_runner_session_secret,
+            bridge::start_studio_runner,
+            bridge::stop_studio_runner,
             bridge::check_studio_runner_status,
             bridge::dispatch_studio_runner_event
         ])

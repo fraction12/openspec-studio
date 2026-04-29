@@ -12,7 +12,7 @@ export interface RunnerSettings {
   endpoint: string;
 }
 
-export type RunnerStatusKind = "not-configured" | "checking" | "reachable" | "unavailable" | "incompatible";
+export type RunnerStatusKind = "not-configured" | "checking" | "starting" | "reachable" | "unavailable" | "incompatible";
 
 export interface RunnerStatus {
   state: RunnerStatusKind;
@@ -20,6 +20,8 @@ export interface RunnerStatus {
   detail: string;
   endpoint?: string;
   statusCode?: number | null;
+  managed?: boolean;
+  pid?: number | null;
 }
 
 export interface RunnerDispatchAttempt {
