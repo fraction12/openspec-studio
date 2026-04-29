@@ -2035,12 +2035,23 @@ button:disabled {
 .runner-log-panel {
   display: flex;
   min-height: 430px;
+  flex-direction: column;
   overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%);
 }
 
 .runner-log-panel .table-scroll {
   padding-top: 0;
 }
+
+.runner-log-panel .empty-state {
+  flex: 1;
+  align-content: center;
+}
+
 
 .runner-log-header {
   display: flex;
