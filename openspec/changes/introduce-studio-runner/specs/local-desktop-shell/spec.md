@@ -7,7 +7,8 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **GIVEN** a real OpenSpec repository is open
 - **WHEN** the user views workspace-level navigation
 - **THEN** Studio SHALL show a Runner tab alongside Changes and Specs
-- **AND** runner endpoint, session secret, start, stop, status, managed process detail, and repo-wide dispatch history SHALL live on the Runner tab rather than inside every selected-change inspector
+- **AND** runner endpoint, session secret, start, stop, status, managed process detail, and repo-wide dispatch history SHALL be shown in the Runner page's context inspector rather than showing a stale selected change or spec inspector
+- **AND** the main Runner workspace SHALL use existing board/inspector/card/list primitives rather than bespoke one-off controls where an existing pattern fits
 
 #### Scenario: Configured runner is used for dispatch
 - **GIVEN** the user has configured a Studio Runner endpoint and generated a session-only signing secret from the Runner tab

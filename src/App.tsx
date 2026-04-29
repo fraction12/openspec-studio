@@ -1824,17 +1824,6 @@ function App() {
         onArchiveAll={(changeNames) => void archiveAllChanges(changeNames)}
         onValidate={() => void runValidation()}
         onReload={() => repo && void loadRepository(repo.path)}
-        runnerSettings={runnerSettings}
-        runnerStatus={runnerStatus}
-        runnerAllDispatchHistory={repoRunnerDispatchHistory}
-        runnerSessionSecretConfigured={runnerSessionSecretConfigured}
-        runnerBusy={runnerDispatchBusy || runnerLifecycleBusy}
-        onRunnerSettingsChange={updateRunnerSettings}
-        onConfigureRunnerSessionSecret={() => void configureRunnerSessionSecret()}
-        onClearRunnerSessionSecret={() => void clearRunnerSessionSecret()}
-        onCheckRunnerStatus={() => void checkRunnerStatus()}
-        onStartRunner={() => void startRunner()}
-        onStopRunner={() => void stopRunner()}
       />
 
       <Inspector
@@ -1846,6 +1835,9 @@ function App() {
         runnerStatus={runnerStatus}
         runnerDispatchEligibility={selectedChangeRunnerEligibility}
         runnerDispatchHistory={selectedChangeDispatchHistory}
+        runnerAllDispatchHistory={repoRunnerDispatchHistory}
+        runnerSettings={runnerSettings}
+        runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
@@ -1853,6 +1845,12 @@ function App() {
         onDetailTabChange={setDetailTab}
         onOpenArtifact={(artifact) => void openArtifact(artifact)}
         onValidate={() => void runValidation()}
+        onRunnerSettingsChange={updateRunnerSettings}
+        onConfigureRunnerSessionSecret={() => void configureRunnerSessionSecret()}
+        onClearRunnerSessionSecret={() => void clearRunnerSessionSecret()}
+        onCheckRunnerStatus={() => void checkRunnerStatus()}
+        onStartRunner={() => void startRunner()}
+        onStopRunner={() => void stopRunner()}
         onDispatchRunner={() => void dispatchSelectedChange()}
         onRetryRunnerDispatch={(attempt) => void dispatchSelectedChange({ retryAttempt: attempt })}
       />
@@ -2015,17 +2013,6 @@ function WorkspaceMain({
   onArchiveAll,
   onValidate,
   onReload,
-  runnerSettings,
-  runnerStatus,
-  runnerAllDispatchHistory,
-  runnerSessionSecretConfigured,
-  runnerBusy,
-  onRunnerSettingsChange,
-  onConfigureRunnerSessionSecret,
-  onClearRunnerSessionSecret,
-  onCheckRunnerStatus,
-  onStartRunner,
-  onStopRunner,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
@@ -2041,11 +2028,6 @@ function WorkspaceMain({
   specSortDirection: BoardTableSortDirection;
   loadState: LoadState;
   archiveBusy: boolean;
-  runnerSettings: RunnerSettings;
-  runnerStatus: RunnerStatus;
-  runnerAllDispatchHistory: RunnerDispatchAttempt[];
-  runnerSessionSecretConfigured: boolean;
-  runnerBusy: boolean;
   onViewChange: (view: BoardView) => void;
   onPhaseChange: (phase: ChangePhase) => void;
   onChangesQueryChange: (query: string) => void;
@@ -2059,12 +2041,6 @@ function WorkspaceMain({
   onArchiveAll: (changeNames: string[]) => void;
   onValidate: () => void;
   onReload: () => void;
-  onRunnerSettingsChange: (settings: RunnerSettings) => void;
-  onConfigureRunnerSessionSecret: () => void;
-  onClearRunnerSessionSecret: () => void;
-  onCheckRunnerStatus: () => void;
-  onStartRunner: () => void;
-  onStopRunner: () => void;
 }) {
   if (!repo) {
     return (
@@ -2179,20 +2155,7 @@ function WorkspaceMain({
           onSortDirectionChange={onSpecSortDirection}
         />
       ) : (
-        <RunnerWorkspace
-          repo={repo}
-          settings={runnerSettings}
-          status={runnerStatus}
-          history={runnerAllDispatchHistory}
-          sessionSecretConfigured={runnerSessionSecretConfigured}
-          busy={runnerBusy}
-          onSettingsChange={onRunnerSettingsChange}
-          onConfigureSessionSecret={onConfigureRunnerSessionSecret}
-          onClearSessionSecret={onClearRunnerSessionSecret}
-          onCheckStatus={onCheckRunnerStatus}
-          onStartRunner={onStartRunner}
-          onStopRunner={onStopRunner}
-        />
+        <RunnerWorkspace repo={repo} />
       )}
     </main>
   );
@@ -2852,6 +2815,9 @@ function Inspector({
   runnerStatus,
   runnerDispatchEligibility,
   runnerDispatchHistory,
+  runnerAllDispatchHistory,
+  runnerSettings,
+  runnerSessionSecretConfigured,
   runnerDispatchBusy,
   detailTab,
   artifactPreview,
@@ -2859,6 +2825,12 @@ function Inspector({
   onDetailTabChange,
   onOpenArtifact,
   onValidate,
+  onRunnerSettingsChange,
+  onConfigureRunnerSessionSecret,
+  onClearRunnerSessionSecret,
+  onCheckRunnerStatus,
+  onStartRunner,
+  onStopRunner,
   onDispatchRunner,
   onRetryRunnerDispatch,
 }: {
@@ -2870,6 +2842,9 @@ function Inspector({
   runnerStatus: RunnerStatus;
   runnerDispatchEligibility: RunnerDispatchEligibility;
   runnerDispatchHistory: RunnerDispatchAttempt[];
+  runnerAllDispatchHistory: RunnerDispatchAttempt[];
+  runnerSettings: RunnerSettings;
+  runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
   detailTab: DetailTab;
   artifactPreview: string;
@@ -2877,6 +2852,12 @@ function Inspector({
   onDetailTabChange: (tab: DetailTab) => void;
   onOpenArtifact: (artifact: Artifact | SpecRecord) => void;
   onValidate: () => void;
+  onRunnerSettingsChange: (settings: RunnerSettings) => void;
+  onConfigureRunnerSessionSecret: () => void;
+  onClearRunnerSessionSecret: () => void;
+  onCheckRunnerStatus: () => void;
+  onStartRunner: () => void;
+  onStopRunner: () => void;
   onDispatchRunner: () => void;
   onRetryRunnerDispatch: (attempt: RunnerDispatchAttempt) => void;
 }) {
@@ -2905,6 +2886,26 @@ function Inspector({
       <aside className="inspector artifact-inspector" aria-label="Artifact inspector">
         <EmptyState compact title="Artifact inspector" body="Select a valid OpenSpec repository to inspect source artifacts." />
       </aside>
+    );
+  }
+
+
+  if (view === "runner") {
+    return (
+      <RunnerInspector
+        repo={repo}
+        settings={runnerSettings}
+        status={runnerStatus}
+        history={runnerAllDispatchHistory}
+        sessionSecretConfigured={runnerSessionSecretConfigured}
+        busy={runnerDispatchBusy}
+        onSettingsChange={onRunnerSettingsChange}
+        onConfigureSessionSecret={onConfigureRunnerSessionSecret}
+        onClearSessionSecret={onClearRunnerSessionSecret}
+        onCheckStatus={onCheckRunnerStatus}
+        onStartRunner={onStartRunner}
+        onStopRunner={onStopRunner}
+      />
     );
   }
 
@@ -3014,7 +3015,34 @@ function Inspector({
   );
 }
 
-function RunnerWorkspace({
+function RunnerWorkspace({ repo }: { repo: RepositoryView }) {
+  return (
+    <section className="board-panel runner-board" aria-label="Studio Runner workspace">
+      <div className="board-toolbar board-toolbar-compact">
+        <div>
+          <h2>Studio Runner</h2>
+          <p>One local runner per repo/session. Start it here, then dispatch eligible selected changes from their inspector.</p>
+        </div>
+      </div>
+      <div className="runner-overview">
+        <section className="inspector-section runner-overview-card">
+          <h3>Repository runner</h3>
+          <p>{repo.name} uses one managed local runner for all selected-change build requests in this session.</p>
+        </section>
+        <section className="inspector-section runner-overview-card">
+          <h3>Execution model</h3>
+          <p>Studio sends a signed, thin `build.requested` event. The runner reads OpenSpec artifacts from disk and owns execution.</p>
+        </section>
+        <section className="inspector-section runner-overview-card">
+          <h3>Safety boundary</h3>
+          <p>Endpoints stay localhost-only, the signing secret is session-only, and dispatch is never automatic.</p>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function RunnerInspector({
   repo,
   settings,
   status,
@@ -3042,26 +3070,20 @@ function RunnerWorkspace({
   onStopRunner: () => void;
 }) {
   return (
-    <section className="runner-workspace" aria-label="Studio Runner workspace">
-      <div className="runner-hero">
-        <div>
-          <span>Repo runner</span>
-          <h2>Studio Runner</h2>
-          <p>Start one local runner for this repository, then dispatch selected changes from the inspector.</p>
+    <aside className="inspector artifact-inspector runner-inspector" aria-label="Studio Runner inspector">
+      <div className="inspector-header">
+        <span>Repo runner</span>
+        <h2>Studio Runner</h2>
+        <p>Start one local runner for this repository, then dispatch selected changes from the change inspector.</p>
+        <div className="inspector-actions">
+          <HealthPill health={runnerHealth(status)} label={runnerStatusLabel(status)} />
         </div>
-        <HealthPill health={runnerHealth(status)} label={runnerStatusLabel(status)} />
       </div>
-
-      <div className="runner-workspace-grid">
-        <section className="runner-card runner-control-card">
-          <div className="runner-card-heading">
-            <div>
-              <span>Status</span>
-              <h3>{status.label}</h3>
-              <p>{status.detail}</p>
-            </div>
-          </div>
-          <dl className="runner-status-list">
+      <div className="inspector-body artifact-inspector-body">
+        <section className="inspector-section">
+          <h3>Status</h3>
+          <p>{status.detail}</p>
+          <dl className="fact-list">
             <div>
               <dt>Repository</dt>
               <dd>{repo.name}</dd>
@@ -3077,7 +3099,7 @@ function RunnerWorkspace({
               </div>
             ) : null}
           </dl>
-          <div className="runner-actions runner-workspace-actions">
+          <div className="section-actions">
             <button type="button" className="primary-button" onClick={onStartRunner} disabled={busy}>
               {status.state === "reachable" ? "Restart runner" : status.state === "starting" ? "Starting..." : "Start runner"}
             </button>
@@ -3091,16 +3113,9 @@ function RunnerWorkspace({
             ) : null}
           </div>
         </section>
-
-        <section className="runner-card">
-          <div className="runner-card-heading">
-            <div>
-              <span>Connection</span>
-              <h3>Endpoint</h3>
-              <p>Localhost only for the alpha. Studio derives health from the events endpoint.</p>
-            </div>
-          </div>
-          <label className="runner-field">
+        <section className="inspector-section">
+          <h3>Endpoint</h3>
+          <label className="field-control">
             <span>Events endpoint</span>
             <input
               value={settings.endpoint}
@@ -3108,17 +3123,12 @@ function RunnerWorkspace({
               placeholder="http://127.0.0.1:4000/api/v1/studio-runner/events"
             />
           </label>
+          <p className="muted-copy">Localhost only for the alpha. Studio derives health from the events endpoint.</p>
         </section>
-
-        <section className="runner-card">
-          <div className="runner-card-heading">
-            <div>
-              <span>Session security</span>
-              <h3>{sessionSecretConfigured ? "Secret configured" : "No session secret"}</h3>
-              <p>Studio generates the signing secret and keeps it in memory only. It is never persisted in app settings.</p>
-            </div>
-          </div>
-          <div className="runner-actions">
+        <section className="inspector-section">
+          <h3>Session secret</h3>
+          <p>{sessionSecretConfigured ? "Configured for this app session." : "Not generated yet."}</p>
+          <div className="section-actions">
             <button type="button" className="primary-outline" onClick={onConfigureSessionSecret} disabled={busy}>
               {sessionSecretConfigured ? "Regenerate session secret" : "Generate session secret"}
             </button>
@@ -3129,20 +3139,15 @@ function RunnerWorkspace({
             ) : null}
           </div>
         </section>
-      </div>
-
-      <section className="runner-card runner-history-card">
-        <div className="runner-card-heading">
-          <div>
-            <span>Dispatches</span>
+        <section className="inspector-section">
+          <div className="section-title-row">
             <h3>Recent build requests</h3>
-            <p>Build requests are still started from an eligible selected change.</p>
+            <span>{history.length}</span>
           </div>
-          <strong>{history.length}</strong>
-        </div>
-        <RunnerHistoryList history={history} emptyText="No runner dispatches for this repository yet." />
-      </section>
-    </section>
+          <RunnerHistoryList history={history} emptyText="No runner dispatches for this repository yet." />
+        </section>
+      </div>
+    </aside>
   );
 }
 
