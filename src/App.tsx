@@ -379,6 +379,7 @@ function App() {
   const refreshGenerationRef = useRef(0);
   const gitStatusGenerationRef = useRef(0);
   const runnerStatusGenerationRef = useRef(0);
+  const runnerSessionSecretConfiguredRef = useRef(runnerSessionSecretConfigured);
   const artifactPreviewGenerationRef = useRef(0);
   const validationGenerationRef = useRef(0);
   const archiveInFlightRef = useRef(false);
@@ -391,6 +392,7 @@ function App() {
   const repoRef = useRef<RepositoryView | null>(repo);
   const gitStatusRef = useRef<OpenSpecGitStatus>(gitStatus);
   const runnerSettingsRef = useRef<RunnerSettings>(runnerSettings);
+  const runnerStatusRef = useRef<RunnerStatus>(runnerStatus);
   const deferredChangesQuery = useDeferredValue(changesQuery);
   const deferredSpecsQuery = useDeferredValue(specsQuery);
 
@@ -402,6 +404,8 @@ function App() {
   repoRef.current = repo;
   gitStatusRef.current = gitStatus;
   runnerSettingsRef.current = runnerSettings;
+  runnerStatusRef.current = runnerStatus;
+  runnerSessionSecretConfiguredRef.current = runnerSessionSecretConfigured;
   chooseRepositoryFolderRef.current = chooseRepositoryFolder;
 
   function recordOperationIssue(issue: OpenSpecOperationIssue) {
@@ -483,10 +487,12 @@ function App() {
     try {
       const secret = createRunnerSessionSecret();
       await invoke("configure_studio_runner_session_secret", { secret });
+      runnerSessionSecretConfiguredRef.current = true;
       setRunnerSessionSecretConfigured(true);
       setMessage("Studio Runner session secret generated for this app session.");
-      await checkRunnerStatus({ quiet: true });
+      await checkRunnerStatus({ quiet: true, force: true });
     } catch (error) {
+      runnerSessionSecretConfiguredRef.current = false;
       setRunnerSessionSecretConfigured(false);
       setMessage("Studio Runner session setup failed: " + errorMessage(error));
     }
@@ -500,7 +506,9 @@ function App() {
         console.warn("Studio Runner session secret could not be cleared.", error);
       }
     }
+    runnerSessionSecretConfiguredRef.current = false;
     setRunnerSessionSecretConfigured(false);
+    runnerStatusRef.current = unknownRunnerStatus;
     setRunnerStatus(unknownRunnerStatus);
     setMessage("Studio Runner session secret cleared.");
   }
@@ -510,26 +518,36 @@ function App() {
       setMessage("Starting Studio Runner requires the Tauri desktop runtime.");
       return;
     }
-    if (!runnerSessionSecretConfigured) {
+
+    let hasSessionSecret = runnerSessionSecretConfiguredRef.current;
+    if (!hasSessionSecret) {
       try {
         const secret = createRunnerSessionSecret();
         await invoke("configure_studio_runner_session_secret", { secret });
+        runnerSessionSecretConfiguredRef.current = true;
         setRunnerSessionSecretConfigured(true);
+        hasSessionSecret = true;
       } catch (error) {
+        runnerSessionSecretConfiguredRef.current = false;
         setRunnerSessionSecretConfigured(false);
         setMessage("Studio Runner session setup failed: " + errorMessage(error));
         return;
       }
     }
+
     const endpoint = runnerSettingsRef.current.endpoint.trim() || defaultRunnerSettings.endpoint;
     if (!runnerSettingsRef.current.endpoint.trim()) {
       updateRunnerSettings(defaultRunnerSettings);
+      runnerSettingsRef.current = defaultRunnerSettings;
     }
+
+    const startedRequestId = ++runnerStatusGenerationRef.current;
     setRunnerLifecycleBusy(true);
     setRunnerStatus({
       state: "starting",
       label: "Starting runner",
       detail: "Starting local Studio Runner and waiting for health check.",
+      endpoint,
     });
     try {
       const dto = await invoke<RunnerLifecycleResponseDto>("start_studio_runner", {
@@ -538,14 +556,26 @@ function App() {
           endpoint,
         },
       });
+      const nextStatus: RunnerStatus = {
+        state: "reachable",
+        label: dto.started ? "Runner started" : "Runner reachable",
+        detail: dto.message || "Studio Runner started and passed health check.",
+        endpoint: dto.endpoint || endpoint,
+        managed: true,
+        pid: dto.pid ?? null,
+      };
+      runnerStatusRef.current = nextStatus;
+      setRunnerStatus(nextStatus);
       setMessage(dto.message);
-      await checkRunnerStatus({ quiet: true });
+      void checkRunnerStatus({ quiet: true, force: true, requestId: startedRequestId });
     } catch (error) {
       const nextStatus: RunnerStatus = {
         state: "unavailable",
         label: "Runner unavailable",
         detail: errorMessage(error),
+        endpoint,
       };
+      runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       setMessage("Studio Runner start failed: " + errorMessage(error));
     } finally {
@@ -562,6 +592,7 @@ function App() {
     try {
       const dto = await invoke<RunnerLifecycleResponseDto>("stop_studio_runner");
       setMessage(dto.message);
+      runnerStatusRef.current = unknownRunnerStatus;
       setRunnerStatus(unknownRunnerStatus);
     } catch (error) {
       setMessage("Studio Runner stop failed: " + errorMessage(error));
@@ -570,15 +601,16 @@ function App() {
     }
   }
 
-  async function checkRunnerStatus(options: { quiet?: boolean } = {}) {
+  async function checkRunnerStatus(options: { quiet?: boolean; force?: boolean; requestId?: number } = {}) {
     const settings = runnerSettingsRef.current;
-    const requestId = ++runnerStatusGenerationRef.current;
+    const requestId = options.requestId ?? ++runnerStatusGenerationRef.current;
 
-    if (!settings.endpoint.trim() || !runnerSessionSecretConfigured) {
+    if (!settings.endpoint.trim() || (!options.force && !runnerSessionSecretConfiguredRef.current)) {
       const nextStatus = { ...unknownRunnerStatus };
       if (!options.quiet) {
         setMessage(nextStatus.detail);
       }
+      runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       return nextStatus;
     }
@@ -589,6 +621,7 @@ function App() {
         label: "Desktop runtime required",
         detail: "Runner status checks require the Tauri desktop runtime.",
       };
+      runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       if (!options.quiet) {
         setMessage(nextStatus.detail);
@@ -597,11 +630,14 @@ function App() {
     }
 
     if (!options.quiet) {
-      setRunnerStatus({
+      const checkingStatus: RunnerStatus = {
         state: "checking",
         label: "Checking runner",
         detail: "Checking the configured Studio Runner endpoint.",
-      });
+        endpoint: settings.endpoint,
+      };
+      runnerStatusRef.current = checkingStatus;
+      setRunnerStatus(checkingStatus);
     }
 
     try {
@@ -609,9 +645,10 @@ function App() {
         settings,
       });
       if (runnerStatusGenerationRef.current !== requestId) {
-        return runnerStatus;
+        return runnerStatusRef.current;
       }
       const nextStatus = runnerStatusFromDto(dto);
+      runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       if (!options.quiet) {
         setMessage(nextStatus.detail);
@@ -619,13 +656,15 @@ function App() {
       return nextStatus;
     } catch (error) {
       if (runnerStatusGenerationRef.current !== requestId) {
-        return runnerStatus;
+        return runnerStatusRef.current;
       }
       const nextStatus: RunnerStatus = {
         state: "unavailable",
         label: "Runner unavailable",
         detail: errorMessage(error),
+        endpoint: settings.endpoint,
       };
+      runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       if (!options.quiet) {
         setMessage(nextStatus.detail);
