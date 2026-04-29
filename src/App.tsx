@@ -3015,8 +3015,6 @@ function Inspector({
 }
 
 function RunnerWorkspace({ repo, history }: { repo: RepositoryView; history: RunnerDispatchAttempt[] }) {
-  const latestAttempt = history[0] ?? null;
-
   return (
     <section className="board-panel runner-board" aria-label="Studio Runner workspace">
       <div className="board-toolbar board-toolbar-compact">
@@ -3041,64 +3039,112 @@ function RunnerWorkspace({ repo, history }: { repo: RepositoryView; history: Run
           </section>
         </div>
 
-        <section className="runner-log-panel" aria-label="Studio Runner log">
-          <div className="runner-log-header">
-            <div>
-              <span>Runner log</span>
-              <h3>Build requests</h3>
-              <p>Recent Studio Runner events. This becomes the natural home for live runner output as the runner emits it.</p>
-            </div>
-            <strong>{history.length}</strong>
-          </div>
-          <RunnerLog history={history} latestAttempt={latestAttempt} />
-        </section>
+        <RunnerBuildRequestsTable history={history} />
       </div>
     </section>
   );
 }
 
-function RunnerLog({
-  history,
-  latestAttempt,
-}: {
-  history: RunnerDispatchAttempt[];
-  latestAttempt: RunnerDispatchAttempt | null;
-}) {
-  if (history.length === 0) {
-    return (
-      <div className="runner-log-empty">
-        <strong>No build requests yet.</strong>
-        <p>Dispatch an eligible change and its accepted, failed, or retry events will appear here.</p>
-      </div>
-    );
-  }
+function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[] }) {
+  const latestAttempt = history[0] ?? null;
+  const columns = useMemo<BoardTableColumn<RunnerDispatchAttempt>[]>(
+    () => [
+      {
+        id: "change",
+        label: "Change",
+        render: (attempt) => (
+          <div className="change-title-cell artifact-title-cell runner-request-title-cell">
+            <strong title={attempt.changeName}>{attempt.changeName}</strong>
+            <span>{attempt.message}</span>
+          </div>
+        ),
+      },
+      {
+        id: "status",
+        label: "Status",
+        colClassName: "runner-status-col",
+        render: (attempt) => <RunnerAttemptStatusPill status={attempt.status} />,
+      },
+      {
+        id: "event",
+        label: "Event",
+        colClassName: "runner-event-col",
+        cellClassName: "runner-event-cell",
+        render: (attempt) => <code title={attempt.eventId}>{attempt.eventId}</code>,
+      },
+      {
+        id: "response",
+        label: "Response",
+        colClassName: "runner-response-col",
+        render: (attempt) => runnerAttemptResponseLabel(attempt),
+      },
+      {
+        id: "updated",
+        label: "Updated",
+        colClassName: "runner-updated-col",
+        cellClassName: "updated-cell",
+        sortable: {
+          defaultDirection: "desc",
+          getValue: (attempt) => Date.parse(attempt.updatedAt),
+        },
+        render: (attempt) => formatRunnerDateTime(attempt.updatedAt),
+      },
+    ],
+    [],
+  );
 
   return (
-    <div className="runner-log-shell">
-      <div className="runner-log-summary">
-        <span>Latest</span>
-        <strong>{latestAttempt?.changeName ?? "No change"}</strong>
-        <p>{latestAttempt ? runnerAttemptLine(latestAttempt) : "Waiting for runner activity."}</p>
+    <section className="runner-log-panel" aria-label="Studio Runner build requests">
+      <div className="runner-log-header">
+        <div>
+          <span>Runner log</span>
+          <h3>Build requests</h3>
+          <p>Recent signed Studio Runner dispatches for this repository.</p>
+        </div>
+        {latestAttempt ? (
+          <div className="runner-log-latest">
+            <span>Latest</span>
+            <strong>{latestAttempt.changeName}</strong>
+            <p>{runnerAttemptResponseLabel(latestAttempt)}</p>
+          </div>
+        ) : null}
       </div>
-      <ol className="runner-log-lines">
-        {history.map((attempt) => (
-          <li key={`${attempt.eventId}-${attempt.updatedAt}-${attempt.status}`} className={`runner-log-line is-${attempt.status}`}>
-            <time>{formatRunnerDateTime(attempt.updatedAt)}</time>
-            <span>{attempt.status}</span>
-            <code>{attempt.eventId}</code>
-            <p>{runnerAttemptLine(attempt)}</p>
-          </li>
-        ))}
-      </ol>
-    </div>
+
+      {history.length === 0 ? (
+        <EmptyState
+          compact
+          title="No build requests yet"
+          body="Dispatch an eligible change and its accepted, failed, or retry events will appear here."
+        />
+      ) : (
+        <BoardTable
+          rows={history.map((attempt) => ({ ...attempt, id: runnerAttemptRowId(attempt) }))}
+          columns={columns}
+          selectedId=""
+          onSelect={() => undefined}
+          sortState={{ columnId: "updated", direction: "desc" }}
+          tableClassName="runner-requests-table"
+          resetKey={String(history.length)}
+          itemLabel="build requests"
+        />
+      )}
+    </section>
   );
 }
 
-function runnerAttemptLine(attempt: RunnerDispatchAttempt) {
-  const statusCode = attempt.statusCode ? `HTTP ${attempt.statusCode}` : "no status";
-  const run = attempt.runId ? ` · run ${attempt.runId}` : "";
-  const message = attempt.message ? ` · ${attempt.message}` : "";
-  return `${attempt.changeName} · ${statusCode}${run}${message}`;
+function RunnerAttemptStatusPill({ status }: { status: RunnerDispatchAttempt["status"] }) {
+  const health: Health = status === "accepted" ? "valid" : status === "failed" ? "invalid" : "stale";
+  return <HealthPill health={health} label={status} />;
+}
+
+function runnerAttemptRowId(attempt: RunnerDispatchAttempt) {
+  return `${attempt.eventId}-${attempt.updatedAt}-${attempt.status}`;
+}
+
+function runnerAttemptResponseLabel(attempt: RunnerDispatchAttempt) {
+  const statusCode = attempt.statusCode ? `HTTP ${attempt.statusCode}` : "No HTTP status";
+  const run = attempt.runId ? ` · ${attempt.runId}` : "";
+  return `${statusCode}${run}`;
 }
 
 function RunnerInspector({
