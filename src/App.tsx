@@ -748,7 +748,6 @@ function App() {
     const initialEligibility = deriveRunnerDispatchEligibility({
       repoReady: true,
       change: selectedChange,
-      validation: workspace.validation,
       runnerSettings,
       runnerStatus,
       sessionSecretConfigured: runnerSessionSecretConfigured,
@@ -780,7 +779,6 @@ function App() {
       const latestEligibility = deriveRunnerDispatchEligibility({
         repoReady: true,
         change: latestChange,
-        validation,
         runnerSettings,
         runnerStatus: runnerStatus.state === "reachable"
           ? runnerStatus
@@ -1067,7 +1065,6 @@ function App() {
   const selectedChangeRunnerEligibility = deriveRunnerDispatchEligibility({
     repoReady: Boolean(repo && repo.state === "ready" && isPersistableLocalRepoPath(repo.path)),
     change: selectedChange,
-    validation: workspace?.validation ?? null,
     runnerSettings,
     runnerStatus,
     sessionSecretConfigured: runnerSessionSecretConfigured,

@@ -553,6 +553,7 @@ describe("Studio Runner dispatch model", () => {
 
   const eligibleChange = {
     phase: "active",
+    buildStatus: { kind: "ready" as const, label: "Ready" },
     artifacts: [
       { id: "proposal", path: "openspec/changes/add-runner/proposal.md", status: "present" },
       { id: "design", path: "openspec/changes/add-runner/design.md", status: "present" },
@@ -561,11 +562,10 @@ describe("Studio Runner dispatch model", () => {
     taskProgress: { done: 0, total: 3 },
   };
 
-  it("gates dispatch on artifacts, validation, settings, and reachable runner", () => {
+  it("gates dispatch on build status readiness, settings, and reachable runner", () => {
     expect(deriveRunnerDispatchEligibility({
       repoReady: true,
       change: eligibleChange,
-      validation: passingValidation,
       runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
       sessionSecretConfigured: true,
       runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
@@ -573,12 +573,45 @@ describe("Studio Runner dispatch model", () => {
 
     expect(deriveRunnerDispatchEligibility({
       repoReady: true,
-      change: { ...eligibleChange, taskProgress: { done: 0, total: 0 } },
-      validation: passingValidation,
+      change: eligibleChange,
       runnerSettings: { endpoint: "" },
       sessionSecretConfigured: false,
       runnerStatus: { state: "not-configured", label: "Missing", detail: "missing" },
-    }).reasons).toContain("tasks.md needs actionable tasks.");
+    }).reasons).toEqual([
+      "Configure Studio Runner endpoint.",
+      "Generate a Studio Runner session secret.",
+      "Studio Runner must be reachable.",
+    ]);
+  });
+
+  it("uses the selected change build status as the only change readiness gate", () => {
+    expect(deriveRunnerDispatchEligibility({
+      repoReady: true,
+      change: {
+        ...eligibleChange,
+        buildStatus: { kind: "validate" as const, label: "Validate" },
+      },
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
+      sessionSecretConfigured: true,
+      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+    }).reasons).toContain(
+      "Change Build Status must be Ready before dispatching with agent. Current status: Validate.",
+    );
+  });
+
+  it("does not require design when build status is ready", () => {
+    const noDesignReadyChange = {
+      ...eligibleChange,
+      artifacts: eligibleChange.artifacts.filter((artifact) => artifact.id !== "design"),
+    };
+
+    expect(deriveRunnerDispatchEligibility({
+      repoReady: true,
+      change: noDesignReadyChange,
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
+      sessionSecretConfigured: true,
+      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+    })).toEqual({ eligible: true, reasons: [] });
   });
 
   it("builds a thin change-scoped build.requested payload", () => {
@@ -596,14 +629,21 @@ describe("Studio Runner dispatch model", () => {
   });
 
   it("blocks dispatch when tasks are already complete", () => {
+    const doneChange = {
+      ...eligibleChange,
+      buildStatus: { kind: "done" as const, label: "Done" },
+      taskProgress: { done: 3, total: 3 },
+    };
+
     expect(deriveRunnerDispatchEligibility({
       repoReady: true,
-      change: { ...eligibleChange, taskProgress: { done: 3, total: 3 } },
-      validation: passingValidation,
+      change: doneChange,
       runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
       sessionSecretConfigured: true,
       runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
-    }).reasons).toContain("tasks.md has no remaining actionable tasks.");
+    }).reasons).toContain(
+      "Change Build Status must be Ready before dispatching with agent. Current status: Done.",
+    );
   });
 
   it("merges runner stream metadata into existing runner log records", () => {

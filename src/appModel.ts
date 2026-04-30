@@ -56,6 +56,11 @@ export interface RunnerDispatchEligibility {
   reasons: string[];
 }
 
+export interface RunnerDispatchChangeReadiness {
+  kind: ChangeBuildStatusKind;
+  label?: string;
+}
+
 export interface RunnerDispatchPayloadInput {
   eventId: string;
   repo: { name: string; path: string };
@@ -650,14 +655,12 @@ function readStringArray(value: unknown): string[] | undefined {
 export function deriveRunnerDispatchEligibility({
   repoReady,
   change,
-  validation,
   runnerSettings,
   runnerStatus,
   sessionSecretConfigured,
 }: {
   repoReady: boolean;
-  change: { phase: string; artifacts: { id: string; status: string }[]; taskProgress: { done: number; total: number } | null } | null;
-  validation: ValidationResult | null;
+  change: { phase: string; buildStatus: RunnerDispatchChangeReadiness } | null;
   runnerSettings: RunnerSettings;
   runnerStatus: RunnerStatus;
   sessionSecretConfigured: boolean;
@@ -675,23 +678,10 @@ export function deriveRunnerDispatchEligibility({
       reasons.push("Build dispatch is only available for active changes.");
     }
 
-    const required = ["proposal", "design", "tasks"];
-    const missingArtifacts = required.filter((id) =>
-      !change.artifacts.some((artifact) => artifact.id === id && artifact.status === "present"),
-    );
-    if (missingArtifacts.length > 0) {
-      reasons.push("Missing required artifacts: " + missingArtifacts.join(", ") + ".");
+    if (change.buildStatus.kind !== "ready") {
+      const label = change.buildStatus.label ?? changeBuildStatusState(change.buildStatus.kind).label;
+      reasons.push("Change Build Status must be Ready before dispatching with agent. Current status: " + label + ".");
     }
-
-    if (!change.taskProgress || change.taskProgress.total === 0) {
-      reasons.push("tasks.md needs actionable tasks.");
-    } else if (change.taskProgress.done >= change.taskProgress.total) {
-      reasons.push("tasks.md has no remaining actionable tasks.");
-    }
-  }
-
-  if (!validation || validation.state !== "pass" || validation.diagnostics.length > 0) {
-    reasons.push("Run passing OpenSpec validation first.");
   }
 
   if (!runnerSettings.endpoint.trim()) {

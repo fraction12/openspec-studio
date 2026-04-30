@@ -1,0 +1,5 @@
+- [x] 1. Update runner dispatch eligibility to consume `change.buildStatus.kind` for change readiness.
+- [x] 2. Remove duplicate proposal/design/tasks/validation readiness checks from runner dispatch eligibility.
+- [x] 3. Pass the selected change's existing build status through all runner eligibility checks, including the pre-dispatch re-check.
+- [x] 4. Add regression tests for ready/no-design dispatch eligibility and non-ready disabled reasons.
+- [x] 5. Run OpenSpec validation, TypeScript checks, tests, and build.
