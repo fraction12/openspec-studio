@@ -317,17 +317,10 @@ The change board SHALL sort change rows by updated time with a visible updated-c
 ### Requirement: Change detail agent dispatch
 The change board SHALL provide an explicit **Build with agent** action for an active selected change when Studio Runner is configured and reachable, and SHALL surface runner execution updates for that selected change when available.
 
-#### Scenario: Selected change history includes runner execution result
-- **GIVEN** a selected change has a dispatch attempt
-- **AND** Studio has received runner stream metadata for that attempt
-- **WHEN** the change detail is shown
-- **THEN** Studio SHALL show the runner execution status for that attempt
-- **AND** Studio SHALL show PR URL, commit SHA, branch, session, workspace, and bounded blocker/error detail when available
-
-#### Scenario: Delivery and execution states remain distinct
-- **GIVEN** Studio has delivered a `build.requested` event successfully
-- **AND** the runner later reports the run as blocked or failed
-- **WHEN** the dispatch history is shown
-- **THEN** Studio SHALL preserve the successful delivery/acceptance detail
-- **AND** Studio SHALL separately show the runner execution status and failure or blocker detail
+#### Scenario: Change inspector keeps dispatch compact
+- **GIVEN** a selected active change is shown in the change inspector
+- **WHEN** Studio renders the inspector header
+- **THEN** the header SHALL show the selected change title and a compact **Build with agent** action
+- **AND** the inspector header SHALL NOT show the change phase label, source path, file-opening action, change trust pill, runner status pill, runner detail copy, blocker list, retry action, or dispatch history
+- **AND** the **Build with agent** action SHALL preserve existing eligibility and disabled-state behavior
 

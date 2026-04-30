@@ -6,7 +6,7 @@ The settings surface SHALL expose controls only for behavior, persisted data, or
 #### Scenario: Settings are rendered
 - **WHEN** the user opens Settings
 - **THEN** each visible setting maps to current app behavior, current app-local state, or an implemented capability
-- **AND** Settings SHALL NOT show dormant controls for future runner, provider, graph, timeline, guided workflow, or authoring features that do not yet exist.
+- **AND** Settings SHALL NOT show dormant controls for future provider, graph, timeline, guided workflow, or authoring features that do not yet exist.
 
 #### Scenario: A preference cannot take effect
 - **WHEN** an existing persisted preference is accepted by the data model but the shell does not apply it
@@ -90,12 +90,39 @@ The settings surface SHALL allow users to clear app-local validation snapshots a
 - **THEN** it SHALL explain that cached validation data may include local paths, stdout, stderr, status codes, and parsed diagnostics
 - **AND** it SHALL distinguish clearing app-local cache from changing repository files.
 
+
+### Requirement: Global Studio Runner defaults are configurable
+The settings surface SHALL expose durable global defaults for implemented Studio Runner execution behavior while keeping operational runner state in the Runner workspace.
+
+#### Scenario: Runner defaults are available
+- **GIVEN** Studio Runner behavior is implemented
+- **WHEN** the user opens Settings
+- **THEN** Settings SHALL include a Studio Runner integration section for global Runner defaults
+- **AND** the section SHALL allow users to choose default model and effort values for future Studio-managed runner work
+- **AND** default selections SHALL preserve Symphony/Codex configured defaults rather than forcing explicit values.
+
+#### Scenario: Runner defaults apply only to future work
+- **GIVEN** the user changes global Runner model or effort defaults
+- **WHEN** Studio Runner work is dispatched later
+- **THEN** Studio SHALL apply the changed defaults only to future dispatches
+- **AND** already-running dispatches and historical Runner Log rows SHALL remain immutable records of the settings requested or applied at launch time.
+
+#### Scenario: Operational Runner state stays out of Settings
+- **WHEN** the user opens Settings
+- **THEN** Settings SHALL NOT host session-secret generation, start, stop, live status, stream connection state, selected-change dispatch, or Runner Log/history as primary controls
+- **AND** those operational controls SHALL remain in the Runner workspace or selected-change action surface.
+
 ### Requirement: Future integrations contribute only real settings
 The settings surface SHALL provide a place for implemented integrations to expose configuration without creating placeholder settings for unavailable capabilities.
 
 #### Scenario: Runner integration is unavailable
 - **WHEN** Studio Runner behavior has not been implemented
-- **THEN** Settings SHALL NOT show runner endpoint, secret, lifecycle, or dispatch history controls.
+- **THEN** Settings SHALL NOT show runner configuration placeholders.
+
+#### Scenario: Runner integration is available
+- **WHEN** Studio Runner behavior has been implemented
+- **THEN** Settings MAY show real durable Runner defaults
+- **AND** Settings SHALL still keep session-only secrets, lifecycle, and live operational history out of the durable settings surface.
 
 #### Scenario: Provider choice is unavailable
 - **WHEN** OpenSpec is the only implemented provider

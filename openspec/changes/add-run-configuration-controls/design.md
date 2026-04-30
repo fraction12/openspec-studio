@@ -1,16 +1,16 @@
-# Design: Studio Runner repo runner settings
+# Design: Studio Runner global settings controls
 
 ## Product shape
-The Runner tab should read as:
+Settings should be the source of truth for durable Studio Runner configuration. The Runner tab should read as an operational cockpit:
 
-1. **Repo Runner Settings** at the top of the main workspace.
-2. **Runner Log** below it.
+1. **Runner Log** as the primary main-workspace surface.
+2. Optional compact helper copy or a summary/link such as “Using global Runner defaults from Settings.”
 3. **Runner status/lifecycle/configuration** in the inspector.
 
-The current explanatory cards above the log should be removed or compressed into helper copy inside the settings panel. They should not compete with the log or duplicate inspector status.
+The current explanatory cards above the log should be removed or compressed. They should not become a second settings surface or compete with the Runner Log.
 
 ## Settings
-Initial settings:
+Initial global settings in Settings > Studio Runner:
 
 - **Model**
   - Default value: `Symphony default`
@@ -21,19 +21,19 @@ Initial settings:
   - Default value: `Default`
   - Explicit choices: `low`, `medium`, `high`, and any other values Studio deliberately supports after confirming Codex support.
 
-Both settings apply to future Studio-managed runner dispatches for the active repository. They are repo runner defaults, not one-off controls for the selected change.
+Both settings apply to future Studio-managed runner dispatches globally. They are global Runner defaults, not one-off controls for the selected change and not per-repository overrides in v1.
 
 ## State model
 Preferred v1:
 
-- Store repo-scoped runner settings in app-local state.
+- Store global Runner defaults in app-local state.
 - Defaults mean “let Symphony use its configured defaults.”
 - Explicit selections are serialized as requested execution metadata on future Studio Runner dispatch events.
 - Historical log rows remain immutable when settings change.
 - Runner events/log rows should show the requested model/effort when those values were included in the event or echoed by Symphony.
 
 ## Dispatch contract
-Studio should keep the main payload thin and change-scoped, but `build.requested` may include a small optional execution object for repo-default execution preferences.
+Studio should keep the main payload thin and change-scoped, but `build.requested` may include a small optional execution object for global execution preferences.
 
 Example shape:
 
@@ -56,7 +56,7 @@ Rules:
 - Omit `execution` entirely when both settings are defaults.
 - Omit individual fields that are still default.
 - Only serialize values from Studio's approved option set.
-- Treat payload execution settings as requested repo defaults for that dispatch, not as arbitrary user-provided command text.
+- Treat payload execution settings as requested global defaults for that dispatch, not as arbitrary user-provided command text.
 - Continue signing the raw event body exactly as sent.
 
 ## Symphony contract
@@ -72,7 +72,7 @@ Symphony should remain responsible for execution. For this settings path, the ex
 This avoids rewriting `WORKFLOW.md`, mutating `codex.command`, or requiring process-level env overrides just to change repo-default model/effort selections.
 
 ## Runner lifecycle semantics
-Changing repo settings does not require Studio to restart the runner purely for model/effort, because the values are applied at dispatch/turn-start time.
+Changing global Runner settings does not require Studio to restart the runner purely for model/effort, because the values are applied at dispatch/turn-start time.
 
 - Saved settings apply to the next explicit dispatch.
 - An already-running dispatch keeps the settings it was launched with.
@@ -82,5 +82,6 @@ Changing repo settings does not require Studio to restart the runner purely for 
 ## UI constraints
 - Do not show runner reachability/status cards in the main pane; that belongs in the inspector.
 - Do not remove the Runner Log.
-- Use existing card/panel/form-control styles.
-- Make it obvious the settings affect future Studio-managed runner work for this repository, not past log rows and not only the currently selected change.
+- Use existing Settings form-control styles for durable defaults.
+- Make it obvious the settings affect future Studio-managed runner work globally, not past log rows and not only the currently selected change.
+- If the Runner workspace references defaults, it should link users back to Settings rather than duplicating editable controls.

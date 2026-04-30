@@ -1,28 +1,30 @@
 ## MODIFIED Requirements
 
 ### Requirement: Local Studio Runner workspace
-The desktop shell SHALL provide Studio Runner as a first-class workspace-level surface, separate from selected change details, for local runner configuration, lifecycle, status, repo runner settings, and repo-wide dispatch history.
+The desktop shell SHALL provide Studio Runner as a first-class workspace-level surface, separate from selected change details, for local runner lifecycle, status, and repo-wide dispatch history while durable Runner defaults live in Settings.
 
 #### Scenario: Runner controls live in a workspace tab
 - **GIVEN** a real OpenSpec repository is open
 - **WHEN** the user views workspace-level navigation
 - **THEN** Studio SHALL show a Runner tab alongside Changes and Specs
 - **AND** runner endpoint, session secret, start, stop, status, and managed process detail SHALL be shown in the Runner page's context inspector rather than showing a stale selected change or spec inspector
-- **AND** the main Runner workspace SHALL show repo runner model and effort settings above the Runner Log
+- **AND** durable Runner model and effort settings SHALL live in Settings rather than above the Runner Log
+- **AND** the main Runner workspace MAY show a compact summary/link to the global Runner defaults
 - **AND** repo-wide runner history SHALL be shown in the main Runner workspace as a log-sized surface with enough width and height for runner output
 - **AND** the main Runner workspace SHALL use existing board/inspector/card/list primitives rather than bespoke one-off controls where an existing pattern fits
 
-#### Scenario: Repo runner settings apply to future runner work
-- **GIVEN** the user is viewing the Runner workspace
-- **WHEN** the user selects a model or effort level
-- **THEN** Studio SHALL treat those selections as repo-wide settings for future Studio-managed runner work from the active repository
+#### Scenario: Global Runner settings apply to future runner work
+- **GIVEN** the user is viewing Settings
+- **WHEN** the user selects a Studio Runner model or effort level
+- **THEN** Studio SHALL treat those selections as global defaults for future Studio-managed runner work
 - **AND** Studio SHALL NOT treat those selections as one-off overrides for only the selected change
+- **AND** Studio SHALL NOT create a per-repository override hierarchy in v1
 - **AND** Studio SHALL NOT rewrite historical runner log rows when settings change
 - **AND** default selections SHALL preserve Symphony-owned defaults rather than forcing explicit values
 
 #### Scenario: Running dispatch keeps launch settings
 - **GIVEN** Studio Runner work is already running for the active repository
-- **WHEN** the user changes the repo runner model or effort setting
+- **WHEN** the user changes the global Runner model or effort setting
 - **THEN** Studio SHALL apply the changed settings only to future dispatches
 - **AND** Studio SHALL NOT imply that already-running work has adopted settings it was not launched with
 - **AND** historical runner log rows SHALL remain immutable records of the settings requested or applied for each dispatch
@@ -35,10 +37,10 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **AND** updated timestamps SHALL remain readable without being covered by response text
 
 ### Requirement: Signed Studio Runner dispatch
-The desktop shell SHALL send Studio Runner dispatch requests with stable event identity, timestamped signatures, at-least-once-safe semantics, a thin change-scoped payload, and optional bounded execution metadata for repo runner defaults.
+The desktop shell SHALL send Studio Runner dispatch requests with stable event identity, timestamped signatures, at-least-once-safe semantics, a thin change-scoped payload, and optional bounded execution metadata for global Runner defaults.
 
-#### Scenario: Dispatch includes explicit repo runner execution settings
-- **GIVEN** the user selected an explicit repo runner model or effort setting
+#### Scenario: Dispatch includes explicit global Runner execution settings
+- **GIVEN** the user selected an explicit global Runner model or effort setting
 - **WHEN** Studio sends a `build.requested` dispatch
 - **THEN** Studio SHALL serialize the explicit non-default selections under bounded execution metadata in the signed event payload
 - **AND** Studio SHALL continue to send only the repo/change/work request and approved execution preferences, not arbitrary repository file contents or command strings

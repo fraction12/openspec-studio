@@ -64,27 +64,11 @@ The system SHALL make native folder selection the primary way to open a local Op
 ### Requirement: Desktop shell provides clear global chrome
 The system SHALL present global navigation, action, and status chrome with consistent control sizing, hierarchy, spacing, and recovery affordances.
 
-#### Scenario: Global actions are displayed
-- **WHEN** the workspace is loaded
-- **THEN** repository opening, file refresh, validation, and file-opening actions use consistent button sizes and visual states
-- **AND** labels distinguish opening a repository, refreshing indexed files, running validation, opening files, revealing files, and retrying failed actions
-
-#### Scenario: Long-running work is in progress
-- **WHEN** the app is indexing files, refreshing files, running validation, reading artifact content, or running OpenSpec/Git commands
-- **THEN** affected actions show loading or disabled states without shifting layout
-- **AND** background refresh work does not unnecessarily flash global loading state
-- **AND** the user can still identify the active repository and current trust state
-
-#### Scenario: Background work completes after newer work
-- **WHEN** an older load, refresh, artifact-read, validation, archive, or Git-status request completes after a newer request for the same view has started
-- **THEN** the app ignores the stale completion
-- **AND** it does not overwrite newer repository, workspace, selection, preview, validation, or Git state
-
-#### Scenario: Detail panels scroll
-- **WHEN** inspector content is longer than the available panel height
-- **THEN** scrolling preserves readable gutters and stable scrollbar spacing
-- **AND** the bottom status band does not obscure or visually compete with the detail content
-- **AND** nested artifact preview regions do not trap normal vertical reading when the panel itself can scroll
+#### Scenario: Workspace header shows runner status
+- **WHEN** a repository workspace is loaded
+- **THEN** the workspace header SHALL show a compact Studio Runner status pill beside the Changes, Specs, and Runner view selector
+- **AND** the status pill SHALL use the same runner status classification as Studio Runner controls
+- **AND** the status pill SHALL remain compact and SHALL NOT duplicate runner setup, lifecycle, or history controls
 
 ### Requirement: First-run and launch recovery are actionable
 The system SHALL guide users to a useful repository selection state on launch without relying on a hardcoded development path.
