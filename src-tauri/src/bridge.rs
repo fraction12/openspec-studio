@@ -6,7 +6,7 @@ use std::{
     cmp, env,
     ffi::{OsStr, OsString},
     fs,
-    io::{self, Read},
+    io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -17,6 +17,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
 
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -36,6 +37,7 @@ const STANDARD_COMMAND_DIRS: &[&str] = &[
 
 static STUDIO_RUNNER_SESSION_SECRET: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static STUDIO_RUNNER_PROCESS: OnceLock<Mutex<Option<StudioRunnerProcess>>> = OnceLock::new();
+static STUDIO_RUNNER_EVENT_STREAM: OnceLock<Mutex<Option<StudioRunnerEventStreamHandle>>> = OnceLock::new();
 
 fn studio_runner_session_secret() -> &'static Mutex<Option<String>> {
     STUDIO_RUNNER_SESSION_SECRET.get_or_init(|| Mutex::new(None))
@@ -43,6 +45,10 @@ fn studio_runner_session_secret() -> &'static Mutex<Option<String>> {
 
 fn studio_runner_process() -> &'static Mutex<Option<StudioRunnerProcess>> {
     STUDIO_RUNNER_PROCESS.get_or_init(|| Mutex::new(None))
+}
+
+fn studio_runner_event_stream() -> &'static Mutex<Option<StudioRunnerEventStreamHandle>> {
+    STUDIO_RUNNER_EVENT_STREAM.get_or_init(|| Mutex::new(None))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -116,6 +122,48 @@ struct StudioRunnerProcess {
     endpoint: String,
     port: u16,
     repo_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct StudioRunnerEventStreamHandle {
+    endpoint: String,
+    stop: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioRunnerStreamRequest {
+    pub endpoint: String,
+    #[serde(rename = "repoPath", default)]
+    pub repo_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioRunnerStreamResponse {
+    pub streaming: bool,
+    pub endpoint: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioRunnerStreamEvent {
+    pub event_name: String,
+    pub event_id: Option<String>,
+    pub repo_path: Option<String>,
+    pub repo_change_key: Option<String>,
+    pub change_name: Option<String>,
+    pub status: Option<String>,
+    pub run_id: Option<String>,
+    pub recorded_at: Option<String>,
+    pub workspace_path: Option<String>,
+    pub session_id: Option<String>,
+    pub branch_name: Option<String>,
+    pub commit_sha: Option<String>,
+    pub pr_url: Option<String>,
+    pub error: Option<String>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -549,6 +597,20 @@ pub async fn get_openspec_git_status(
     run_bridge_task(move || inspect_openspec_git_status(repo_path)).await
 }
 
+
+#[tauri::command]
+pub async fn start_studio_runner_event_stream(
+    app: AppHandle,
+    request: StudioRunnerStreamRequest,
+) -> Result<StudioRunnerStreamResponse, BridgeErrorDto> {
+    start_runner_event_stream(app, request).map_err(BridgeErrorDto::from)
+}
+
+#[tauri::command]
+pub async fn stop_studio_runner_event_stream() -> Result<StudioRunnerStreamResponse, BridgeErrorDto> {
+    stop_runner_event_stream().map_err(BridgeErrorDto::from)
+}
+
 #[tauri::command]
 pub async fn configure_studio_runner_session_secret(
     secret: String,
@@ -595,6 +657,208 @@ pub async fn dispatch_studio_runner_event(
     request: StudioRunnerDispatchRequest,
 ) -> Result<StudioRunnerDispatchResponse, BridgeErrorDto> {
     run_bridge_task(move || dispatch_runner_event(settings, request)).await
+}
+
+fn start_runner_event_stream(
+    app: AppHandle,
+    request: StudioRunnerStreamRequest,
+) -> Result<StudioRunnerStreamResponse, BridgeError> {
+    let endpoint = normalize_runner_stream_endpoint(&request.endpoint)?;
+    stop_runner_event_stream_for_replacement()?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let thread_endpoint = endpoint.clone();
+    let repo_path = request.repo_path.clone();
+    let thread_app = app.clone();
+
+    thread::spawn(move || {
+        if let Err(error) = run_runner_event_stream(thread_app.clone(), &thread_endpoint, repo_path, thread_stop) {
+            let _ = thread_app.emit("studio-runner-stream-error", error.message());
+        }
+    });
+
+    let mut store = studio_runner_event_stream()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner stream store is unavailable.".to_string(),
+        })?;
+    *store = Some(StudioRunnerEventStreamHandle { endpoint: endpoint.clone(), stop });
+
+    Ok(StudioRunnerStreamResponse {
+        streaming: true,
+        endpoint,
+        message: "Studio Runner event stream connected.".to_string(),
+    })
+}
+
+fn stop_runner_event_stream() -> Result<StudioRunnerStreamResponse, BridgeError> {
+    let mut store = studio_runner_event_stream()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner stream store is unavailable.".to_string(),
+        })?;
+    if let Some(handle) = store.take() {
+        handle.stop.store(true, Ordering::SeqCst);
+        return Ok(StudioRunnerStreamResponse {
+            streaming: false,
+            endpoint: handle.endpoint,
+            message: "Studio Runner event stream stopped.".to_string(),
+        });
+    }
+
+    Ok(StudioRunnerStreamResponse {
+        streaming: false,
+        endpoint: String::new(),
+        message: "Studio Runner event stream was not running.".to_string(),
+    })
+}
+
+fn stop_runner_event_stream_for_replacement() -> Result<(), BridgeError> {
+    let mut store = studio_runner_event_stream()
+        .lock()
+        .map_err(|_| BridgeError::RunnerRequest {
+            message: "Studio Runner stream store is unavailable.".to_string(),
+        })?;
+    if let Some(handle) = store.take() {
+        handle.stop.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+fn run_runner_event_stream(
+    app: AppHandle,
+    endpoint: &str,
+    fallback_repo_path: Option<String>,
+    stop: Arc<AtomicBool>,
+) -> Result<(), BridgeError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(None)
+        .build()
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: format!("Studio Runner stream client could not be created: {error}"),
+        })?;
+    let response = client
+        .get(endpoint)
+        .send()
+        .map_err(|error| BridgeError::RunnerRequest {
+            message: format!("Studio Runner stream request failed: {error}"),
+        })?;
+
+    if !response.status().is_success() {
+        return Err(BridgeError::RunnerRequest {
+            message: format!("Studio Runner stream returned HTTP {}", response.status().as_u16()),
+        });
+    }
+
+    let mut reader = BufReader::new(response);
+    let mut event_name = "runner.update".to_string();
+    let mut data_lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        line.clear();
+        let bytes = reader.read_line(&mut line).map_err(|error| BridgeError::RunnerRequest {
+            message: format!("Studio Runner stream read failed: {error}"),
+        })?;
+        if bytes == 0 {
+            break;
+        }
+        if line.len() > 64 * 1024 {
+            return Err(BridgeError::RunnerRequest {
+                message: "Studio Runner stream frame exceeded the maximum line size.".to_string(),
+            });
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            if !data_lines.is_empty() {
+                let data = data_lines.join("\n");
+                let event = parse_runner_stream_event(&event_name, &data, fallback_repo_path.as_deref())?;
+                let _ = app.emit("studio-runner-event", event);
+            }
+            event_name = "runner.update".to_string();
+            data_lines.clear();
+            continue;
+        }
+        if trimmed.starts_with(':') {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("event:") {
+            event_name = value.trim().to_string();
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("data:") {
+            data_lines.push(value.trim_start().to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_runner_stream_event(
+    event_name: &str,
+    data: &str,
+    fallback_repo_path: Option<&str>,
+) -> Result<StudioRunnerStreamEvent, BridgeError> {
+    let payload: serde_json::Value = serde_json::from_str(data).map_err(|error| BridgeError::RunnerRequest {
+        message: format!("Studio Runner stream event was not valid JSON: {error}"),
+    })?;
+    let object = payload.as_object().ok_or_else(|| BridgeError::RunnerRequest {
+        message: "Studio Runner stream event payload must be an object.".to_string(),
+    })?;
+
+    let repo_change_key = read_json_string(object, "repoChangeKey").or_else(|| read_json_string(object, "repo_change_key"));
+    let repo_path = read_json_string(object, "repoPath")
+        .or_else(|| read_json_string(object, "repo_path"))
+        .or_else(|| repo_change_key.as_deref().and_then(repo_path_from_repo_change_key))
+        .or_else(|| fallback_repo_path.map(str::to_string));
+    let change_name = read_json_string(object, "changeName")
+        .or_else(|| read_json_string(object, "change"))
+        .or_else(|| repo_change_key.as_deref().and_then(change_name_from_repo_change_key));
+
+    Ok(StudioRunnerStreamEvent {
+        event_name: event_name.to_string(),
+        event_id: read_json_string(object, "eventId").or_else(|| read_json_string(object, "event_id")),
+        repo_path,
+        repo_change_key,
+        change_name,
+        status: read_json_string(object, "status"),
+        run_id: read_json_string(object, "runId").or_else(|| read_json_string(object, "run_id")),
+        recorded_at: read_json_string(object, "recordedAt").or_else(|| read_json_string(object, "recorded_at")),
+        workspace_path: read_json_string(object, "workspacePath").or_else(|| read_json_string(object, "workspace_path")),
+        session_id: read_json_string(object, "sessionId").or_else(|| read_json_string(object, "session_id")),
+        branch_name: read_json_string(object, "branchName").or_else(|| read_json_string(object, "branch_name")),
+        commit_sha: read_json_string(object, "commitSha").or_else(|| read_json_string(object, "commit_sha")),
+        pr_url: read_json_string(object, "prUrl").or_else(|| read_json_string(object, "pr_url")),
+        error: read_json_string(object, "error"),
+        message: read_json_string(object, "message"),
+    })
+}
+
+fn read_json_string(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+    object.get(key)?.as_str().map(str::to_string)
+}
+
+fn repo_path_from_repo_change_key(value: &str) -> Option<String> {
+    value.split_once("::").map(|(repo, _)| repo.to_string())
+}
+
+fn change_name_from_repo_change_key(value: &str) -> Option<String> {
+    value.split_once("::").map(|(_, change)| change.to_string())
+}
+
+fn normalize_runner_stream_endpoint(endpoint: &str) -> Result<String, BridgeError> {
+    let normalized = normalize_runner_endpoint(endpoint)?;
+    let mut parsed = url::Url::parse(&normalized).map_err(|error| BridgeError::RunnerRequest {
+        message: format!("Invalid Studio Runner stream endpoint: {error}"),
+    })?;
+    parsed.set_path("/api/v1/studio-runner/events/stream");
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Ok(parsed.to_string())
 }
 
 fn configure_runner_session_secret(
@@ -2113,6 +2377,29 @@ mod tests {
         fs::write(path, contents).expect("script should be written");
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .expect("script should be executable");
+    }
+
+
+    #[test]
+    fn derives_runner_stream_endpoint_from_events_endpoint() {
+        let endpoint = normalize_runner_stream_endpoint("http://127.0.0.1:4000/api/v1/studio-runner/events").unwrap();
+        assert_eq!(endpoint, "http://127.0.0.1:4000/api/v1/studio-runner/events/stream");
+    }
+
+    #[test]
+    fn parses_runner_stream_event_payload() {
+        let event = parse_runner_stream_event(
+            "runner.completed",
+            r#"{"eventId":"evt_demo","runId":"run_demo","repoChangeKey":"/repo/demo::add-stream","status":"completed","branchName":"studio/add-stream","commitSha":"abcdef123456","prUrl":"https://github.com/example/repo/pull/1","workspacePath":"/tmp/work","sessionId":"session_demo","recordedAt":"2026-04-29T12:00:00Z"}"#,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(event.event_name, "runner.completed");
+        assert_eq!(event.event_id.as_deref(), Some("evt_demo"));
+        assert_eq!(event.repo_path.as_deref(), Some("/repo/demo"));
+        assert_eq!(event.change_name.as_deref(), Some("add-stream"));
+        assert_eq!(event.pr_url.as_deref(), Some("https://github.com/example/repo/pull/1"));
     }
 
     fn runner_request(event_id: &str) -> StudioRunnerDispatchRequest {

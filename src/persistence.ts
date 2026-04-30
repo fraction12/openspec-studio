@@ -456,6 +456,16 @@ function normalizeRunnerDispatchAttempts(value: unknown): RunnerDispatchAttempt[
       responseBody: typeof item.responseBody === "string" ? item.responseBody : null,
       runId: typeof item.runId === "string" ? item.runId : null,
       payload: item.payload,
+      source: item.source === "dispatch" || item.source === "stream" || item.source === "lifecycle" || item.source === "status" ? item.source : "dispatch",
+      eventName: typeof item.eventName === "string" ? item.eventName : null,
+      executionStatus: item.executionStatus === "accepted" || item.executionStatus === "running" || item.executionStatus === "completed" || item.executionStatus === "blocked" || item.executionStatus === "failed" || item.executionStatus === "unknown" ? item.executionStatus : null,
+      workspacePath: typeof item.workspacePath === "string" ? item.workspacePath : null,
+      sessionId: typeof item.sessionId === "string" ? item.sessionId : null,
+      branchName: typeof item.branchName === "string" ? item.branchName : null,
+      commitSha: typeof item.commitSha === "string" ? item.commitSha : null,
+      prUrl: typeof item.prUrl === "string" ? item.prUrl : null,
+      error: typeof item.error === "string" ? item.error : null,
+      recordedAt: typeof item.recordedAt === "string" ? item.recordedAt : null,
     });
 
     if (attempts.length === 50) {

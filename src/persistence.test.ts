@@ -117,6 +117,9 @@ describe("local app persistence", () => {
           updatedAt: "2026-04-29T12:00:01.000Z",
           statusCode: 202,
           runId: "run_demo",
+          executionStatus: "completed",
+          prUrl: "https://github.com/example/repo/pull/1",
+          source: "stream",
         },
       ],
     });
@@ -128,6 +131,9 @@ describe("local app persistence", () => {
       status: "accepted",
       statusCode: 202,
       runId: "run_demo",
+      executionStatus: "completed",
+      prUrl: "https://github.com/example/repo/pull/1",
+      source: "stream",
     });
   });
 

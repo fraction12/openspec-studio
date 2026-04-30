@@ -11,6 +11,7 @@ import {
   deriveChangeHealth,
   decideRepositoryCandidateOpen,
   createOpenSpecOperationIssue,
+  createRunnerLifecycleLogEvent,
   extractJsonPayload,
   isPersistableLocalRepoPath,
   selectVisibleItemId,
@@ -23,11 +24,13 @@ import {
   type OpenSpecFileSignature,
   buildRunnerDispatchPayload,
   deriveRunnerDispatchEligibility,
+  mergeRunnerStreamEvent,
   runnerDispatchHistoryForChange,
   type RunnerDispatchAttempt,
   type RunnerDispatchEligibility,
   type RunnerDispatchRequestInput,
   type RunnerSettings,
+  type RunnerStreamEventInput,
   type RunnerStatus,
 } from "./appModel";
 import {
@@ -128,6 +131,42 @@ interface RunnerDispatchResponseDto {
   responseBody?: string | null;
   run_id?: string | null;
   runId?: string | null;
+}
+
+interface RunnerStreamEventDto {
+  eventName?: string | null;
+  event_name?: string | null;
+  eventId?: string | null;
+  event_id?: string | null;
+  repoPath?: string | null;
+  repo_path?: string | null;
+  repoChangeKey?: string | null;
+  repo_change_key?: string | null;
+  changeName?: string | null;
+  change_name?: string | null;
+  status?: string | null;
+  runId?: string | null;
+  run_id?: string | null;
+  recordedAt?: string | null;
+  recorded_at?: string | null;
+  workspacePath?: string | null;
+  workspace_path?: string | null;
+  sessionId?: string | null;
+  session_id?: string | null;
+  branchName?: string | null;
+  branch_name?: string | null;
+  commitSha?: string | null;
+  commit_sha?: string | null;
+  prUrl?: string | null;
+  pr_url?: string | null;
+  error?: string | null;
+  message?: string | null;
+}
+
+interface RunnerStreamResponseDto {
+  streaming: boolean;
+  endpoint: string;
+  message: string;
 }
 
 interface RunnerDispatchRequestDto {
@@ -377,6 +416,7 @@ function App() {
   const [runnerSessionSecretConfigured, setRunnerSessionSecretConfigured] = useState(false);
   const [runnerDispatchBusy, setRunnerDispatchBusy] = useState(false);
   const [runnerLifecycleBusy, setRunnerLifecycleBusy] = useState(false);
+  const [runnerStreamStatus, setRunnerStreamStatus] = useState<"disconnected" | "connecting" | "connected" | "error">("disconnected");
   const [message, setMessage] = useState("Loading local workspace...");
   const [operationIssues, setOperationIssues] = useState<OpenSpecOperationIssue[]>([]);
   const repoLoadGenerationRef = useRef(0);
@@ -494,6 +534,9 @@ function App() {
       runnerSessionSecretConfiguredRef.current = true;
       setRunnerSessionSecretConfigured(true);
       setMessage("Studio Runner session secret generated for this app session.");
+      if (repo?.path) {
+        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "secret.generated", message: "Session secret generated.", status: "unknown" }));
+      }
       await checkRunnerStatus({ quiet: true, force: true });
     } catch (error) {
       runnerSessionSecretConfiguredRef.current = false;
@@ -568,9 +611,15 @@ function App() {
         managed: true,
         pid: dto.pid ?? null,
       };
+      if (repo?.path) {
+        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "runner.started", message: nextStatus.detail, status: "running" }));
+      }
       runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       setMessage(dto.message);
+      if (repo?.path) {
+        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "runner.stopped", message: dto.message, status: "unknown" }));
+      }
       void checkRunnerStatus({ quiet: true, force: true, requestId: startedRequestId });
     } catch (error) {
       const nextStatus: RunnerStatus = {
@@ -596,6 +645,9 @@ function App() {
     try {
       const dto = await invoke<RunnerLifecycleResponseDto>("stop_studio_runner");
       setMessage(dto.message);
+      if (repo?.path) {
+        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "runner.stopped", message: dto.message, status: "unknown" }));
+      }
       runnerStatusRef.current = unknownRunnerStatus;
       setRunnerStatus(unknownRunnerStatus);
     } catch (error) {
@@ -777,7 +829,7 @@ function App() {
         message: response.message,
       });
 
-      rememberRunnerDispatchAttempt(nextAttempt);
+      rememberRunnerDispatchAttempt({ ...nextAttempt, source: "dispatch", eventName: response.accepted ? "runner.accepted" : "runner.dispatch.failed" });
       clearOperationIssues(
         (issue) => issue.kind === "runner-dispatch" && issue.repoPath === repoPath && issue.target === changeName,
       );
@@ -793,7 +845,7 @@ function App() {
           status: "failed",
           message: errorMessage(error),
         });
-        rememberRunnerDispatchAttempt(failedAttempt);
+        rememberRunnerDispatchAttempt({ ...failedAttempt, source: "dispatch", eventName: "runner.dispatch.failed", executionStatus: "failed" });
       }
       recordOperationIssue(
         createOpenSpecOperationIssue({
@@ -813,6 +865,17 @@ function App() {
 
   function rememberRunnerDispatchAttempt(attempt: RunnerDispatchAttempt) {
     updatePersistedState((current) => upsertRunnerDispatchAttempt(current, attempt));
+  }
+
+  function rememberRunnerLogEvent(attempt: RunnerDispatchAttempt) {
+    updatePersistedState((current) => upsertRunnerDispatchAttempt(current, attempt));
+  }
+
+  function rememberRunnerStreamEvent(event: RunnerStreamEventInput) {
+    updatePersistedState((current) => ({
+      ...current,
+      runnerDispatchAttempts: mergeRunnerStreamEvent(current.runnerDispatchAttempts, event, repo?.path),
+    }));
   }
 
   useEffect(() => {
@@ -843,6 +906,107 @@ function App() {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlistenEvent: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+
+    void listen<RunnerStreamEventDto>("studio-runner-event", (event) => {
+      if (disposed) {
+        return;
+      }
+      rememberRunnerStreamEvent(runnerStreamEventFromDto(event.payload));
+    }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlistenEvent = nextUnlisten;
+    });
+
+    void listen<string>("studio-runner-stream-error", (event) => {
+      if (disposed) {
+        return;
+      }
+      setRunnerStreamStatus("error");
+      if (repo?.path) {
+        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({
+          repoPath: repo.path,
+          event: "stream.error",
+          message: event.payload || "Runner stream failed.",
+          status: "failed",
+        }));
+      }
+    }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlistenError = nextUnlisten;
+    });
+
+    return () => {
+      disposed = true;
+      unlistenEvent?.();
+      unlistenError?.();
+    };
+  }, [repo?.path]);
+
+  async function startRunnerStream(options: { quiet?: boolean } = {}) {
+    if (!isTauriRuntime() || !repo?.path || runnerStatusRef.current.state !== "reachable") {
+      return;
+    }
+
+    setRunnerStreamStatus("connecting");
+    try {
+      await invoke<RunnerStreamResponseDto>("start_studio_runner_event_stream", {
+        request: { endpoint: runnerSettingsRef.current.endpoint, repoPath: repo.path },
+      });
+      setRunnerStreamStatus("connected");
+      if (!options.quiet) {
+        setMessage("Studio Runner stream connected.");
+      }
+      rememberRunnerLogEvent(createRunnerLifecycleLogEvent({
+        repoPath: repo.path,
+        event: "stream.connected",
+        message: "Runner event stream connected.",
+        status: "running",
+      }));
+    } catch (error) {
+      setRunnerStreamStatus("error");
+      if (!options.quiet) {
+        setMessage("Studio Runner stream failed: " + errorMessage(error));
+      }
+    }
+  }
+
+  async function stopRunnerStream() {
+    if (!isTauriRuntime()) {
+      setRunnerStreamStatus("disconnected");
+      return;
+    }
+
+    try {
+      await invoke<RunnerStreamResponseDto>("stop_studio_runner_event_stream");
+    } catch (error) {
+      console.warn("Studio Runner stream could not be stopped.", error);
+    }
+    setRunnerStreamStatus("disconnected");
+  }
+
+  useEffect(() => {
+    if (runnerStatus.state === "reachable" && repo?.path) {
+      void startRunnerStream({ quiet: true });
+      return;
+    }
+
+    void stopRunnerStream();
+  }, [runnerStatus.state, runnerSettings.endpoint, repo?.path]);
 
   useEffect(() => {
     void checkRunnerStatus({ quiet: true });
@@ -1885,6 +2049,7 @@ function App() {
         runnerSettings={runnerSettings}
         runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
+        runnerStreamStatus={runnerStreamStatus}
         detailTab={detailTab}
         artifactPreview={artifactPreview}
         operationIssues={operationIssues}
@@ -1897,6 +2062,7 @@ function App() {
         onCheckRunnerStatus={() => void checkRunnerStatus()}
         onStartRunner={() => void startRunner()}
         onStopRunner={() => void stopRunner()}
+        onReconnectRunnerStream={() => void startRunnerStream()}
         onDispatchRunner={() => void dispatchSelectedChange()}
         onRetryRunnerDispatch={(attempt) => void dispatchSelectedChange({ retryAttempt: attempt })}
       />
@@ -2253,7 +2419,7 @@ function ChangeBoard({
     const nextColumns: BoardTableColumn<ChangeRecord>[] = [
       {
         id: "change",
-        label: "Change",
+        label: "Event",
         render: (change) => (
           <div className="change-title-cell artifact-title-cell">
             <strong title={change.title}>{change.title}</strong>
@@ -2866,6 +3032,7 @@ function Inspector({
   runnerSettings,
   runnerSessionSecretConfigured,
   runnerDispatchBusy,
+  runnerStreamStatus,
   detailTab,
   artifactPreview,
   operationIssues,
@@ -2878,6 +3045,7 @@ function Inspector({
   onCheckRunnerStatus,
   onStartRunner,
   onStopRunner,
+  onReconnectRunnerStream,
   onDispatchRunner,
   onRetryRunnerDispatch,
 }: {
@@ -2892,6 +3060,7 @@ function Inspector({
   runnerSettings: RunnerSettings;
   runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
+  runnerStreamStatus: "disconnected" | "connecting" | "connected" | "error";
   detailTab: DetailTab;
   artifactPreview: string;
   operationIssues: OpenSpecOperationIssue[];
@@ -2904,6 +3073,7 @@ function Inspector({
   onCheckRunnerStatus: () => void;
   onStartRunner: () => void;
   onStopRunner: () => void;
+  onReconnectRunnerStream: () => void;
   onDispatchRunner: () => void;
   onRetryRunnerDispatch: (attempt: RunnerDispatchAttempt) => void;
 }) {
@@ -2950,6 +3120,8 @@ function Inspector({
         onCheckStatus={onCheckRunnerStatus}
         onStartRunner={onStartRunner}
         onStopRunner={onStopRunner}
+        streamStatus={runnerStreamStatus}
+        onReconnectStream={onReconnectRunnerStream}
       />
     );
   }
@@ -3085,13 +3257,13 @@ function RunnerWorkspace({ repo, history }: { repo: RepositoryView; history: Run
           </section>
         </div>
 
-        <RunnerBuildRequestsTable history={history} />
+        <RunnerLogTable history={history} />
       </div>
     </section>
   );
 }
 
-function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[] }) {
+function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
   const latestAttempt = history[0] ?? null;
   const columns = useMemo<BoardTableColumn<RunnerDispatchAttempt>[]>(
     () => [
@@ -3101,7 +3273,7 @@ function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[
         render: (attempt) => (
           <div className="change-title-cell artifact-title-cell runner-request-title-cell">
             <strong title={attempt.changeName}>{attempt.changeName}</strong>
-            <span>{attempt.message}</span>
+            <span>{runnerAttemptMessage(attempt)}</span>
           </div>
         ),
       },
@@ -3109,7 +3281,7 @@ function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[
         id: "status",
         label: "Status",
         colClassName: "runner-status-col",
-        render: (attempt) => <RunnerAttemptStatusPill status={attempt.status} />,
+        render: (attempt) => <RunnerAttemptStatusPill status={attempt.status} executionStatus={attempt.executionStatus} />,
       },
       {
         id: "event",
@@ -3120,10 +3292,13 @@ function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[
       },
       {
         id: "response",
-        label: "Response",
+        label: "Details",
         colClassName: "runner-response-col",
         cellClassName: "runner-response-cell",
-        render: (attempt) => runnerAttemptResponseLabel(attempt),
+        render: (attempt) => {
+          const value = runnerAttemptResponseLabel(attempt);
+          return attempt.prUrl ? <a href={attempt.prUrl} onClick={(event) => { event.preventDefault(); void openPath(attempt.prUrl || ""); }}>{value}</a> : value;
+        },
       },
       {
         id: "updated",
@@ -3141,12 +3316,12 @@ function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[
   );
 
   return (
-    <section className="runner-log-panel" aria-label="Studio Runner build requests">
+    <section className="runner-log-panel" aria-label="Studio Runner log">
       <div className="runner-log-header">
         <div>
           <span>Runner log</span>
-          <h3>Build requests</h3>
-          <p>Recent signed Studio Runner dispatches for this repository.</p>
+          <h3>Runner Log</h3>
+          <p>All Studio Runner dispatch, lifecycle, stream, completion, blocked, and failure events for this repository.</p>
         </div>
         {latestAttempt ? (
           <div className="runner-log-latest">
@@ -3160,8 +3335,8 @@ function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[
       {history.length === 0 ? (
         <EmptyState
           compact
-          title="No build requests yet"
-          body="Dispatch an eligible change and its accepted, failed, or retry events will appear here."
+          title="No runner events yet"
+          body="Start the runner or dispatch an eligible change and Studio Runner events will appear here."
         />
       ) : (
         <BoardTable
@@ -3172,26 +3347,43 @@ function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[
           sortState={{ columnId: "updated", direction: "desc" }}
           tableClassName="runner-requests-table"
           resetKey={String(history.length)}
-          itemLabel="build requests"
+          itemLabel="runner log events"
         />
       )}
     </section>
   );
 }
 
-function RunnerAttemptStatusPill({ status }: { status: RunnerDispatchAttempt["status"] }) {
-  const health: Health = status === "accepted" ? "valid" : status === "failed" ? "invalid" : "stale";
-  return <HealthPill health={health} label={status} />;
+function RunnerAttemptStatusPill({ status, executionStatus }: { status: RunnerDispatchAttempt["status"]; executionStatus?: RunnerDispatchAttempt["executionStatus"] | null }) {
+  const label = executionStatus || status;
+  const health: Health = label === "completed" || label === "accepted" ? "valid" : label === "failed" || label === "blocked" ? "invalid" : "stale";
+  return <HealthPill health={health} label={label} />;
 }
 
 function runnerAttemptRowId(attempt: RunnerDispatchAttempt) {
   return `${attempt.eventId}-${attempt.updatedAt}-${attempt.status}`;
 }
 
+function runnerAttemptMessage(attempt: RunnerDispatchAttempt) {
+  const source = attempt.source ? `${attempt.source} · ` : "";
+  return `${source}${attempt.eventName || attempt.message}`;
+}
+
 function runnerAttemptResponseLabel(attempt: RunnerDispatchAttempt) {
-  const statusCode = attempt.statusCode ? `HTTP ${attempt.statusCode}` : "No HTTP status";
-  const run = attempt.runId ? ` · ${attempt.runId}` : "";
-  return `${statusCode}${run}`;
+  if (attempt.prUrl) {
+    return attempt.prUrl;
+  }
+  if (attempt.error) {
+    return attempt.error;
+  }
+  const parts = [
+    attempt.branchName ? `branch ${attempt.branchName}` : null,
+    attempt.commitSha ? `commit ${attempt.commitSha.slice(0, 7)}` : null,
+    attempt.sessionId ? `session ${attempt.sessionId}` : null,
+    attempt.runId ? `run ${attempt.runId}` : null,
+    attempt.statusCode ? `HTTP ${attempt.statusCode}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : attempt.message;
 }
 
 function RunnerInspector({
@@ -3206,6 +3398,8 @@ function RunnerInspector({
   onCheckStatus,
   onStartRunner,
   onStopRunner,
+  streamStatus,
+  onReconnectStream,
 }: {
   repo: RepositoryView;
   settings: RunnerSettings;
@@ -3218,6 +3412,8 @@ function RunnerInspector({
   onCheckStatus: () => void;
   onStartRunner: () => void;
   onStopRunner: () => void;
+  streamStatus: "disconnected" | "connecting" | "connected" | "error";
+  onReconnectStream: () => void;
 }) {
   return (
     <aside className="inspector artifact-inspector runner-inspector" aria-label="Studio Runner inspector">
@@ -3287,6 +3483,18 @@ function RunnerInspector({
                 Clear session secret
               </button>
             ) : null}
+          </div>
+        </section>
+        <section className="inspector-section">
+          <div className="section-title-row">
+            <h3>Event stream</h3>
+            <HealthPill health={streamStatus === "connected" ? "valid" : streamStatus === "error" ? "invalid" : "stale"} label={streamStatus} />
+          </div>
+          <p className="muted-copy">Live Studio Runner events feed the Runner Log without polling.</p>
+          <div className="section-actions">
+            <button type="button" className="link-button" onClick={onReconnectStream} disabled={busy || status.state !== "reachable"}>
+              Reconnect stream
+            </button>
           </div>
         </section>
       </div>
@@ -4768,6 +4976,27 @@ function boundedRows<T extends { id: string }>(
   return {
     rows: bounded,
     hiddenCount: rows.length - bounded.length,
+  };
+}
+
+
+function runnerStreamEventFromDto(dto: RunnerStreamEventDto): RunnerStreamEventInput {
+  return {
+    eventName: dto.eventName ?? dto.event_name ?? null,
+    eventId: dto.eventId ?? dto.event_id ?? null,
+    repoPath: dto.repoPath ?? dto.repo_path ?? null,
+    repoChangeKey: dto.repoChangeKey ?? dto.repo_change_key ?? null,
+    changeName: dto.changeName ?? dto.change_name ?? null,
+    status: dto.status ?? null,
+    runId: dto.runId ?? dto.run_id ?? null,
+    recordedAt: dto.recordedAt ?? dto.recorded_at ?? null,
+    workspacePath: dto.workspacePath ?? dto.workspace_path ?? null,
+    sessionId: dto.sessionId ?? dto.session_id ?? null,
+    branchName: dto.branchName ?? dto.branch_name ?? null,
+    commitSha: dto.commitSha ?? dto.commit_sha ?? null,
+    prUrl: dto.prUrl ?? dto.pr_url ?? null,
+    error: dto.error ?? null,
+    message: dto.message ?? null,
   };
 }
 

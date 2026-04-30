@@ -14,7 +14,7 @@ Studio can currently start the local runner and dispatch signed `build.requested
 - Convert the configured runner events endpoint into the stream endpoint safely.
 - Emit bounded runner event updates from the bridge to the React app.
 - Merge stream updates into persisted runner dispatch history by event ID.
-- Render execution/publication fields in the Runner workspace table and selected-change history.
+- Render every Studio Runner-related event in a unified Runner Log table and selected-change history.
 - Start/reconnect/stop the stream based on runner reachability, endpoint changes, and lifecycle actions.
 
 ## Out of Scope
@@ -23,4 +23,5 @@ Studio can currently start the local runner and dispatch signed `build.requested
 - WebSocket transport.
 - Background polling as the primary update mechanism.
 - Full terminal log streaming from runner/Codex.
+- Treating the Runner Log as arbitrary application telemetry unrelated to Studio Runner.
 - Editing or controlling runner jobs beyond existing dispatch/start/stop actions.

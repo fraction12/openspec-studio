@@ -4,7 +4,7 @@
 
 - Treat Symphony as the source of truth for runner execution state after dispatch acceptance.
 - Keep Studio local-first and bounded: localhost-only endpoint, bounded frame sizes, bounded reconnect behavior, and no arbitrary remote streaming.
-- Merge updates into existing dispatch records instead of creating duplicate rows.
+- Merge updates into a unified Runner Log instead of creating duplicate rows.
 - Show PR/publication metadata directly in Studio once available.
 
 ## Transport
@@ -58,27 +58,30 @@ Studio SHALL ignore unknown fields and preserve known metadata.
 
 ## Merge behavior
 
-React/app-model code SHALL merge stream updates into `runnerDispatchAttempts` by `eventId`.
+React/app-model code SHALL merge stream updates into a unified Runner Log by `eventId` when present. Lifecycle/status events that do not have a runner event ID MAY use a stable local ID.
 
-If a local delivery record already exists, the stream update SHALL enrich it with execution/publication fields. If no local record exists but the update belongs to the current repository, Studio MAY create a remote-observed history record so reopened app sessions or externally started streams still show runner state.
+If a local delivery record already exists, the stream update SHALL enrich that Runner Log record with execution/publication fields. If no local record exists but the update belongs to the current repository, Studio MAY create a remote-observed log record so reopened app sessions or externally started streams still show runner state.
 
 Local delivery state and runner execution state are related but distinct:
 
 - delivery state answers whether Studio successfully sent the request
 - execution status answers what Runner did with accepted work
 
+The Runner Log SHALL be the repo-wide home for every Studio Runner-related event surfaced in the UI: dispatch attempts, accepted/running/completed/blocked/failed stream updates, lifecycle/status transitions, and bounded errors.
+
 ## UI
 
-The Runner workspace table SHALL show execution/publication status rather than only accepted delivery state. Rows SHOULD surface:
+The Runner workspace table SHALL be titled **Runner Log** and show Studio Runner events rather than “Build requests.” Rows SHOULD surface:
 
-- running/completed/blocked/failed state
-- change name
+- event kind and running/completed/blocked/failed state
+- change name when available
 - event/run identity
 - PR link when available
 - short commit SHA when available
 - branch name
 - workspace/session metadata
 - bounded blocker/error text
+- event source such as local dispatch, stream, lifecycle, or status
 - last updated time
 
 The selected-change inspector SHALL show the same execution status for that change's recent attempts, including PR links and blockers.

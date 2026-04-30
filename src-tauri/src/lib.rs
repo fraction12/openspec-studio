@@ -48,6 +48,8 @@ pub fn run() {
             bridge::restart_studio_runner,
             bridge::stop_studio_runner,
             bridge::check_studio_runner_status,
+            bridge::start_studio_runner_event_stream,
+            bridge::stop_studio_runner_event_stream,
             bridge::dispatch_studio_runner_event
         ])
         .run(tauri::generate_context!())

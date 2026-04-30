@@ -24,6 +24,9 @@ export interface RunnerStatus {
   pid?: number | null;
 }
 
+export type RunnerLogSource = "dispatch" | "stream" | "lifecycle" | "status";
+export type RunnerExecutionStatus = "accepted" | "running" | "completed" | "blocked" | "failed" | "unknown";
+
 export interface RunnerDispatchAttempt {
   eventId: string;
   repoPath: string;
@@ -36,6 +39,16 @@ export interface RunnerDispatchAttempt {
   responseBody?: string | null;
   runId?: string | null;
   payload?: unknown;
+  source?: RunnerLogSource;
+  eventName?: string | null;
+  executionStatus?: RunnerExecutionStatus | null;
+  workspacePath?: string | null;
+  sessionId?: string | null;
+  branchName?: string | null;
+  commitSha?: string | null;
+  prUrl?: string | null;
+  error?: string | null;
+  recordedAt?: string | null;
 }
 
 export interface RunnerDispatchEligibility {
@@ -642,6 +655,136 @@ export function buildRunnerDispatchPayload({
     },
     requestedBy: "local-user",
   };
+}
+
+
+export interface RunnerStreamEventInput {
+  eventId?: string | null;
+  repoPath?: string | null;
+  repoChangeKey?: string | null;
+  changeName?: string | null;
+  eventName?: string | null;
+  status?: string | null;
+  runId?: string | null;
+  recordedAt?: string | null;
+  workspacePath?: string | null;
+  sessionId?: string | null;
+  branchName?: string | null;
+  commitSha?: string | null;
+  prUrl?: string | null;
+  error?: string | null;
+  message?: string | null;
+}
+
+export function mergeRunnerStreamEvent(
+  attempts: RunnerDispatchAttempt[] | undefined,
+  event: RunnerStreamEventInput,
+  fallbackRepoPath: string | null | undefined,
+): RunnerDispatchAttempt[] {
+  const eventId = normalizeRunnerEventId(event.eventId, event.eventName);
+  const repoPath = event.repoPath || repoPathFromRepoChangeKey(event.repoChangeKey) || fallbackRepoPath || "";
+  const changeName = event.changeName || changeNameFromRepoChangeKey(event.repoChangeKey) || "Runner";
+  const now = new Date().toISOString();
+  const existing = (attempts ?? []).find((attempt) => attempt.eventId === eventId);
+  const executionStatus = normalizeRunnerExecutionStatus(event.status, event.eventName);
+  const updatedAt = event.recordedAt || existing?.updatedAt || now;
+  const next: RunnerDispatchAttempt = {
+    eventId,
+    repoPath: existing?.repoPath || repoPath,
+    changeName: existing?.changeName || changeName,
+    status: existing?.status || deliveryStatusFromExecution(executionStatus),
+    message: event.message || event.error || existing?.message || runnerExecutionMessage(executionStatus, event.eventName),
+    createdAt: existing?.createdAt || updatedAt,
+    updatedAt,
+    statusCode: existing?.statusCode ?? null,
+    responseBody: existing?.responseBody ?? null,
+    runId: event.runId ?? existing?.runId ?? null,
+    payload: existing?.payload,
+    source: "stream",
+    eventName: event.eventName ?? existing?.eventName ?? null,
+    executionStatus,
+    workspacePath: event.workspacePath ?? existing?.workspacePath ?? null,
+    sessionId: event.sessionId ?? existing?.sessionId ?? null,
+    branchName: event.branchName ?? existing?.branchName ?? null,
+    commitSha: event.commitSha ?? existing?.commitSha ?? null,
+    prUrl: event.prUrl ?? existing?.prUrl ?? null,
+    error: event.error ?? existing?.error ?? null,
+    recordedAt: event.recordedAt ?? existing?.recordedAt ?? null,
+  };
+
+  return [next, ...(attempts ?? []).filter((attempt) => attempt.eventId !== eventId)]
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, 50);
+}
+
+export function createRunnerLifecycleLogEvent(input: {
+  repoPath: string;
+  event: string;
+  message: string;
+  status?: RunnerExecutionStatus;
+  occurredAt?: string;
+}): RunnerDispatchAttempt {
+  const occurredAt = input.occurredAt || new Date().toISOString();
+  return {
+    eventId: `local_${input.event}_${Date.parse(occurredAt) || Date.now()}`,
+    repoPath: input.repoPath,
+    changeName: "Runner",
+    status: input.status === "failed" ? "failed" : "accepted",
+    message: input.message,
+    createdAt: occurredAt,
+    updatedAt: occurredAt,
+    source: input.event === "status" ? "status" : "lifecycle",
+    eventName: input.event,
+    executionStatus: input.status || "unknown",
+  };
+}
+
+function normalizeRunnerEventId(eventId: string | null | undefined, eventName: string | null | undefined): string {
+  if (eventId && eventId.trim()) {
+    return eventId.trim();
+  }
+
+  return `stream_${(eventName || "runner.update").replace(/[^a-zA-Z0-9_]/g, "_")}_${Date.now()}`;
+}
+
+function repoPathFromRepoChangeKey(value: string | null | undefined): string | null {
+  if (!value || !value.includes("::")) {
+    return null;
+  }
+
+  return value.split("::")[0] || null;
+}
+
+function changeNameFromRepoChangeKey(value: string | null | undefined): string | null {
+  if (!value || !value.includes("::")) {
+    return null;
+  }
+
+  return value.split("::").slice(1).join("::") || null;
+}
+
+function normalizeRunnerExecutionStatus(status: string | null | undefined, eventName: string | null | undefined): RunnerExecutionStatus {
+  const value = (status || eventName || "").toLowerCase();
+  if (value.includes("completed")) return "completed";
+  if (value.includes("blocked")) return "blocked";
+  if (value.includes("failed")) return "failed";
+  if (value.includes("running")) return "running";
+  if (value.includes("accepted")) return "accepted";
+  return "unknown";
+}
+
+function deliveryStatusFromExecution(status: RunnerExecutionStatus): RunnerDispatchAttempt["status"] {
+  if (status === "failed" || status === "blocked") return "failed";
+  if (status === "running" || status === "accepted" || status === "completed") return "accepted";
+  return "pending";
+}
+
+function runnerExecutionMessage(status: RunnerExecutionStatus, eventName: string | null | undefined): string {
+  if (eventName) {
+    return eventName;
+  }
+
+  return status === "unknown" ? "Runner event" : `Runner ${status}`;
 }
 
 export function runnerDispatchHistoryForChange(
