@@ -8,6 +8,7 @@ import {
   activeChangeNamesFromFileRecords,
   buildVirtualFilesByPath,
   buildOpenSpecFileSignature,
+  deriveChangeBuildStatus,
   deriveChangeHealth,
   decideRepositoryCandidateOpen,
   createOpenSpecOperationIssue,
@@ -19,6 +20,7 @@ import {
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
   type ChangeHealth,
+  type ChangeBuildStatusState,
   type BridgeFileRecord,
   type OpenSpecOperationIssue,
   type OpenSpecFileSignature,
@@ -238,6 +240,7 @@ interface ChangeRecord {
   phase: ChangePhase;
   health: Health;
   statusLabel: string;
+  buildStatus: ChangeBuildStatusState;
   summary: string;
   capabilities: string[];
   updatedAt: string;
@@ -409,6 +412,7 @@ function App() {
   const [artifactPreview, setArtifactPreview] = useState("");
   const [gitStatus, setGitStatus] = useState<OpenSpecGitStatus>(unknownGitStatus);
   const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [validationBusy, setValidationBusy] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [runnerSettings, setRunnerSettings] = useState<RunnerSettings>(defaultRunnerSettings);
   const [runnerStatus, setRunnerStatus] = useState<RunnerStatus>(unknownRunnerStatus);
@@ -1378,6 +1382,7 @@ function App() {
     }
 
     setLoadState("loading");
+    setValidationBusy(true);
     setMessage("Running OpenSpec validation...");
     const requestId = ++validationGenerationRef.current;
     const repoPath = repo.path;
@@ -1413,6 +1418,8 @@ function App() {
         }),
       );
       setMessage(errorMessage(error));
+    } finally {
+      setValidationBusy(false);
     }
   }
 
@@ -2079,6 +2086,7 @@ function App() {
         onValidate={() => void runValidation()}
         onReload={() => repo && void loadRepository(repo.path)}
         runnerAllDispatchHistory={repoRunnerDispatchHistory}
+        validationBusy={validationBusy}
       />
 
       <Inspector
@@ -2255,6 +2263,7 @@ function WorkspaceMain({
   specSortDirection,
   loadState,
   archiveBusy,
+  validationBusy,
   onViewChange,
   onPhaseChange,
   onChangesQueryChange,
@@ -2285,6 +2294,7 @@ function WorkspaceMain({
   specSortDirection: BoardTableSortDirection;
   loadState: LoadState;
   archiveBusy: boolean;
+  validationBusy: boolean;
   onViewChange: (view: BoardView) => void;
   onPhaseChange: (phase: ChangePhase) => void;
   onChangesQueryChange: (query: string) => void;
@@ -2397,6 +2407,7 @@ function WorkspaceMain({
           selectedChange={selectedChange}
           sortDirection={changeSortDirection}
           archiveBusy={archiveBusy}
+          validationBusy={validationBusy}
           onPhaseChange={onPhaseChange}
           onQueryChange={onChangesQueryChange}
           onSelectChange={onSelectChange}
@@ -2430,6 +2441,7 @@ function ChangeBoard({
   selectedChange,
   sortDirection,
   archiveBusy,
+  validationBusy,
   onPhaseChange,
   onQueryChange,
   onSelectChange,
@@ -2444,6 +2456,7 @@ function ChangeBoard({
   selectedChange: ChangeRecord | null;
   sortDirection: BoardTableSortDirection;
   archiveBusy: boolean;
+  validationBusy: boolean;
   onPhaseChange: (phase: ChangePhase) => void;
   onQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
@@ -2474,10 +2487,22 @@ function ChangeBoard({
         ),
       },
       {
-        id: "trust",
-        label: "Trust",
-        colClassName: "trust-col",
-        render: (change) => <HealthPill health={change.health} label={change.statusLabel} />,
+        id: "build-status",
+        label: "Build Status",
+        colClassName: "build-status-col",
+        render: (change) => {
+          const status = validationBusy
+            ? deriveChangeBuildStatus({
+                phase: change.phase,
+                taskProgress: change.taskProgress,
+                validation: null,
+                validationIssueCount: 0,
+                validationRunning: true,
+              })
+            : change.buildStatus;
+
+          return <HealthPill health={status.health} label={status.label} />;
+        },
       },
       {
         id: "tasks",
@@ -2529,7 +2554,7 @@ function ChangeBoard({
     }
 
     return nextColumns;
-  }, [archiveBusy, onArchiveChange, phase]);
+  }, [archiveBusy, onArchiveChange, phase, validationBusy]);
 
   return (
     <section className="board-panel artifact-board change-board" aria-label="Change board">
@@ -4245,14 +4270,22 @@ function activeChangeToView(
       taskProgress.total > 0 &&
       taskProgress.done === taskProgress.total,
   );
+  const phase: ChangePhase = archiveReady ? "archive-ready" : "active";
+  const buildStatus = deriveChangeBuildStatus({
+    phase,
+    taskProgress,
+    validation,
+    validationIssueCount: blockingValidationIssues.length,
+  });
 
   const record: ChangeRecord = {
     id: change.name,
     name: change.name,
     title: titleize(change.name),
-    phase: archiveReady ? "archive-ready" : "active",
+    phase,
     health,
     statusLabel: healthLabels[health],
+    buildStatus,
     summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "OpenSpec change",
     capabilities: change.touchedCapabilities.map((capability) => capability.capability),
     updatedAt: formatTime(change.modifiedTimeMs),
@@ -4303,6 +4336,12 @@ export function archivedChangeToView(
     phase: "archived",
     health: "valid",
     statusLabel: "Archived",
+    buildStatus: deriveChangeBuildStatus({
+      phase: "archive-ready",
+      taskProgress: null,
+      validation: null,
+      validationIssueCount: 0,
+    }),
     summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "Archived OpenSpec change",
     capabilities: change.touchedCapabilities.map((capability) => capability.capability),
     updatedAt: formatTime(change.modifiedTimeMs),

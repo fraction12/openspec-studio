@@ -1,8 +1,8 @@
-- [ ] 1. Add a build-status display model with `validate`, `ready`, `incomplete`, and `done`.
-- [ ] 2. Rename the change table column from **Trust** to **Build Status**.
-- [ ] 3. Derive **Validate** from missing, stale, running, or unknown validation for the current OpenSpec snapshot.
-- [ ] 4. Derive **Done** from archive-ready/completed task state.
-- [ ] 5. Derive **Ready** from current passing validation plus actionable open tasks.
-- [ ] 6. Derive **Incomplete** from current validation with blocking diagnostics or non-actionable/missing tasks, without treating missing `design.md` alone as the blocker.
-- [ ] 7. Add regression tests for a no-`design.md` change that should not show blocked/incomplete solely because the design file is absent.
-- [ ] 8. Run OpenSpec validation, TypeScript checks, app tests, and a UI smoke check.
+- [x] 1. Add a build-status display model with `validate`, `ready`, `incomplete`, and `done`.
+- [x] 2. Rename the change table column from **Trust** to **Build Status**.
+- [x] 3. Derive **Validate** from missing, stale, running, or unknown validation for the current OpenSpec snapshot.
+- [x] 4. Derive **Done** from archive-ready/completed task state.
+- [x] 5. Derive **Ready** from current passing validation plus actionable open tasks.
+- [x] 6. Derive **Incomplete** from current validation with blocking diagnostics or non-actionable/missing tasks, without treating missing `design.md` alone as the blocker.
+- [x] 7. Add regression tests for a no-`design.md` change that should not show blocked/incomplete solely because the design file is absent.
+- [x] 8. Run OpenSpec validation, TypeScript checks, app tests, and a UI smoke check.

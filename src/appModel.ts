@@ -99,6 +99,8 @@ export interface OpenSpecFileSignature {
 
 export type ChangeHealth = "valid" | "stale" | "invalid" | "missing" | "blocked" | "ready";
 
+export type ChangeBuildStatusKind = "validate" | "ready" | "incomplete" | "done";
+
 export type ValidationTrustKind =
   | "not-checked"
   | "checking"
@@ -152,6 +154,20 @@ export interface ValidationTrustState {
   label: string;
   detail: string;
   attentionKnown: boolean;
+}
+
+export interface ChangeBuildStatusState {
+  kind: ChangeBuildStatusKind;
+  label: string;
+  health: ChangeHealth;
+}
+
+export interface ChangeBuildStatusInput {
+  phase: "active" | "archive-ready" | "archived";
+  taskProgress: { done: number; total: number } | null;
+  validation: ValidationResult | null;
+  validationIssueCount: number;
+  validationRunning?: boolean;
 }
 
 export interface RepositoryCandidateInput {
@@ -335,6 +351,70 @@ export function deriveChangeHealth({
   }
 
   return validation.state === "pass" ? "valid" : "stale";
+}
+
+export function deriveChangeBuildStatus({
+  phase,
+  taskProgress,
+  validation,
+  validationIssueCount,
+  validationRunning = false,
+}: ChangeBuildStatusInput): ChangeBuildStatusState {
+  if (phase === "archive-ready") {
+    return changeBuildStatusState("done");
+  }
+
+  if (
+    validationRunning ||
+    !validation ||
+    validation.state === "stale" ||
+    validation.diagnostics.length > 0
+  ) {
+    return changeBuildStatusState("validate");
+  }
+
+  const hasActionableOpenTasks = Boolean(
+    taskProgress &&
+      taskProgress.total > 0 &&
+      taskProgress.done < taskProgress.total,
+  );
+
+  if (
+    !hasActionableOpenTasks ||
+    validation.state !== "pass" ||
+    validationIssueCount > 0
+  ) {
+    return changeBuildStatusState("incomplete");
+  }
+
+  return changeBuildStatusState("ready");
+}
+
+export function changeBuildStatusState(kind: ChangeBuildStatusKind): ChangeBuildStatusState {
+  const states: Record<ChangeBuildStatusKind, ChangeBuildStatusState> = {
+    validate: {
+      kind: "validate",
+      label: "Validate",
+      health: "stale",
+    },
+    ready: {
+      kind: "ready",
+      label: "Ready",
+      health: "ready",
+    },
+    incomplete: {
+      kind: "incomplete",
+      label: "Incomplete",
+      health: "missing",
+    },
+    done: {
+      kind: "done",
+      label: "Done",
+      health: "valid",
+    },
+  };
+
+  return states[kind];
 }
 
 export function extractJsonPayload(output: string): unknown | undefined {
