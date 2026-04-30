@@ -9,3 +9,4 @@
 - [ ] 7. Add app/model tests for archive postcondition failure and verified archive success.
 - [ ] 8. Audit existing mutating bridge operations and document which ones require explicit postconditions next.
 - [ ] 9. Run `npm run check`, relevant JS tests, Rust bridge tests, `npm run build`, and `openspec validate verify-mutating-operation-postconditions`.
+- [x] 10. Keep verbose mutating-operation diagnostics out of the footer when an OpenSpec issue badge is already shown.

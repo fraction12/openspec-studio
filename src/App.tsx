@@ -4164,6 +4164,7 @@ function StatusBand({
   const lastValidation = formatValidationTimestamp(workspace?.validation?.validatedAt ?? null);
   const gitLabel = gitStatusLabel(gitStatus);
   const gitTitle = gitStatus.entries.length > 0 ? gitStatus.entries.join("\n") : gitStatus.message;
+  const footerMessage = loadState === "loading" ? "Working..." : operationIssues.length > 0 ? "" : message;
 
   return (
     <footer className="status-band" aria-label="Workspace status">
@@ -4181,9 +4182,11 @@ function StatusBand({
         <span>OpenSpec Git</span>
         <strong title={gitTitle}>{gitLabel}</strong>
       </div>
-      <div className="status-band-toast" aria-live="polite">
-        {loadState === "loading" ? "Working..." : message}
-      </div>
+      {footerMessage ? (
+        <div className="status-band-toast" aria-live="polite">
+          {footerMessage}
+        </div>
+      ) : null}
       {operationIssues.length > 0 ? (
         <OpenSpecIssuePanel issues={operationIssues} onDismissIssue={onDismissIssue} />
       ) : null}

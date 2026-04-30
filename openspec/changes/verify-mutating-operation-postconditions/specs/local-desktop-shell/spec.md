@@ -41,3 +41,9 @@ The desktop bridge and app shell SHALL verify explicit state postconditions for 
 #### Scenario: Postcondition failure is diagnosed
 - **WHEN** Studio detects a missing postcondition after a mutating operation
 - **THEN** it SHALL record an operation issue with the operation type, target, timestamp, command status, stdout, stderr, and missing evidence when available
+
+#### Scenario: Footer keeps operation diagnostics compact
+- **WHEN** a mutating operation records an OpenSpec operation issue with detailed command output
+- **THEN** the footer SHALL show the compact OpenSpec issue badge
+- **AND** the footer SHALL NOT show the detailed failure message, stdout, stderr, or missing evidence as transient footer text
+- **AND** the detailed diagnostic output SHALL remain available from the inspector or issue surface
