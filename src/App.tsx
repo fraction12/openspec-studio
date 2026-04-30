@@ -1461,7 +1461,13 @@ function App() {
       setMessage("Archiving " + changeName + "...");
       await archiveOneChange(repoPath, changeName);
       await loadRepository(repoPath);
+      const archivedChange = await findArchivedChangeAfterArchive(repoPath, changeName);
+      if (!archivedChange) {
+        throw new Error("OpenSpec archive reported success, but the change is still active.");
+      }
       setPhase("archived");
+      setSelectedChangeId(archivedChange);
+      setDetailTab("archive-info");
       setMessage("Archived " + changeName + ".");
     } catch (error) {
       setLoadState("loaded");
@@ -1522,6 +1528,11 @@ function App() {
       setMessage("Archiving " + uniqueChangeNames.length + " changes...");
       for (const changeName of uniqueChangeNames) {
         await archiveOneChange(repoPath, changeName);
+        await loadRepository(repoPath);
+        const archivedChange = await findArchivedChangeAfterArchive(repoPath, changeName);
+        if (!archivedChange) {
+          throw new Error("OpenSpec archive reported success, but " + changeName + " is still active.");
+        }
         archivedCount += 1;
       }
       await loadRepository(repoPath);
@@ -1573,6 +1584,21 @@ function App() {
       });
       setMessage(errorMessage(error));
     }
+  }
+
+  async function findArchivedChangeAfterArchive(repoPath: string, changeName: string): Promise<string | null> {
+    const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
+      repoPath,
+    });
+    const fileRecords = toVirtualFileRecords(fileDtos);
+    const activeNames = new Set(activeChangeNamesFromFileRecords(fileRecords));
+
+    if (activeNames.has(changeName)) {
+      return null;
+    }
+
+    const indexed = indexOpenSpecWorkspace({ files: fileRecords, changeStatuses: [] });
+    return indexed.archivedChanges.find((change) => change.archiveMetadata.originalName === changeName)?.name ?? null;
   }
 
   async function archiveOneChange(repoPath: string, changeName: string) {

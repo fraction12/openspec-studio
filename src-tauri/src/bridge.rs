@@ -37,7 +37,8 @@ const STANDARD_COMMAND_DIRS: &[&str] = &[
 
 static STUDIO_RUNNER_SESSION_SECRET: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static STUDIO_RUNNER_PROCESS: OnceLock<Mutex<Option<StudioRunnerProcess>>> = OnceLock::new();
-static STUDIO_RUNNER_EVENT_STREAM: OnceLock<Mutex<Option<StudioRunnerEventStreamHandle>>> = OnceLock::new();
+static STUDIO_RUNNER_EVENT_STREAM: OnceLock<Mutex<Option<StudioRunnerEventStreamHandle>>> =
+    OnceLock::new();
 
 fn studio_runner_session_secret() -> &'static Mutex<Option<String>> {
     STUDIO_RUNNER_SESSION_SECRET.get_or_init(|| Mutex::new(None))
@@ -389,6 +390,40 @@ pub fn execute_local_command(
     })
 }
 
+pub fn execute_archive_command(
+    repo_path: impl AsRef<Path>,
+    change_name: String,
+) -> Result<CommandResult, BridgeError> {
+    let (canonical_repo, _) = require_openspec_repo(repo_path.as_ref())?;
+    let args = vec!["archive".to_string(), change_name, "--yes".to_string()];
+    let output = run_command_with_fallbacks(
+        &canonical_repo,
+        "openspec",
+        &args,
+        CommandExecutionOptions::default(),
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let archived = archive_command_changed_files(&stdout, &stderr);
+
+    Ok(CommandResult {
+        stdout,
+        stderr,
+        status_code: output.status_code,
+        success: output.success && archived,
+    })
+}
+
+fn archive_command_changed_files(stdout: &str, stderr: &str) -> bool {
+    let combined = format!(
+        "{stdout}
+{stderr}"
+    );
+    !(combined.contains("Aborted. No files were changed.")
+        || combined.contains("failed for header")
+        || combined.contains("No files were changed"))
+}
+
 pub fn read_openspec_artifact(
     repo_path: impl AsRef<Path>,
     artifact_path: impl AsRef<Path>,
@@ -550,14 +585,7 @@ pub async fn archive_change(
     change_name: String,
 ) -> Result<CommandResult, BridgeErrorDto> {
     validate_archive_change_name(&change_name).map_err(BridgeErrorDto::from)?;
-    run_bridge_task(move || {
-        execute_local_command(
-            repo_path,
-            "openspec",
-            &["archive".to_string(), change_name, "--yes".to_string()],
-        )
-    })
-    .await
+    run_bridge_task(move || execute_archive_command(repo_path, change_name)).await
 }
 
 #[tauri::command]
@@ -597,7 +625,6 @@ pub async fn get_openspec_git_status(
     run_bridge_task(move || inspect_openspec_git_status(repo_path)).await
 }
 
-
 #[tauri::command]
 pub async fn start_studio_runner_event_stream(
     app: AppHandle,
@@ -607,7 +634,8 @@ pub async fn start_studio_runner_event_stream(
 }
 
 #[tauri::command]
-pub async fn stop_studio_runner_event_stream() -> Result<StudioRunnerStreamResponse, BridgeErrorDto> {
+pub async fn stop_studio_runner_event_stream() -> Result<StudioRunnerStreamResponse, BridgeErrorDto>
+{
     stop_runner_event_stream().map_err(BridgeErrorDto::from)
 }
 
@@ -705,12 +733,16 @@ fn start_runner_event_stream(
         }
     }
 
-    let mut store = studio_runner_event_stream()
-        .lock()
-        .map_err(|_| BridgeError::RunnerRequest {
-            message: "Studio Runner stream store is unavailable.".to_string(),
-        })?;
-    *store = Some(StudioRunnerEventStreamHandle { endpoint: endpoint.clone(), stop });
+    let mut store =
+        studio_runner_event_stream()
+            .lock()
+            .map_err(|_| BridgeError::RunnerRequest {
+                message: "Studio Runner stream store is unavailable.".to_string(),
+            })?;
+    *store = Some(StudioRunnerEventStreamHandle {
+        endpoint: endpoint.clone(),
+        stop,
+    });
 
     Ok(StudioRunnerStreamResponse {
         streaming: true,
@@ -720,11 +752,12 @@ fn start_runner_event_stream(
 }
 
 fn stop_runner_event_stream() -> Result<StudioRunnerStreamResponse, BridgeError> {
-    let mut store = studio_runner_event_stream()
-        .lock()
-        .map_err(|_| BridgeError::RunnerRequest {
-            message: "Studio Runner stream store is unavailable.".to_string(),
-        })?;
+    let mut store =
+        studio_runner_event_stream()
+            .lock()
+            .map_err(|_| BridgeError::RunnerRequest {
+                message: "Studio Runner stream store is unavailable.".to_string(),
+            })?;
     if let Some(handle) = store.take() {
         handle.stop.store(true, Ordering::SeqCst);
         return Ok(StudioRunnerStreamResponse {
@@ -742,11 +775,12 @@ fn stop_runner_event_stream() -> Result<StudioRunnerStreamResponse, BridgeError>
 }
 
 fn stop_runner_event_stream_for_replacement() -> Result<(), BridgeError> {
-    let mut store = studio_runner_event_stream()
-        .lock()
-        .map_err(|_| BridgeError::RunnerRequest {
-            message: "Studio Runner stream store is unavailable.".to_string(),
-        })?;
+    let mut store =
+        studio_runner_event_stream()
+            .lock()
+            .map_err(|_| BridgeError::RunnerRequest {
+                message: "Studio Runner stream store is unavailable.".to_string(),
+            })?;
     if let Some(handle) = store.take() {
         handle.stop.store(true, Ordering::SeqCst);
     }
@@ -770,19 +804,19 @@ fn run_runner_event_stream(
             }
             BridgeError::RunnerRequest { message }
         })?;
-    let response = client
-        .get(endpoint)
-        .send()
-        .map_err(|error| {
-            let message = format!("Studio Runner stream request failed: {error}");
-            if let Some(sender) = ready.as_ref() {
-                let _ = sender.send(Err(message.clone()));
-            }
-            BridgeError::RunnerRequest { message }
-        })?;
+    let response = client.get(endpoint).send().map_err(|error| {
+        let message = format!("Studio Runner stream request failed: {error}");
+        if let Some(sender) = ready.as_ref() {
+            let _ = sender.send(Err(message.clone()));
+        }
+        BridgeError::RunnerRequest { message }
+    })?;
 
     if !response.status().is_success() {
-        let message = format!("Studio Runner stream returned HTTP {}", response.status().as_u16());
+        let message = format!(
+            "Studio Runner stream returned HTTP {}",
+            response.status().as_u16()
+        );
         if let Some(sender) = ready.as_ref() {
             let _ = sender.send(Err(message.clone()));
         }
@@ -804,9 +838,11 @@ fn run_runner_event_stream(
             break;
         }
         line.clear();
-        let bytes = reader.read_line(&mut line).map_err(|error| BridgeError::RunnerRequest {
-            message: format!("Studio Runner stream read failed: {error}"),
-        })?;
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|error| BridgeError::RunnerRequest {
+                message: format!("Studio Runner stream read failed: {error}"),
+            })?;
         if bytes == 0 {
             break;
         }
@@ -819,7 +855,8 @@ fn run_runner_event_stream(
         if trimmed.is_empty() {
             if !data_lines.is_empty() {
                 let data = data_lines.join("\n");
-                let event = parse_runner_stream_event(&event_name, &data, fallback_repo_path.as_deref())?;
+                let event =
+                    parse_runner_stream_event(&event_name, &data, fallback_repo_path.as_deref())?;
                 let _ = app.emit("studio-runner-event", event);
             }
             event_name = "runner.update".to_string();
@@ -839,7 +876,8 @@ fn run_runner_event_stream(
             frame_bytes = frame_bytes.saturating_add(value.len());
             if frame_bytes > 64 * 1024 {
                 return Err(BridgeError::RunnerRequest {
-                    message: "Studio Runner stream frame exceeded the maximum data size.".to_string(),
+                    message: "Studio Runner stream frame exceeded the maximum data size."
+                        .to_string(),
                 });
             }
             data_lines.push(value.to_string());
@@ -854,42 +892,63 @@ fn parse_runner_stream_event(
     data: &str,
     fallback_repo_path: Option<&str>,
 ) -> Result<StudioRunnerStreamEvent, BridgeError> {
-    let payload: serde_json::Value = serde_json::from_str(data).map_err(|error| BridgeError::RunnerRequest {
-        message: format!("Studio Runner stream event was not valid JSON: {error}"),
-    })?;
-    let object = payload.as_object().ok_or_else(|| BridgeError::RunnerRequest {
-        message: "Studio Runner stream event payload must be an object.".to_string(),
-    })?;
+    let payload: serde_json::Value =
+        serde_json::from_str(data).map_err(|error| BridgeError::RunnerRequest {
+            message: format!("Studio Runner stream event was not valid JSON: {error}"),
+        })?;
+    let object = payload
+        .as_object()
+        .ok_or_else(|| BridgeError::RunnerRequest {
+            message: "Studio Runner stream event payload must be an object.".to_string(),
+        })?;
 
-    let repo_change_key = read_json_string(object, "repoChangeKey").or_else(|| read_json_string(object, "repo_change_key"));
+    let repo_change_key = read_json_string(object, "repoChangeKey")
+        .or_else(|| read_json_string(object, "repo_change_key"));
     let repo_path = read_json_string(object, "repoPath")
         .or_else(|| read_json_string(object, "repo_path"))
-        .or_else(|| repo_change_key.as_deref().and_then(repo_path_from_repo_change_key))
+        .or_else(|| {
+            repo_change_key
+                .as_deref()
+                .and_then(repo_path_from_repo_change_key)
+        })
         .or_else(|| fallback_repo_path.map(str::to_string));
     let change_name = read_json_string(object, "changeName")
         .or_else(|| read_json_string(object, "change"))
-        .or_else(|| repo_change_key.as_deref().and_then(change_name_from_repo_change_key));
+        .or_else(|| {
+            repo_change_key
+                .as_deref()
+                .and_then(change_name_from_repo_change_key)
+        });
 
     Ok(StudioRunnerStreamEvent {
         event_name: event_name.to_string(),
-        event_id: read_json_string(object, "eventId").or_else(|| read_json_string(object, "event_id")),
+        event_id: read_json_string(object, "eventId")
+            .or_else(|| read_json_string(object, "event_id")),
         repo_path,
         repo_change_key,
         change_name,
         status: read_json_string(object, "status"),
         run_id: read_json_string(object, "runId").or_else(|| read_json_string(object, "run_id")),
-        recorded_at: read_json_string(object, "recordedAt").or_else(|| read_json_string(object, "recorded_at")),
-        workspace_path: read_json_string(object, "workspacePath").or_else(|| read_json_string(object, "workspace_path")),
-        session_id: read_json_string(object, "sessionId").or_else(|| read_json_string(object, "session_id")),
-        branch_name: read_json_string(object, "branchName").or_else(|| read_json_string(object, "branch_name")),
-        commit_sha: read_json_string(object, "commitSha").or_else(|| read_json_string(object, "commit_sha")),
+        recorded_at: read_json_string(object, "recordedAt")
+            .or_else(|| read_json_string(object, "recorded_at")),
+        workspace_path: read_json_string(object, "workspacePath")
+            .or_else(|| read_json_string(object, "workspace_path")),
+        session_id: read_json_string(object, "sessionId")
+            .or_else(|| read_json_string(object, "session_id")),
+        branch_name: read_json_string(object, "branchName")
+            .or_else(|| read_json_string(object, "branch_name")),
+        commit_sha: read_json_string(object, "commitSha")
+            .or_else(|| read_json_string(object, "commit_sha")),
         pr_url: read_json_string(object, "prUrl").or_else(|| read_json_string(object, "pr_url")),
         error: read_json_string(object, "error"),
         message: read_json_string(object, "message"),
     })
 }
 
-fn read_json_string(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+fn read_json_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
     object.get(key)?.as_str().map(str::to_string)
 }
 
@@ -1085,7 +1144,8 @@ fn runner_process_is_active(process: &mut StudioRunnerProcess) -> Result<bool, B
         process.child = None;
     }
 
-    Ok(runner_listener_pid(process.port) == Some(process.pid) && runner_process_command(process.pid).is_some())
+    Ok(runner_listener_pid(process.port) == Some(process.pid)
+        && runner_process_command(process.pid).is_some())
 }
 
 fn start_runner_process(
@@ -1155,7 +1215,9 @@ fn start_runner_process(
             });
         };
         let expected = path_to_string(&repo_path);
-        if !(command.contains("bin/symphony") || command.contains("/symphony ")) || !command.contains(&expected) {
+        if !(command.contains("bin/symphony") || command.contains("/symphony "))
+            || !command.contains(&expected)
+        {
             return Err(BridgeError::RunnerRequest {
                 message: format!(
                     "Port {port} is already in use by a non-matching process. Stop it or choose another Studio Runner endpoint."
@@ -1579,7 +1641,10 @@ fn recover_managed_runner_from_endpoint(
     }))
 }
 
-fn terminate_matching_runner_listener(port: u16, expected_repo_path: &Path) -> Result<(), BridgeError> {
+fn terminate_matching_runner_listener(
+    port: u16,
+    expected_repo_path: &Path,
+) -> Result<(), BridgeError> {
     let Some(pid) = runner_listener_pid(port) else {
         return Ok(());
     };
@@ -1587,7 +1652,9 @@ fn terminate_matching_runner_listener(port: u16, expected_repo_path: &Path) -> R
     let Some(command) = runner_process_command(pid) else {
         return Ok(());
     };
-    if !(command.contains("bin/symphony") || command.contains("/symphony ")) || !command.contains(&expected) {
+    if !(command.contains("bin/symphony") || command.contains("/symphony "))
+        || !command.contains(&expected)
+    {
         return Err(BridgeError::RunnerRequest {
             message: format!(
                 "Port {port} is already in use by a non-matching process. Stop it or choose another Studio Runner endpoint."
@@ -2430,11 +2497,15 @@ mod tests {
             .expect("script should be executable");
     }
 
-
     #[test]
     fn derives_runner_stream_endpoint_from_events_endpoint() {
-        let endpoint = normalize_runner_stream_endpoint("http://127.0.0.1:4000/api/v1/studio-runner/events").unwrap();
-        assert_eq!(endpoint, "http://127.0.0.1:4000/api/v1/studio-runner/events/stream");
+        let endpoint =
+            normalize_runner_stream_endpoint("http://127.0.0.1:4000/api/v1/studio-runner/events")
+                .unwrap();
+        assert_eq!(
+            endpoint,
+            "http://127.0.0.1:4000/api/v1/studio-runner/events/stream"
+        );
     }
 
     #[test]
@@ -2450,7 +2521,10 @@ mod tests {
         assert_eq!(event.event_id.as_deref(), Some("evt_demo"));
         assert_eq!(event.repo_path.as_deref(), Some("/repo/demo"));
         assert_eq!(event.change_name.as_deref(), Some("add-stream"));
-        assert_eq!(event.pr_url.as_deref(), Some("https://github.com/example/repo/pull/1"));
+        assert_eq!(
+            event.pr_url.as_deref(),
+            Some("https://github.com/example/repo/pull/1")
+        );
     }
 
     fn runner_request(event_id: &str) -> StudioRunnerDispatchRequest {
@@ -2653,8 +2727,12 @@ PY
         let previous_bin = std::env::var_os("OPENSPEC_STUDIO_RUNNER_BIN");
         std::env::set_var("OPENSPEC_STUDIO_RUNNER_BIN", &runner_bin);
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
-        let port = listener.local_addr().expect("local addr should exist").port();
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+        let port = listener
+            .local_addr()
+            .expect("local addr should exist")
+            .port();
         drop(listener);
         let endpoint = format!("http://127.0.0.1:{port}/api/v1/studio-runner/events");
 
@@ -3048,6 +3126,20 @@ PY
         assert!(matches!(error, BridgeError::InvalidRepository { .. }));
 
         cleanup(repo);
+    }
+
+    #[test]
+    fn archive_command_changed_files_rejects_zero_exit_no_file_archive() {
+        assert!(!archive_command_changed_files(
+            "change MODIFIED failed for header
+Aborted. No files were changed.",
+            ""
+        ));
+    }
+
+    #[test]
+    fn archive_command_changed_files_accepts_normal_archive_output() {
+        assert!(archive_command_changed_files("Archived demo change", ""));
     }
 
     #[test]
