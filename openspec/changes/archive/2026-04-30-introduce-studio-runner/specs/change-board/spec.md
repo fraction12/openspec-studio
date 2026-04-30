@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Change detail agent dispatch
 The change board SHALL provide an explicit **Build with agent** action for an active selected change when Studio Runner is configured and reachable.
