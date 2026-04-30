@@ -2111,24 +2111,35 @@ button:disabled {
 }
 
 .runner-requests-table {
-  width: max(100%, 980px);
-  min-width: 980px;
+  --table-row-height: 78px;
+  width: max(100%, 1160px);
+  min-width: 1160px;
 }
 
 .runner-requests-table col.runner-status-col {
-  width: 112px;
+  width: 140px;
 }
 
 .runner-requests-table col.runner-event-col {
-  width: 230px;
+  width: 260px;
 }
 
 .runner-requests-table col.runner-response-col {
-  width: 150px;
+  width: 230px;
 }
 
 .runner-requests-table col.runner-updated-col {
-  width: 130px;
+  width: 154px;
+}
+
+.runner-requests-table th,
+.runner-requests-table td {
+  padding-right: var(--space-12);
+  padding-left: var(--space-12);
+}
+
+.runner-requests-table .health-pill {
+  min-width: 112px;
 }
 
 .runner-request-title-cell {
@@ -2152,7 +2163,20 @@ button:disabled {
   color: var(--color-muted);
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 15px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runner-response-cell {
+  line-height: var(--line-height-md);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.runner-requests-table .updated-cell {
+  overflow: hidden;
+  text-overflow: clip;
   white-space: nowrap;
 }
 

@@ -23,6 +23,7 @@
 - [x] 2.8 Persist dispatch delivery attempts/status locally.
 - [x] 2.9 Support manual retry using the same event ID/idempotency key for an existing failed delivery.
 - [x] 2.10 Surface repo-wide dispatch history as a main Runner workspace log and selected-change dispatch history in the change inspector.
+- [x] 2.11 Fix Runner build request table column spacing and wrapping so event, response, and timestamp data do not overlap.
 
 ## 3. Runner Contract
 

@@ -11,6 +11,13 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **AND** repo-wide build request history SHALL be shown in the main Runner workspace as a log-sized surface with enough width and height for runner output
 - **AND** the main Runner workspace SHALL use existing board/inspector/card/list primitives rather than bespoke one-off controls where an existing pattern fits
 
+#### Scenario: Runner history table keeps columns readable
+- **GIVEN** repo-wide build request history includes long change names, event IDs, response run IDs, and timestamps
+- **WHEN** the user views the Runner workspace build request log
+- **THEN** Studio SHALL allocate stable column widths and spacing for status, event, response, and updated data
+- **AND** long event or response identifiers SHALL truncate or wrap within their own cells without overlapping adjacent columns
+- **AND** updated timestamps SHALL remain readable without being covered by response text
+
 #### Scenario: Configured runner is used for dispatch
 - **GIVEN** the user has configured a Studio Runner endpoint and generated a session-only signing secret from the Runner tab
 - **WHEN** Studio dispatches `build.requested`

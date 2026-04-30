@@ -3122,6 +3122,7 @@ function RunnerBuildRequestsTable({ history }: { history: RunnerDispatchAttempt[
         id: "response",
         label: "Response",
         colClassName: "runner-response-col",
+        cellClassName: "runner-response-cell",
         render: (attempt) => runnerAttemptResponseLabel(attempt),
       },
       {
