@@ -354,8 +354,8 @@ const defaultRunnerSettings: RunnerSettings = {
 };
 
 const unknownRunnerStatus: RunnerStatus = {
-  state: "not-configured",
-  label: "Runner not configured",
+  state: "offline",
+  label: "Runner offline",
   detail: "Add a local Studio Runner endpoint and generate a session secret to enable Build with agent.",
 };
 
@@ -398,7 +398,6 @@ function App() {
   const [persistedAppState, setPersistedAppState] = useState<PersistedAppState>(
     createDefaultPersistedAppState,
   );
-  const [repoPathInput, setRepoPathInput] = useState("");
   const [repo, setRepo] = useState<RepositoryView | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceView | null>(null);
   const [candidateError, setCandidateError] = useState<CandidateRepoError | null>(null);
@@ -491,7 +490,6 @@ function App() {
     const lastRepoPath = initialState.lastRepoPath ?? initialState.recentRepos[0]?.path;
 
     if (lastRepoPath) {
-      setRepoPathInput(lastRepoPath);
       await loadRepository(lastRepoPath);
       return;
     }
@@ -609,8 +607,8 @@ function App() {
         },
       });
       const nextStatus: RunnerStatus = {
-        state: "reachable",
-        label: dto.started ? "Runner started" : "Runner reachable",
+        state: "online",
+        label: "Runner online",
         detail: dto.message || "Studio Runner started and passed health check.",
         endpoint: dto.endpoint || endpoint,
         managed: true,
@@ -625,8 +623,8 @@ function App() {
       void checkRunnerStatus({ quiet: true, force: true, requestId: startedRequestId });
     } catch (error) {
       const nextStatus: RunnerStatus = {
-        state: "unavailable",
-        label: "Runner unavailable",
+        state: "offline",
+        label: "Runner offline",
         detail: errorMessage(error),
         endpoint,
       };
@@ -675,8 +673,8 @@ function App() {
 
     if (!isTauriRuntime()) {
       const nextStatus: RunnerStatus = {
-        state: "unavailable",
-        label: "Desktop runtime required",
+        state: "offline",
+        label: "Runner offline",
         detail: "Runner status checks require the Tauri desktop runtime.",
       };
       runnerStatusRef.current = nextStatus;
@@ -720,8 +718,8 @@ function App() {
         return runnerStatusRef.current;
       }
       const nextStatus: RunnerStatus = {
-        state: "unavailable",
-        label: "Runner unavailable",
+        state: "offline",
+        label: "Runner offline",
         detail: errorMessage(error),
         endpoint: settings.endpoint,
       };
@@ -780,7 +778,7 @@ function App() {
         repoReady: true,
         change: latestChange,
         runnerSettings,
-        runnerStatus: runnerStatus.state === "reachable"
+        runnerStatus: runnerStatus.state === "online"
           ? runnerStatus
           : await checkRunnerStatus({ quiet: true }),
         sessionSecretConfigured: runnerSessionSecretConfigured,
@@ -969,7 +967,7 @@ function App() {
   }, []);
 
   async function startRunnerStream(options: { quiet?: boolean } = {}) {
-    if (!isTauriRuntime() || !repo?.path || runnerStatusRef.current.state !== "reachable") {
+    if (!isTauriRuntime() || !repo?.path || runnerStatusRef.current.state !== "online") {
       return;
     }
 
@@ -1026,7 +1024,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (runnerStatus.state === "reachable" && repo?.path) {
+    if (runnerStatus.state === "online" && repo?.path) {
       void startRunnerStream({ quiet: true });
       return;
     }
@@ -1264,7 +1262,6 @@ function App() {
         summary: hasOpenSpec ? "OpenSpec workspace" : "No openspec/ directory",
       };
 
-      setRepoPathInput(validation.path);
       setGitStatus(hasOpenSpec ? { ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." } : unknownGitStatus);
 
       if (!candidateDecision.promote) {
@@ -1569,12 +1566,11 @@ function App() {
         return;
       }
 
-      setRepoPathInput(selectedPath);
       await loadRepository(selectedPath);
     } catch (error) {
       setCandidateError({
         kind: "unavailable",
-        path: repoPathInput,
+        path: "",
         title: "Folder picker unavailable",
         message: errorMessage(error),
       });
@@ -2028,11 +2024,8 @@ function App() {
         repo={repo}
         recentRepos={recentRepos}
         candidateError={candidateError}
-        repoPathInput={repoPathInput}
         loadState={loadState}
-        onRepoPathInput={setRepoPathInput}
         onChooseFolder={() => void chooseRepositoryFolder()}
-        onLoadRepo={() => void loadRepository(repoPathInput)}
         onOpenRecent={(path) => void loadRepository(path)}
         onRetryCandidate={(path) => void loadRepository(path)}
         onReturnToActive={() => setCandidateError(null)}
@@ -2131,11 +2124,8 @@ function Sidebar({
   repo,
   recentRepos,
   candidateError,
-  repoPathInput,
   loadState,
-  onRepoPathInput,
   onChooseFolder,
-  onLoadRepo,
   onOpenRecent,
   onRetryCandidate,
   onReturnToActive,
@@ -2143,11 +2133,8 @@ function Sidebar({
   repo: RepositoryView | null;
   recentRepos: PersistedRecentRepo[];
   candidateError: CandidateRepoError | null;
-  repoPathInput: string;
   loadState: LoadState;
-  onRepoPathInput: (path: string) => void;
   onChooseFolder: () => void;
-  onLoadRepo: () => void;
   onOpenRecent: (path: string) => void;
   onRetryCandidate: (path: string) => void;
   onReturnToActive: () => void;
@@ -2170,28 +2157,6 @@ function Sidebar({
           <button type="button" className="primary-button full-width-action" onClick={onChooseFolder} disabled={loadState === "loading"}>
             {loadState === "loading" ? "Opening..." : "Choose folder"}
           </button>
-          <details className="manual-path">
-            <summary>Enter path manually</summary>
-            <form
-              className="repo-path-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                onLoadRepo();
-              }}
-            >
-              <label>
-                <span className="sr-only">Repository path</span>
-                <input
-                  value={repoPathInput}
-                  onChange={(event) => onRepoPathInput(event.currentTarget.value)}
-                  placeholder="/path/to/repo"
-                />
-              </label>
-              <button type="submit" className="primary-outline" disabled={loadState === "loading"}>
-                Open path
-              </button>
-            </form>
-          </details>
           {candidateError ? (
             <div className={"candidate-error " + candidateError.kind}>
               <strong>{candidateError.title}</strong>
@@ -2352,9 +2317,7 @@ function WorkspaceMain({
     <main className="workspace-main">
       <header className="workspace-header">
         <div className="workspace-title">
-          <span>OpenSpec workbench / {repo.branch}</span>
           <h1>{repo.name}</h1>
-          <p>{repo.path}</p>
         </div>
         <div className="workspace-actions">
           <div className="workspace-runner-status" title={runnerStatus.detail}>
@@ -2424,7 +2387,7 @@ function WorkspaceMain({
           onSortDirectionChange={onSpecSortDirection}
         />
       ) : (
-        <RunnerWorkspace repo={repo} history={runnerAllDispatchHistory} />
+        <RunnerWorkspace history={runnerAllDispatchHistory} />
       )}
     </main>
   );
@@ -2661,10 +2624,10 @@ function SpecsBrowser({
         ),
       },
       {
-        id: "trust",
-        label: "Trust",
-        colClassName: "spec-trust-col",
-        render: (spec) => <HealthPill health={spec.health} label={healthLabels[spec.health]} />,
+        id: "validation",
+        label: "Validation",
+        colClassName: "spec-validation-col",
+        render: (spec) => <HealthPill health={spec.health} label={specValidationLabel(spec.health)} />,
       },
       {
         id: "requirements",
@@ -3173,10 +3136,9 @@ function Inspector({
 
   if (view === "runner") {
     return (
-      <RunnerInspector
-        repo={repo}
-        settings={runnerSettings}
-        status={runnerStatus}
+        <RunnerInspector
+          settings={runnerSettings}
+          status={runnerStatus}
         sessionSecretConfigured={runnerSessionSecretConfigured}
         busy={runnerDispatchBusy}
         onSettingsChange={onRunnerSettingsChange}
@@ -3193,19 +3155,11 @@ function Inspector({
 
   if (view === "specs") {
     return (
-      <aside className="inspector artifact-inspector spec-inspector" aria-label="Base spec inspector">
+      <aside className="inspector artifact-inspector spec-inspector" aria-label="Spec inspector">
         {selectedSpec ? (
           <>
             <div className="inspector-header">
-              <span>Base spec</span>
               <h2>{selectedSpec.capability}</h2>
-              <p className="path-copy">{selectedSpec.path}</p>
-              <div className="inspector-actions">
-                <HealthPill health={selectedSpec.health} label={healthLabels[selectedSpec.health]} />
-                <button type="button" className="primary-outline" onClick={() => onOpenArtifact(selectedSpec)}>
-                  Open file
-                </button>
-              </div>
             </div>
             <div className="inspector-body">
               <section className="inspector-section artifact-preview-section">
@@ -3292,7 +3246,7 @@ function Inspector({
   );
 }
 
-function RunnerWorkspace({ repo, history }: { repo: RepositoryView; history: RunnerDispatchAttempt[] }) {
+function RunnerWorkspace({ history }: { history: RunnerDispatchAttempt[] }) {
   return (
     <section className="board-panel runner-board" aria-label="Studio Runner workspace">
       <div className="board-toolbar board-toolbar-compact">
@@ -3303,10 +3257,6 @@ function RunnerWorkspace({ repo, history }: { repo: RepositoryView; history: Run
       </div>
       <div className="runner-main-content">
         <div className="runner-overview">
-          <section className="inspector-section runner-overview-card">
-            <h3>Repository runner</h3>
-            <p>{repo.name} uses one managed local runner for all Studio Runner events in this session.</p>
-          </section>
           <section className="inspector-section runner-overview-card">
             <h3>Execution model</h3>
             <p>Studio sends a signed, thin `build.requested` event. The runner reads OpenSpec artifacts from disk and owns execution.</p>
@@ -3447,7 +3397,6 @@ function runnerAttemptResponseLabel(attempt: RunnerDispatchAttempt) {
 }
 
 function RunnerInspector({
-  repo,
   settings,
   status,
   sessionSecretConfigured,
@@ -3461,7 +3410,6 @@ function RunnerInspector({
   streamStatus,
   onReconnectStream,
 }: {
-  repo: RepositoryView;
   settings: RunnerSettings;
   status: RunnerStatus;
   sessionSecretConfigured: boolean;
@@ -3478,36 +3426,16 @@ function RunnerInspector({
   return (
     <aside className="inspector artifact-inspector runner-inspector" aria-label="Studio Runner inspector">
       <div className="inspector-header">
-        <span>Repo runner</span>
         <h2>Studio Runner</h2>
         <p>Start one local runner for this repository, then dispatch selected changes from the change inspector.</p>
-        <div className="inspector-actions">
-          <HealthPill health={runnerHealth(status)} label={runnerStatusLabel(status)} />
-        </div>
       </div>
       <div className="inspector-body artifact-inspector-body">
         <section className="inspector-section">
           <h3>Status</h3>
           <p>{status.detail}</p>
-          <dl className="fact-list">
-            <div>
-              <dt>Repository</dt>
-              <dd>{repo.name}</dd>
-            </div>
-            <div>
-              <dt>Managed by Studio</dt>
-              <dd>{status.managed ? "Yes" : "No"}</dd>
-            </div>
-            {status.pid ? (
-              <div>
-                <dt>PID</dt>
-                <dd>{status.pid}</dd>
-              </div>
-            ) : null}
-          </dl>
           <div className="section-actions">
             <button type="button" className="primary-button" onClick={onStartRunner} disabled={busy}>
-              {status.state === "reachable" ? "Restart runner" : status.state === "starting" ? "Starting..." : "Start runner"}
+              {status.state === "online" ? "Restart runner" : status.state === "starting" ? "Starting..." : "Start runner"}
             </button>
             <button type="button" className="primary-outline" onClick={onCheckStatus} disabled={busy}>
               Check status
@@ -3552,7 +3480,7 @@ function RunnerInspector({
           </div>
           <p className="muted-copy">Live Studio Runner events feed the Runner Log without polling.</p>
           <div className="section-actions">
-            <button type="button" className="link-button" onClick={onReconnectStream} disabled={busy || status.state !== "reachable"}>
+            <button type="button" className="link-button" onClick={onReconnectStream} disabled={busy || status.state !== "online"}>
               Reconnect stream
             </button>
           </div>
@@ -3563,26 +3491,17 @@ function RunnerInspector({
 }
 
 function runnerHealth(status: RunnerStatus): Health {
-  if (status.state === "reachable") {
+  if (status.state === "online") {
     return "valid";
   }
   if (status.state === "checking" || status.state === "starting") {
     return "stale";
   }
-  return "blocked";
+  return "stale";
 }
 
 function runnerStatusLabel(status: RunnerStatus): string {
-  if (status.state === "reachable") {
-    return "Reachable";
-  }
-  if (status.state === "starting") {
-    return "Starting";
-  }
-  if (status.state === "checking") {
-    return "Checking";
-  }
-  return "Blocked";
+  return status.state === "online" ? "Online" : "Offline";
 }
 
 function formatRunnerDateTime(value: string): string {
@@ -4580,6 +4499,18 @@ function specHealthFromValidation(
   return "valid";
 }
 
+function specValidationLabel(health: Health): string {
+  if (health === "valid") {
+    return "Valid";
+  }
+
+  if (health === "invalid") {
+    return "Invalid";
+  }
+
+  return "Validate";
+}
+
 function readinessReasons(taskProgress: TaskProgress | null): string[] {
   const reasons: string[] = [];
 
@@ -5007,8 +4938,8 @@ function runnerStatusFromDto(dto: RunnerStatusDto, previousStatus?: RunnerStatus
 
   if (dto.reachable) {
     return {
-      state: "reachable",
-      label: "Runner reachable",
+      state: "online",
+      label: "Runner online",
       detail: dto.message || "Studio Runner responded to health check.",
       statusCode,
       endpoint,
@@ -5018,8 +4949,8 @@ function runnerStatusFromDto(dto: RunnerStatusDto, previousStatus?: RunnerStatus
   }
 
   return {
-    state: "unavailable",
-    label: "Runner unavailable",
+    state: "offline",
+    label: "Runner offline",
     detail: dto.message || "Studio Runner did not respond successfully.",
     statusCode,
     endpoint,

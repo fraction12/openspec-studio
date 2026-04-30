@@ -562,13 +562,13 @@ describe("Studio Runner dispatch model", () => {
     taskProgress: { done: 0, total: 3 },
   };
 
-  it("gates dispatch on build status readiness, settings, and reachable runner", () => {
+  it("gates dispatch on build status readiness, settings, and online runner", () => {
     expect(deriveRunnerDispatchEligibility({
       repoReady: true,
       change: eligibleChange,
       runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
       sessionSecretConfigured: true,
-      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+      runnerStatus: { state: "online", label: "Online", detail: "ok" },
     })).toEqual({ eligible: true, reasons: [] });
 
     expect(deriveRunnerDispatchEligibility({
@@ -576,11 +576,11 @@ describe("Studio Runner dispatch model", () => {
       change: eligibleChange,
       runnerSettings: { endpoint: "" },
       sessionSecretConfigured: false,
-      runnerStatus: { state: "not-configured", label: "Missing", detail: "missing" },
+      runnerStatus: { state: "offline", label: "Offline", detail: "missing" },
     }).reasons).toEqual([
       "Configure Studio Runner endpoint.",
       "Generate a Studio Runner session secret.",
-      "Studio Runner must be reachable.",
+      "Studio Runner must be online.",
     ]);
   });
 
@@ -593,7 +593,7 @@ describe("Studio Runner dispatch model", () => {
       },
       runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
       sessionSecretConfigured: true,
-      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+      runnerStatus: { state: "online", label: "Online", detail: "ok" },
     }).reasons).toContain(
       "Change Build Status must be Ready before dispatching with agent. Current status: Validate.",
     );
@@ -610,7 +610,7 @@ describe("Studio Runner dispatch model", () => {
       change: noDesignReadyChange,
       runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
       sessionSecretConfigured: true,
-      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+      runnerStatus: { state: "online", label: "Online", detail: "ok" },
     })).toEqual({ eligible: true, reasons: [] });
   });
 
@@ -640,7 +640,7 @@ describe("Studio Runner dispatch model", () => {
       change: doneChange,
       runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
       sessionSecretConfigured: true,
-      runnerStatus: { state: "reachable", label: "Reachable", detail: "ok" },
+      runnerStatus: { state: "online", label: "Online", detail: "ok" },
     }).reasons).toContain(
       "Change Build Status must be Ready before dispatching with agent. Current status: Done.",
     );

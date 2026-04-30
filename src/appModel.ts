@@ -12,7 +12,7 @@ export interface RunnerSettings {
   endpoint: string;
 }
 
-export type RunnerStatusKind = "not-configured" | "checking" | "starting" | "reachable" | "unavailable" | "incompatible";
+export type RunnerStatusKind = "offline" | "checking" | "starting" | "online";
 
 export interface RunnerStatus {
   state: RunnerStatusKind;
@@ -692,8 +692,8 @@ export function deriveRunnerDispatchEligibility({
     reasons.push("Generate a Studio Runner session secret.");
   }
 
-  if (runnerStatus.state !== "reachable") {
-    reasons.push("Studio Runner must be reachable.");
+  if (runnerStatus.state !== "online") {
+    reasons.push("Studio Runner must be online.");
   }
 
   return {
