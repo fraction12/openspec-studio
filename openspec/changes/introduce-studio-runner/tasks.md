@@ -33,7 +33,7 @@
 - [x] 3.4 Document duplicate/in-flight repo/change behavior expected from Runner.
 - [x] 3.5 Document that Runner reads OpenSpec artifacts from the repo after accepting work rather than relying on full file contents in the webhook payload.
 - [x] 3.6 Document that Studio Runner dispatch bypasses tracker polling and does not require Linear.
-- [ ] 3.7 Document the expected Runner flow from push event to orchestrator/workspace/agent-runner execution.
+- [x] 3.7 Document the expected Runner flow from push event to orchestrator/workspace/agent-runner execution.
 
 ## 4. Verification
 

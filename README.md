@@ -168,6 +168,8 @@ To use it in the current alpha:
 
 Studio sends `build.requested` to `POST /api/v1/studio-runner/events` with `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers. The signature is HMAC-SHA256 over `webhook-id.webhook-timestamp.raw-body`. Payloads are intentionally thin: repo path, change name, validation state, and artifact paths, not full repository contents.
 
+After accepting the event, Studio Runner verifies and deduplicates the request, claims the repository/change pair, reads the referenced OpenSpec artifacts from disk, creates an isolated workspace, and enqueues one run through the Studio-owned Symphony orchestrator and `AgentRunner`. Duplicate deliveries reuse the same event identity so the runner can avoid spawning a second agent for the same build request.
+
 ## Development
 
 Run checks:

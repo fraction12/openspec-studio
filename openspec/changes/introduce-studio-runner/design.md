@@ -187,6 +187,21 @@ The runner implementation is outside this Studio change, but the Studio contract
 
 This prevents double-spawning agents when a request is retried or delivered twice.
 
+## Runner Execution Flow
+
+After the receiver accepts a `build.requested` event, execution should stay inside Runner-owned orchestration rather than returning to Studio for polling or additional repository data. The expected flow is:
+
+1. The push ingress verifies the Standard Webhooks envelope, rejects stale timestamps, deduplicates the event ID, and validates that the payload targets one OpenSpec repository/change pair.
+2. The runner claims the repository/change pair before creating work. A duplicate event ID should return the existing delivery/run metadata when possible, while a different event for the same in-flight repository/change should be rejected or no-op without spawning another agent.
+3. The runner adapts the payload into internal runner work metadata. It may reuse Symphony's existing issue-shaped orchestration input, but the source of the work remains the explicit `build.requested` event rather than tracker polling, Linear, or an OpenSpec-as-tracker adapter.
+4. The runner reads OpenSpec artifacts from `repoPath` after the claim, using `artifactPaths` as bounded pointers to proposal, design, tasks, and spec deltas. The webhook payload remains thin and does not become the source of artifact contents.
+5. The runner creates an isolated workspace from the repository and requested git ref using the existing Symphony workspace machinery, then prepares the agent prompt/context from the OpenSpec change metadata and artifacts in that workspace.
+6. The push-dispatch entrypoint enqueues one orchestration run through the existing orchestrator path. The orchestrator starts one `AgentRunner` for the claimed work item in the isolated workspace.
+7. `AgentRunner` owns implementation, validation, commit, push, and PR creation according to the runner's unattended execution policy. Studio remains the control plane for dispatch history and runner state, not the process supervising each tool call.
+8. The runner records run state, logs, result metadata, and terminal status. When available, it should expose the run ID synchronously in the accepted response and later surface branch, commit, workspace, session, failure, or PR metadata through its status/log APIs.
+
+This keeps the OpenSpec path push-driven and idempotent while still reusing Symphony's orchestrator, workspace, and agent-runner machinery behind the Studio Runner boundary.
+
 ## Rust/Tauri Boundary
 
 Runner integration should execute through the Tauri/Rust bridge where it touches secrets, local processes, networking, or filesystem state.
