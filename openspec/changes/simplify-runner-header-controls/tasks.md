@@ -1,0 +1,5 @@
+- [x] 1. Add OpenSpec requirements for workspace-level runner status and compact change inspector dispatch.
+- [x] 2. Move runner status pill into the workspace header beside the view selector.
+- [x] 3. Replace the large change inspector runner panel with a compact Build with agent header action.
+- [x] 4. Remove obsolete runner panel rendering and styles.
+- [x] 5. Run OpenSpec, TypeScript, test, and UI verification.

@@ -25,7 +25,6 @@ import {
   buildRunnerDispatchPayload,
   deriveRunnerDispatchEligibility,
   mergeRunnerStreamEvent,
-  runnerDispatchHistoryForChange,
   type RunnerDispatchAttempt,
   type RunnerDispatchEligibility,
   type RunnerDispatchRequestInput,
@@ -1061,13 +1060,6 @@ function App() {
   const selectedSpec =
     specs.find((spec) => spec.id === selectedSpecId && matchesSpecFilters(spec, deferredSpecsQuery)) ??
     null;
-  const selectedChangeDispatchHistory = selectedChange
-    ? runnerDispatchHistoryForChange(
-        persistedAppState.runnerDispatchAttempts,
-        repo?.path,
-        selectedChange.name,
-      )
-    : [];
   const selectedChangeRunnerEligibility = deriveRunnerDispatchEligibility({
     repoReady: Boolean(repo && repo.state === "ready" && isPersistableLocalRepoPath(repo.path)),
     change: selectedChange,
@@ -2053,6 +2045,7 @@ function App() {
         specsFilterQuery={deferredSpecsQuery}
         selectedChange={selectedChange}
         selectedSpec={selectedSpec}
+        runnerStatus={runnerStatus}
         changeSortDirection={changeSortDirection}
         specSortDirection={specSortDirection}
         loadState={loadState}
@@ -2096,7 +2089,6 @@ function App() {
         selectedSpec={selectedSpec}
         runnerStatus={runnerStatus}
         runnerDispatchEligibility={selectedChangeRunnerEligibility}
-        runnerDispatchHistory={selectedChangeDispatchHistory}
         runnerSettings={runnerSettings}
         runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
@@ -2115,7 +2107,6 @@ function App() {
         onStopRunner={() => void stopRunner()}
         onReconnectRunnerStream={() => void startRunnerStream()}
         onDispatchRunner={() => void dispatchSelectedChange()}
-        onRetryRunnerDispatch={(attempt) => void dispatchSelectedChange({ retryAttempt: attempt })}
       />
 
       <StatusBand
@@ -2259,6 +2250,7 @@ function WorkspaceMain({
   specsFilterQuery,
   selectedChange,
   selectedSpec,
+  runnerStatus,
   changeSortDirection,
   specSortDirection,
   loadState,
@@ -2288,6 +2280,7 @@ function WorkspaceMain({
   specsFilterQuery: string;
   selectedChange: ChangeRecord | null;
   selectedSpec: SpecRecord | null;
+  runnerStatus: RunnerStatus;
   changeSortDirection: BoardTableSortDirection;
   specSortDirection: BoardTableSortDirection;
   loadState: LoadState;
@@ -2357,6 +2350,9 @@ function WorkspaceMain({
           <p>{repo.path}</p>
         </div>
         <div className="workspace-actions">
+          <div className="workspace-runner-status" title={runnerStatus.detail}>
+            <HealthPill health={runnerHealth(runnerStatus)} label={runnerStatusLabel(runnerStatus)} />
+          </div>
           <div className="segmented" aria-label="Workspace view">
             <button
               type="button"
@@ -3079,7 +3075,6 @@ function Inspector({
   selectedSpec,
   runnerStatus,
   runnerDispatchEligibility,
-  runnerDispatchHistory,
   runnerSettings,
   runnerSessionSecretConfigured,
   runnerDispatchBusy,
@@ -3098,7 +3093,6 @@ function Inspector({
   onStopRunner,
   onReconnectRunnerStream,
   onDispatchRunner,
-  onRetryRunnerDispatch,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
@@ -3107,7 +3101,6 @@ function Inspector({
   selectedSpec: SpecRecord | null;
   runnerStatus: RunnerStatus;
   runnerDispatchEligibility: RunnerDispatchEligibility;
-  runnerDispatchHistory: RunnerDispatchAttempt[];
   runnerSettings: RunnerSettings;
   runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
@@ -3126,7 +3119,6 @@ function Inspector({
   onStopRunner: () => void;
   onReconnectRunnerStream: () => void;
   onDispatchRunner: () => void;
-  onRetryRunnerDispatch: (attempt: RunnerDispatchAttempt) => void;
 }) {
   const tabs = selectedChange ? detailTabsForChange(selectedChange) : [];
   const selectedDetailTab =
@@ -3215,37 +3207,32 @@ function Inspector({
     );
   }
 
-  const primaryArtifact =
-    selectedChange.artifacts.find((artifact) => artifact.id === "proposal" && artifact.status === "present") ??
-    selectedChange.artifacts.find((artifact) => artifact.status === "present");
+  const runnerActionUnavailableReason =
+    runnerDispatchEligibility.reasons[0] ?? "Build with agent is unavailable for this change.";
 
   return (
     <aside className="inspector artifact-inspector change-inspector" aria-label="Change artifact inspector">
-      <div className="inspector-header">
-        <span>{phaseLabels[selectedChange.phase]} change</span>
+      <div className="inspector-header change-inspector-header">
         <h2>{selectedChange.title}</h2>
-        <p className="path-copy">{changeSourcePath(selectedChange)}</p>
-        <div className="inspector-actions">
-          <HealthPill health={selectedChange.health} label={selectedChange.statusLabel} />
-          <button
-            type="button"
-            className="primary-outline"
-            disabled={!primaryArtifact}
-            onClick={() => primaryArtifact && onOpenArtifact(primaryArtifact)}
-          >
-            {primaryArtifact?.id === "proposal" ? "Open proposal" : "Open file"}
-          </button>
-        </div>
+        {selectedChange.phase === "active" ? (
+          <div className="inspector-actions">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={runnerDispatchBusy || !runnerDispatchEligibility.eligible}
+              title={runnerDispatchEligibility.eligible ? undefined : runnerActionUnavailableReason}
+              aria-label={
+                runnerDispatchEligibility.eligible
+                  ? "Build selected change with agent"
+                  : "Build with agent unavailable: " + runnerActionUnavailableReason
+              }
+              onClick={onDispatchRunner}
+            >
+              {runnerDispatchBusy ? "Dispatching..." : "Build with agent"}
+            </button>
+          </div>
+        ) : null}
       </div>
-
-      <ChangeRunnerActionPanel
-        status={runnerStatus}
-        eligibility={runnerDispatchEligibility}
-        history={runnerDispatchHistory}
-        busy={runnerDispatchBusy}
-        onDispatch={onDispatchRunner}
-        onRetry={onRetryRunnerDispatch}
-      />
 
       <div className="tabs artifact-tabs" aria-label="Change artifacts">
         {tabs.map((tab) => (
@@ -3553,82 +3540,6 @@ function RunnerInspector({
   );
 }
 
-function ChangeRunnerActionPanel({
-  status,
-  eligibility,
-  history,
-  busy,
-  onDispatch,
-  onRetry,
-}: {
-  status: RunnerStatus;
-  eligibility: RunnerDispatchEligibility;
-  history: RunnerDispatchAttempt[];
-  busy: boolean;
-  onDispatch: () => void;
-  onRetry: (attempt: RunnerDispatchAttempt) => void;
-}) {
-  const latestFailedAttempt = history.find((attempt) => attempt.status === "failed");
-
-  return (
-    <section className="runner-dispatch-panel runner-action-panel" aria-label="Build with agent">
-      <div className="runner-dispatch-heading">
-        <div>
-          <span>Build with agent</span>
-          <strong>{status.label}</strong>
-          <p>{eligibility.eligible ? "Ready to dispatch this change to the repo runner." : (eligibility.reasons[0] ?? status.detail)}</p>
-        </div>
-        <HealthPill health={runnerHealth(status)} label={runnerStatusLabel(status)} />
-      </div>
-      {!eligibility.eligible ? (
-        <ul className="runner-blockers">
-          {eligibility.reasons.map((reason) => (
-            <li key={reason}>{reason}</li>
-          ))}
-        </ul>
-      ) : null}
-      <div className="runner-actions">
-        <button type="button" className="primary-button" onClick={onDispatch} disabled={busy || !eligibility.eligible}>
-          {busy ? "Dispatching..." : "Build with agent"}
-        </button>
-        {latestFailedAttempt ? (
-          <button type="button" className="link-button" onClick={() => onRetry(latestFailedAttempt)} disabled={busy}>
-            Retry failed dispatch
-          </button>
-        ) : null}
-      </div>
-      {history.length > 0 ? (
-        <details className="runner-history">
-          <summary>Recent dispatches <span>{history.length}</span></summary>
-          <RunnerHistoryList history={history} emptyText="No dispatches for this change yet." />
-        </details>
-      ) : null}
-    </section>
-  );
-}
-
-function RunnerHistoryList({ history, emptyText }: { history: RunnerDispatchAttempt[]; emptyText: string }) {
-  if (history.length === 0) {
-    return <p className="muted-copy">{emptyText}</p>;
-  }
-
-  return (
-    <ul className="runner-history-list">
-      {history.map((attempt) => (
-        <li key={attempt.eventId}>
-          <div>
-            <strong>{runnerAttemptLabel(attempt)}</strong>
-            <span>{formatRunnerDateTime(attempt.updatedAt)}</span>
-          </div>
-          <code>{attempt.eventId}</code>
-          <p>{attempt.changeName} — {attempt.message}</p>
-          {attempt.runId ? <span>Run: {attempt.runId}</span> : null}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function runnerHealth(status: RunnerStatus): Health {
   if (status.state === "reachable") {
     return "valid";
@@ -3657,16 +3568,6 @@ function formatRunnerDateTime(value: string): string {
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(value));
-}
-
-function runnerAttemptLabel(attempt: RunnerDispatchAttempt): string {
-  if (attempt.status === "accepted") {
-    return "Accepted";
-  }
-  if (attempt.status === "pending") {
-    return "Pending";
-  }
-  return "Failed";
 }
 
 function renderDetailTab(
@@ -4842,10 +4743,6 @@ function formatCapabilities(capabilities: string[]): string {
   }
 
   return capabilities.slice(0, 2).join(", ") + " +" + (capabilities.length - 2);
-}
-
-function changeSourcePath(change: ChangeRecord): string {
-  return change.archiveInfo?.path ?? "openspec/changes/" + change.name + "/";
 }
 
 function clampNumber(value: number, min: number, max: number): number {
