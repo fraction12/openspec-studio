@@ -238,6 +238,60 @@ describe("active archive readiness view model", () => {
     expect(change?.health).toBe("stale");
     expect(spec?.health).toBe("invalid");
   });
+
+  it("does not make a no-design active change incomplete solely because design.md is absent", () => {
+    const files: VirtualOpenSpecFileRecord[] = [
+      {
+        path: "openspec/changes/no-design-build/proposal.md",
+        content: ["## Why", "", "Build without a design document."].join("\n"),
+      },
+      {
+        path: "openspec/changes/no-design-build/tasks.md",
+        content: ["- [x] Specify behavior", "- [ ] Implement behavior"].join("\n"),
+      },
+      {
+        path: "openspec/changes/no-design-build/specs/change-board/spec.md",
+        content: "### Requirement: Board",
+      },
+      {
+        path: "openspec/specs/change-board/spec.md",
+        content: ["## Purpose", "Board capability.", "### Requirement: Board"].join("\n"),
+      },
+    ];
+    const changeStatuses = [
+      {
+        changeName: "no-design-build",
+        isComplete: false,
+        artifacts: [
+          { id: "proposal", status: "done" },
+          { id: "design", status: "blocked" },
+          { id: "tasks", status: "ready", dependencies: ["design"] },
+        ],
+      },
+    ];
+    const validation: ValidationResult = {
+      state: "pass",
+      validatedAt: "2026-04-27T12:00:00.000Z",
+      summary: { total: 1, passed: 1, failed: 0 },
+      diagnostics: [],
+      issues: [],
+      raw: {},
+    };
+
+    const workspace = buildWorkspaceView(
+      indexOpenSpecWorkspace({ files, changeStatuses }),
+      files,
+      validation,
+      changeStatuses,
+    );
+
+    const change = workspace.changes.find((candidate) => candidate.name === "no-design-build");
+
+    expect(change).toMatchObject({
+      phase: "active",
+      buildStatus: { kind: "ready", label: "Ready", health: "ready" },
+    });
+  });
 });
 
 describe("board table sorting", () => {

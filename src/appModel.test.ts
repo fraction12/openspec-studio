@@ -6,6 +6,7 @@ import {
   buildOpenSpecFileSignature,
   createOpenSpecOperationIssue,
   decideRepositoryCandidateOpen,
+  deriveChangeBuildStatus,
   deriveChangeHealth,
   deriveRunnerDispatchEligibility,
   deriveValidationTrustState,
@@ -310,6 +311,108 @@ describe("deriveChangeHealth", () => {
         validationIssueCount: 1,
       }),
     ).toBe("stale");
+  });
+});
+
+describe("change build status", () => {
+  const passingValidation = {
+    state: "pass" as const,
+    validatedAt: "2026-04-27T12:00:00.000Z",
+    summary: { total: 1, passed: 1, failed: 0 },
+    issues: [],
+    diagnostics: [],
+    raw: { valid: true },
+  };
+
+  const failingValidation = {
+    ...passingValidation,
+    state: "fail" as const,
+    summary: { total: 1, passed: 0, failed: 1 },
+    raw: { valid: false },
+  };
+
+  it("uses validate before current validation is known or while validation is running", () => {
+    expect(
+      deriveChangeBuildStatus({
+        phase: "active",
+        taskProgress: { done: 0, total: 2 },
+        validation: null,
+        validationIssueCount: 0,
+      }),
+    ).toMatchObject({ kind: "validate", label: "Validate" });
+
+    expect(
+      deriveChangeBuildStatus({
+        phase: "active",
+        taskProgress: { done: 0, total: 2 },
+        validation: passingValidation,
+        validationIssueCount: 0,
+        validationRunning: true,
+      }),
+    ).toMatchObject({ kind: "validate", label: "Validate" });
+  });
+
+  it("uses validate when command diagnostics make validation unknown for the snapshot", () => {
+    expect(
+      deriveChangeBuildStatus({
+        phase: "active",
+        taskProgress: { done: 0, total: 2 },
+        validation: {
+          ...failingValidation,
+          diagnostics: [
+            {
+              id: "diagnostic-1",
+              kind: "command-failure",
+              message: "openspec validate failed to execute",
+              severity: "error",
+            },
+          ],
+        },
+        validationIssueCount: 0,
+      }),
+    ).toMatchObject({ kind: "validate", label: "Validate" });
+  });
+
+  it("uses done for archive-ready rows before considering validation", () => {
+    expect(
+      deriveChangeBuildStatus({
+        phase: "archive-ready",
+        taskProgress: { done: 2, total: 2 },
+        validation: null,
+        validationIssueCount: 0,
+      }),
+    ).toMatchObject({ kind: "done", label: "Done", health: "valid" });
+  });
+
+  it("uses ready for passing current validation and actionable open tasks", () => {
+    expect(
+      deriveChangeBuildStatus({
+        phase: "active",
+        taskProgress: { done: 1, total: 3 },
+        validation: passingValidation,
+        validationIssueCount: 0,
+      }),
+    ).toMatchObject({ kind: "ready", label: "Ready", health: "ready" });
+  });
+
+  it("uses incomplete for current blocking validation or non-actionable tasks", () => {
+    expect(
+      deriveChangeBuildStatus({
+        phase: "active",
+        taskProgress: { done: 1, total: 3 },
+        validation: failingValidation,
+        validationIssueCount: 1,
+      }),
+    ).toMatchObject({ kind: "incomplete", label: "Incomplete" });
+
+    expect(
+      deriveChangeBuildStatus({
+        phase: "active",
+        taskProgress: { done: 0, total: 0 },
+        validation: passingValidation,
+        validationIssueCount: 0,
+      }),
+    ).toMatchObject({ kind: "incomplete", label: "Incomplete" });
   });
 });
 

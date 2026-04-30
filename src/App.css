@@ -722,8 +722,8 @@ button:disabled {
   min-width: 740px;
 }
 
-.change-table col.trust-col {
-  width: 128px;
+.change-table col.build-status-col {
+  width: 136px;
 }
 
 .change-table col.tasks-col {
