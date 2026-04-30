@@ -671,12 +671,39 @@ fn start_runner_event_stream(
     let thread_endpoint = endpoint.clone();
     let repo_path = request.repo_path.clone();
     let thread_app = app.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
 
     thread::spawn(move || {
-        if let Err(error) = run_runner_event_stream(thread_app.clone(), &thread_endpoint, repo_path, thread_stop) {
+        if let Err(error) = run_runner_event_stream(
+            thread_app.clone(),
+            &thread_endpoint,
+            repo_path,
+            thread_stop,
+            Some(ready_tx),
+        ) {
             let _ = thread_app.emit("studio-runner-stream-error", error.message());
         }
     });
+
+    match ready_rx.recv_timeout(DEFAULT_RUNNER_HTTP_TIMEOUT) {
+        Ok(Ok(())) => {}
+        Ok(Err(message)) => {
+            stop.store(true, Ordering::SeqCst);
+            return Err(BridgeError::RunnerRequest { message });
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            stop.store(true, Ordering::SeqCst);
+            return Err(BridgeError::RunnerRequest {
+                message: "Studio Runner stream did not become ready before timeout.".to_string(),
+            });
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            stop.store(true, Ordering::SeqCst);
+            return Err(BridgeError::RunnerRequest {
+                message: "Studio Runner stream ended before it became ready.".to_string(),
+            });
+        }
+    }
 
     let mut store = studio_runner_event_stream()
         .lock()
@@ -731,29 +758,45 @@ fn run_runner_event_stream(
     endpoint: &str,
     fallback_repo_path: Option<String>,
     stop: Arc<AtomicBool>,
+    ready: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
 ) -> Result<(), BridgeError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(None)
         .build()
-        .map_err(|error| BridgeError::RunnerRequest {
-            message: format!("Studio Runner stream client could not be created: {error}"),
+        .map_err(|error| {
+            let message = format!("Studio Runner stream client could not be created: {error}");
+            if let Some(sender) = ready.as_ref() {
+                let _ = sender.send(Err(message.clone()));
+            }
+            BridgeError::RunnerRequest { message }
         })?;
     let response = client
         .get(endpoint)
         .send()
-        .map_err(|error| BridgeError::RunnerRequest {
-            message: format!("Studio Runner stream request failed: {error}"),
+        .map_err(|error| {
+            let message = format!("Studio Runner stream request failed: {error}");
+            if let Some(sender) = ready.as_ref() {
+                let _ = sender.send(Err(message.clone()));
+            }
+            BridgeError::RunnerRequest { message }
         })?;
 
     if !response.status().is_success() {
-        return Err(BridgeError::RunnerRequest {
-            message: format!("Studio Runner stream returned HTTP {}", response.status().as_u16()),
-        });
+        let message = format!("Studio Runner stream returned HTTP {}", response.status().as_u16());
+        if let Some(sender) = ready.as_ref() {
+            let _ = sender.send(Err(message.clone()));
+        }
+        return Err(BridgeError::RunnerRequest { message });
+    }
+
+    if let Some(sender) = ready {
+        let _ = sender.send(Ok(()));
     }
 
     let mut reader = BufReader::new(response);
     let mut event_name = "runner.update".to_string();
     let mut data_lines: Vec<String> = Vec::new();
+    let mut frame_bytes = 0usize;
     let mut line = String::new();
 
     loop {
@@ -781,6 +824,7 @@ fn run_runner_event_stream(
             }
             event_name = "runner.update".to_string();
             data_lines.clear();
+            frame_bytes = 0;
             continue;
         }
         if trimmed.starts_with(':') {
@@ -791,7 +835,14 @@ fn run_runner_event_stream(
             continue;
         }
         if let Some(value) = trimmed.strip_prefix("data:") {
-            data_lines.push(value.trim_start().to_string());
+            let value = value.trim_start();
+            frame_bytes = frame_bytes.saturating_add(value.len());
+            if frame_bytes > 64 * 1024 {
+                return Err(BridgeError::RunnerRequest {
+                    message: "Studio Runner stream frame exceeded the maximum data size.".to_string(),
+                });
+            }
+            data_lines.push(value.to_string());
         }
     }
 
@@ -1234,7 +1285,7 @@ fn dispatch_runner_event(
         status_code,
         accepted,
         message: if accepted {
-            "Studio Runner accepted the build request.".to_string()
+            "Studio Runner accepted the event.".to_string()
         } else {
             format!("Studio Runner returned HTTP {}", status_code)
         },

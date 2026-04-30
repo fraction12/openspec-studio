@@ -437,6 +437,7 @@ function App() {
   const gitStatusRef = useRef<OpenSpecGitStatus>(gitStatus);
   const runnerSettingsRef = useRef<RunnerSettings>(runnerSettings);
   const runnerStatusRef = useRef<RunnerStatus>(runnerStatus);
+  const repoPathRef = useRef<string | null>(repo?.path ?? null);
   const deferredChangesQuery = useDeferredValue(changesQuery);
   const deferredSpecsQuery = useDeferredValue(specsQuery);
 
@@ -449,6 +450,7 @@ function App() {
   gitStatusRef.current = gitStatus;
   runnerSettingsRef.current = runnerSettings;
   runnerStatusRef.current = runnerStatus;
+  repoPathRef.current = repo?.path ?? null;
   runnerSessionSecretConfiguredRef.current = runnerSessionSecretConfigured;
   chooseRepositoryFolderRef.current = chooseRepositoryFolder;
 
@@ -617,9 +619,6 @@ function App() {
       runnerStatusRef.current = nextStatus;
       setRunnerStatus(nextStatus);
       setMessage(dto.message);
-      if (repo?.path) {
-        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "runner.stopped", message: dto.message, status: "unknown" }));
-      }
       void checkRunnerStatus({ quiet: true, force: true, requestId: startedRequestId });
     } catch (error) {
       const nextStatus: RunnerStatus = {
@@ -871,10 +870,20 @@ function App() {
     updatePersistedState((current) => upsertRunnerDispatchAttempt(current, attempt));
   }
 
+  function replaceRunnerLogEvent(eventId: string, attempt: RunnerDispatchAttempt) {
+    updatePersistedState((current) => ({
+      ...current,
+      runnerDispatchAttempts: [
+        attempt,
+        ...(current.runnerDispatchAttempts ?? []).filter((item) => item.eventId !== eventId),
+      ].slice(0, 50),
+    }));
+  }
+
   function rememberRunnerStreamEvent(event: RunnerStreamEventInput) {
     updatePersistedState((current) => ({
       ...current,
-      runnerDispatchAttempts: mergeRunnerStreamEvent(current.runnerDispatchAttempts, event, repo?.path),
+      runnerDispatchAttempts: mergeRunnerStreamEvent(current.runnerDispatchAttempts, event, repoPathRef.current),
     }));
   }
 
@@ -934,9 +943,10 @@ function App() {
         return;
       }
       setRunnerStreamStatus("error");
-      if (repo?.path) {
+      const currentRepoPath = repoPathRef.current;
+      if (currentRepoPath) {
         rememberRunnerLogEvent(createRunnerLifecycleLogEvent({
-          repoPath: repo.path,
+          repoPath: currentRepoPath,
           event: "stream.error",
           message: event.payload || "Runner stream failed.",
           status: "failed",
@@ -955,7 +965,7 @@ function App() {
       unlistenEvent?.();
       unlistenError?.();
     };
-  }, [repo?.path]);
+  }, []);
 
   async function startRunnerStream(options: { quiet?: boolean } = {}) {
     if (!isTauriRuntime() || !repo?.path || runnerStatusRef.current.state !== "reachable") {
@@ -963,6 +973,15 @@ function App() {
     }
 
     setRunnerStreamStatus("connecting");
+    const connectingAt = new Date().toISOString();
+    const connectingEventId = `local_stream_connecting_${Date.parse(connectingAt)}`;
+    rememberRunnerLogEvent(createRunnerLifecycleLogEvent({
+      repoPath: repo.path,
+      event: "stream.connecting",
+      message: "Connecting Runner event stream.",
+      status: "running",
+      occurredAt: connectingAt,
+    }));
     try {
       await invoke<RunnerStreamResponseDto>("start_studio_runner_event_stream", {
         request: { endpoint: runnerSettingsRef.current.endpoint, repoPath: repo.path },
@@ -971,7 +990,7 @@ function App() {
       if (!options.quiet) {
         setMessage("Studio Runner stream connected.");
       }
-      rememberRunnerLogEvent(createRunnerLifecycleLogEvent({
+      replaceRunnerLogEvent(connectingEventId, createRunnerLifecycleLogEvent({
         repoPath: repo.path,
         event: "stream.connected",
         message: "Runner event stream connected.",
@@ -979,6 +998,12 @@ function App() {
       }));
     } catch (error) {
       setRunnerStreamStatus("error");
+      replaceRunnerLogEvent(connectingEventId, createRunnerLifecycleLogEvent({
+        repoPath: repo.path,
+        event: "stream.error",
+        message: errorMessage(error),
+        status: "failed",
+      }));
       if (!options.quiet) {
         setMessage("Studio Runner stream failed: " + errorMessage(error));
       }
@@ -2419,7 +2444,7 @@ function ChangeBoard({
     const nextColumns: BoardTableColumn<ChangeRecord>[] = [
       {
         id: "change",
-        label: "Event",
+        label: "Change",
         render: (change) => (
           <div className="change-title-cell artifact-title-cell">
             <strong title={change.title}>{change.title}</strong>
@@ -3245,7 +3270,7 @@ function RunnerWorkspace({ repo, history }: { repo: RepositoryView; history: Run
         <div className="runner-overview">
           <section className="inspector-section runner-overview-card">
             <h3>Repository runner</h3>
-            <p>{repo.name} uses one managed local runner for all selected-change build requests in this session.</p>
+            <p>{repo.name} uses one managed local runner for all Studio Runner events in this session.</p>
           </section>
           <section className="inspector-section runner-overview-card">
             <h3>Execution model</h3>
