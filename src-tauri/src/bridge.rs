@@ -169,6 +169,7 @@ pub struct StudioRunnerStreamEvent {
     pub cleanup_reason: Option<String>,
     pub cleanup_status: Option<String>,
     pub cleanup_error: Option<String>,
+    pub execution_log_entries: Option<serde_json::Value>,
     pub error: Option<String>,
     pub message: Option<String>,
 }
@@ -321,7 +322,7 @@ mod tests {
     fn parses_runner_stream_event_payload() {
         let event = parse_runner_stream_event(
             "runner.completed",
-            r#"{"eventId":"evt_demo","runId":"run_demo","repoChangeKey":"/repo/demo::add-stream","status":"completed","branchName":"studio/add-stream","commitSha":"abcdef123456","prUrl":"https://github.com/example/repo/pull/1","workspacePath":"/tmp/work","workspaceStatus":"ready","workspaceCreatedAt":"2026-04-29T11:59:00Z","workspaceUpdatedAt":"2026-04-29T12:00:30Z","sessionId":"session_demo","sourceRepoPath":"/repo/source","baseCommitSha":"111111122222","prState":"open","prMergedAt":null,"prClosedAt":null,"cleanupEligible":true,"cleanupReason":"completed","cleanupStatus":"pending","cleanupError":null,"recordedAt":"2026-04-29T12:00:00Z"}"#,
+            r#"{"eventId":"evt_demo","runId":"run_demo","repoChangeKey":"/repo/demo::add-stream","status":"completed","branchName":"studio/add-stream","commitSha":"abcdef123456","prUrl":"https://github.com/example/repo/pull/1","workspacePath":"/tmp/work","workspaceStatus":"ready","workspaceCreatedAt":"2026-04-29T11:59:00Z","workspaceUpdatedAt":"2026-04-29T12:00:30Z","sessionId":"session_demo","sourceRepoPath":"/repo/source","baseCommitSha":"111111122222","prState":"open","prMergedAt":null,"prClosedAt":null,"cleanupEligible":true,"cleanupReason":"completed","cleanupStatus":"pending","cleanupError":null,"executionLogEntries":[{"recordedAt":"2026-04-29T12:00:01Z","level":"info","source":"agent","message":"Agent finished."}],"recordedAt":"2026-04-29T12:00:00Z"}"#,
             None,
         )
         .unwrap();
@@ -349,6 +350,18 @@ mod tests {
         assert_eq!(event.cleanup_eligible, Some(true));
         assert_eq!(event.cleanup_reason.as_deref(), Some("completed"));
         assert_eq!(event.cleanup_status.as_deref(), Some("pending"));
+        let execution_entries = event
+            .execution_log_entries
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .expect("execution entries should be preserved");
+        assert_eq!(execution_entries.len(), 1);
+        assert_eq!(
+            execution_entries[0]
+                .get("message")
+                .and_then(serde_json::Value::as_str),
+            Some("Agent finished.")
+        );
     }
 
     fn runner_request(event_id: &str) -> StudioRunnerDispatchRequest {

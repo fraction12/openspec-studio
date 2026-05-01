@@ -339,6 +339,10 @@ pub(super) fn parse_runner_stream_event(
             .or_else(|| read_json_string(object, "cleanup_status")),
         cleanup_error: read_json_string(object, "cleanupError")
             .or_else(|| read_json_string(object, "cleanup_error")),
+        execution_log_entries: read_json_value(object, "executionLogEntries")
+            .or_else(|| read_json_value(object, "execution_log_entries"))
+            .or_else(|| read_json_value(object, "executionLogs"))
+            .or_else(|| read_json_value(object, "execution_logs")),
         error: read_json_string(object, "error"),
         message: read_json_string(object, "message"),
     })
@@ -356,6 +360,13 @@ fn read_json_string(
     key: &str,
 ) -> Option<String> {
     object.get(key)?.as_str().map(str::to_string)
+}
+
+fn read_json_value(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<serde_json::Value> {
+    object.get(key).cloned()
 }
 
 fn repo_path_from_repo_change_key(value: &str) -> Option<String> {
