@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -101,11 +101,15 @@ import {
   latestRunnerAttempt,
   mergeRunnerStreamEvent,
   replaceRunnerDispatchAttempt,
-  runnerAttemptMessage,
+  runnerAttemptEventLabel,
+  runnerAttemptExecutionDetails,
   runnerAttemptResponseLabel,
-  runnerAttemptRowId,
+  runnerAttemptRowKind,
+  runnerAttemptStableRowId,
+  runnerAttemptStateLabel,
   runnerAttemptStatusHealth,
   runnerAttemptStatusLabel,
+  runnerAttemptSubject,
   runnerDispatchHistoryForRepo,
   type RunnerStreamEventInput,
   upsertRunnerDispatchAttempt as upsertRunnerLogAttempt,
@@ -1158,6 +1162,7 @@ function App() {
         onValidate={() => void runValidation()}
         onReload={() => repo && void loadRepository(repo.path)}
         runnerAllDispatchHistory={repoRunnerDispatchHistory}
+        runnerStreamStatus={runnerStreamStatus}
         validationBusy={validationBusy}
       />
 
@@ -1321,6 +1326,7 @@ function WorkspaceMain({
   onValidate,
   onReload,
   runnerAllDispatchHistory,
+  runnerStreamStatus,
 }: {
   repo: RepositoryView | null;
   workspace: WorkspaceView | null;
@@ -1353,6 +1359,7 @@ function WorkspaceMain({
   onValidate: () => void;
   onReload: () => void;
   runnerAllDispatchHistory: RunnerDispatchAttempt[];
+  runnerStreamStatus: RunnerStreamStatus;
 }) {
   if (!repo) {
     return (
@@ -1475,7 +1482,7 @@ function WorkspaceMain({
           onSortDirectionChange={onSpecSortDirection}
         />
       ) : (
-        <RunnerWorkspace history={runnerAllDispatchHistory} />
+        <RunnerWorkspace history={runnerAllDispatchHistory} streamStatus={runnerStreamStatus} />
       )}
     </main>
   );
@@ -2303,7 +2310,7 @@ function Inspector({
   );
 }
 
-function RunnerWorkspace({ history }: { history: RunnerDispatchAttempt[] }) {
+function RunnerWorkspace({ history, streamStatus }: { history: RunnerDispatchAttempt[]; streamStatus: RunnerStreamStatus }) {
   return (
     <section className="board-panel runner-board" aria-label="Studio Runner workspace">
       <div className="board-toolbar board-toolbar-compact">
@@ -2324,63 +2331,27 @@ function RunnerWorkspace({ history }: { history: RunnerDispatchAttempt[] }) {
           </section>
         </div>
 
-        <RunnerLogTable history={history} />
+        <RunnerLogTable history={history} streamStatus={streamStatus} />
       </div>
     </section>
   );
 }
 
-function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
+function RunnerLogTable({ history, streamStatus }: { history: RunnerDispatchAttempt[]; streamStatus: RunnerStreamStatus }) {
   const latestAttempt = latestRunnerAttempt(history);
-  const columns = useMemo<BoardTableColumn<RunnerDispatchAttempt>[]>(
-    () => [
-      {
-        id: "change",
-        label: "Change",
-        render: (attempt) => (
-          <div className="change-title-cell artifact-title-cell runner-request-title-cell">
-            <strong title={attempt.changeName}>{attempt.changeName}</strong>
-            <span>{runnerAttemptMessage(attempt)}</span>
-          </div>
-        ),
-      },
-      {
-        id: "status",
-        label: "Status",
-        colClassName: "runner-status-col",
-        render: (attempt) => <RunnerAttemptStatusPill attempt={attempt} />,
-      },
-      {
-        id: "event",
-        label: "Event",
-        colClassName: "runner-event-col",
-        cellClassName: "runner-event-cell",
-        render: (attempt) => <code title={attempt.eventId}>{attempt.eventId}</code>,
-      },
-      {
-        id: "response",
-        label: "Details",
-        colClassName: "runner-response-col",
-        cellClassName: "runner-response-cell",
-        render: (attempt) => {
-          const value = runnerAttemptResponseLabel(attempt);
-          return attempt.prUrl ? <a href={attempt.prUrl} onClick={(event) => { event.preventDefault(); void openPath(attempt.prUrl || ""); }}>{value}</a> : value;
-        },
-      },
-      {
-        id: "updated",
-        label: "Updated",
-        colClassName: "runner-updated-col",
-        cellClassName: "updated-cell",
-        sortable: {
-          defaultDirection: "desc",
-          getValue: (attempt) => Date.parse(attempt.updatedAt),
-        },
-        render: (attempt) => formatRunnerDateTime(attempt.updatedAt),
-      },
-    ],
-    [],
-  );
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set());
+
+  function toggleExpanded(rowId: string) {
+    setExpandedRows((current) => {
+      const next = new Set(current);
+      if (next.has(rowId)) {
+        next.delete(rowId);
+      } else {
+        next.add(rowId);
+      }
+      return next;
+    });
+  }
 
   return (
     <section className="runner-log-panel" aria-label="Studio Runner log">
@@ -2394,7 +2365,7 @@ function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
           <div className="runner-log-latest">
             <span>Latest</span>
             <strong>{latestAttempt.changeName}</strong>
-            <p>{runnerAttemptResponseLabel(latestAttempt)}</p>
+            <p>{runnerAttemptStateLabel(latestAttempt)} · {runnerAttemptResponseLabel(latestAttempt)}</p>
           </div>
         ) : null}
       </div>
@@ -2406,16 +2377,75 @@ function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
           body="Start the runner or dispatch an eligible change and Studio Runner events will appear here."
         />
       ) : (
-        <BoardTable
-          rows={history.map((attempt) => ({ ...attempt, id: runnerAttemptRowId(attempt) }))}
-          columns={columns}
-          selectedId=""
-          onSelect={() => undefined}
-          sortState={{ columnId: "updated", direction: "desc" }}
-          tableClassName="runner-requests-table"
-          resetKey={String(history.length)}
-          itemLabel="runner log events"
-        />
+        <div className="table-scroll">
+          <table className="change-table runner-requests-table" aria-label="runner log events table">
+            <colgroup>
+              <col className="runner-expand-col" />
+              <col className="runner-event-col" />
+              <col className="runner-status-col" />
+              <col className="runner-subject-col" />
+              <col className="runner-response-col" />
+              <col className="runner-updated-col" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col"><span>Details</span></th>
+                <th scope="col"><span>Event</span></th>
+                <th scope="col"><span>State</span></th>
+                <th scope="col"><span>Subject</span></th>
+                <th scope="col"><span>Message</span></th>
+                <th scope="col"><span>Updated</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((attempt) => {
+                const rowId = runnerAttemptStableRowId(attempt);
+                const expanded = expandedRows.has(rowId);
+                return (
+                  <Fragment key={rowId}>
+                    <tr key={rowId} className={expanded ? "is-expanded" : ""}>
+                      <td className="runner-expand-cell">
+                        <button
+                          type="button"
+                          className="runner-expand-button"
+                          aria-expanded={expanded}
+                          aria-label={(expanded ? "Collapse " : "Expand ") + runnerAttemptEventLabel(attempt)}
+                          onClick={() => toggleExpanded(rowId)}
+                        >
+                          <span aria-hidden="true">{expanded ? "-" : "+"}</span>
+                        </button>
+                      </td>
+                      <td className="runner-event-cell">
+                        <div className="runner-event-summary">
+                          <strong>{runnerAttemptEventLabel(attempt)}</strong>
+                          <code title={attempt.eventId}>{attempt.runId || attempt.eventId}</code>
+                        </div>
+                      </td>
+                      <td className="runner-state-cell">
+                        <RunnerAttemptStatusPill attempt={attempt} />
+                      </td>
+                      <td className="runner-subject-cell">
+                        <strong title={runnerAttemptSubject(attempt)}>{runnerAttemptSubject(attempt)}</strong>
+                        {attempt.repoChangeKey ? <span>{attempt.repoChangeKey}</span> : null}
+                      </td>
+                      <td className="runner-response-cell">
+                        <RunnerAttemptMessageCell attempt={attempt} />
+                      </td>
+                      <td className="updated-cell">{formatRunnerDateTime(attempt.updatedAt)}</td>
+                    </tr>
+                    {expanded ? (
+                      <tr key={rowId + "-details"} className="runner-detail-row">
+                        <td colSpan={6}>
+                          <RunnerLogRowDetails attempt={attempt} streamStatus={streamStatus} />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
@@ -2423,6 +2453,222 @@ function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
 
 function RunnerAttemptStatusPill({ attempt }: { attempt: RunnerDispatchAttempt }) {
   return <HealthPill health={runnerAttemptStatusHealth(attempt)} label={runnerAttemptStatusLabel(attempt)} />;
+}
+
+function RunnerAttemptMessageCell({ attempt }: { attempt: RunnerDispatchAttempt }) {
+  const response = runnerAttemptResponseLabel(attempt);
+  return (
+    <div className="runner-message-cell">
+      <span>{attempt.message}</span>
+      {attempt.prUrl ? (
+        <a href={attempt.prUrl} onClick={(event) => { event.preventDefault(); void openPath(attempt.prUrl || ""); }}>
+          {response}
+        </a>
+      ) : response !== attempt.message ? (
+        <small>{response}</small>
+      ) : null}
+      {(attempt.repeatCount ?? 0) > 1 ? (
+        <small>
+          Repeated {attempt.repeatCount} times
+          {attempt.latestRecordedAt ? " · latest " + formatRunnerDateTime(attempt.latestRecordedAt) : ""}
+        </small>
+      ) : null}
+    </div>
+  );
+}
+
+function RunnerLogRowDetails({
+  attempt,
+  streamStatus,
+}: {
+  attempt: RunnerDispatchAttempt;
+  streamStatus: RunnerStreamStatus;
+}) {
+  if (runnerAttemptRowKind(attempt) !== "run") {
+    return (
+      <div className="runner-row-details">
+        <RunnerMetadataSection
+          title="Operational Event"
+          items={[
+            ["Kind", runnerAttemptRowKind(attempt)],
+            ["State", runnerAttemptStateLabel(attempt)],
+            ["Event", attempt.eventName],
+            ["Endpoint", attempt.endpoint],
+            ["Message", attempt.message],
+            ["First seen", attempt.firstRecordedAt],
+            ["Latest", attempt.latestRecordedAt ?? attempt.updatedAt],
+            ["Repeat count", attempt.repeatCount && attempt.repeatCount > 1 ? String(attempt.repeatCount) : null],
+            ["Error", attempt.error],
+          ]}
+        />
+      </div>
+    );
+  }
+
+  const details = runnerAttemptExecutionDetails(attempt, { streamStatus });
+  return (
+    <div className="runner-row-details">
+      <div className="runner-detail-columns">
+        <RunnerMetadataSection
+          title="Run Identity"
+          items={[
+            ["Event ID", attempt.eventId],
+            ["Run ID", attempt.runId],
+            ["Change", attempt.changeName],
+            ["Repo/change", attempt.repoChangeKey],
+            ["Recorded", attempt.recordedAt],
+            ["State", runnerAttemptStateLabel(attempt)],
+          ]}
+        />
+        <RunnerMetadataSection
+          title="Workspace"
+          items={[
+            ["Workspace path", attempt.workspacePath],
+            ["Workspace status", attempt.workspaceStatus],
+            ["Created", attempt.workspaceCreatedAt],
+            ["Updated", attempt.workspaceUpdatedAt],
+            ["Session", attempt.sessionId],
+          ]}
+        />
+        <RunnerMetadataSection
+          title="Publication"
+          items={[
+            ["Source repo", attempt.sourceRepoPath],
+            ["Base commit", attempt.baseCommitSha],
+            ["Branch", attempt.branchName],
+            ["Commit", attempt.commitSha],
+            ["PR", attempt.prUrl],
+            ["PR state", attempt.prState],
+            ["Merged", attempt.prMergedAt],
+            ["Closed", attempt.prClosedAt],
+          ]}
+        />
+        <RunnerMetadataSection
+          title="Cleanup"
+          items={[
+            ["Eligible", attempt.cleanupEligible === undefined || attempt.cleanupEligible === null ? null : String(attempt.cleanupEligible)],
+            ["Reason", attempt.cleanupReason],
+            ["Status", attempt.cleanupStatus],
+            ["Error", attempt.cleanupError],
+          ]}
+        />
+      </div>
+
+      {attempt.error ? (
+        <div className="runner-log-notice error">
+          <strong>Run error</strong>
+          <span>{attempt.error}</span>
+        </div>
+      ) : null}
+
+      <section className="runner-execution-section" aria-label="Runner execution details">
+        <div className="runner-execution-heading">
+          <h4>Execution Details</h4>
+          {details.truncated ? <span>Truncated</span> : null}
+        </div>
+        <RunnerExecutionAvailability reason={details.unavailableReason} streamStatus={streamStatus} />
+        {details.droppedEntryCount > 0 ? (
+          <div className="runner-log-notice">
+            <strong>Retention bound reached</strong>
+            <span>{details.droppedEntryCount} older execution entries were dropped from this local view.</span>
+          </div>
+        ) : null}
+        {details.entries.length > 0 ? (
+          <ol className="runner-execution-list">
+            {details.entries.map((entry, index) => (
+              <li key={[entry.sequence ?? index, entry.recordedAt, entry.source, entry.message].join("|")}>
+                <div className="runner-execution-entry-header">
+                  <span>{formatRunnerDateTime(entry.recordedAt)}</span>
+                  <strong>{entry.source}{entry.phase ? " · " + entry.phase : ""}</strong>
+                  <em>{entry.derived ? "Summary milestone" : entry.level}</em>
+                </div>
+                <p>{entry.message}</p>
+                {entry.details !== undefined ? <pre>{formatRunnerEntryDetails(entry.details)}</pre> : null}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <div className="runner-log-notice">
+            <strong>No execution entries</strong>
+            <span>No bounded execution detail entries are available for this run.</span>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function RunnerExecutionAvailability({
+  reason,
+  streamStatus,
+}: {
+  reason: string | null;
+  streamStatus: RunnerStreamStatus;
+}) {
+  if (!reason && streamStatus !== "connecting") {
+    return null;
+  }
+
+  const copy =
+    streamStatus === "connecting"
+      ? ["Loading", "Execution details are loading from the runner stream."]
+      : reason === "disconnected"
+        ? ["Disconnected", "The runner stream is disconnected; showing the latest summary metadata Studio already has."]
+        : reason === "error"
+          ? ["Stream error", "The runner stream reported an error; detailed execution logs may be stale."]
+          : reason === "empty"
+            ? ["Empty", "The runner did not provide execution entries for this run."]
+            : ["Not yet provided", "Studio Runner does not provide first-class structured execution-log entries yet; showing summary-derived milestones."];
+
+  return (
+    <div className={"runner-log-notice " + (reason === "error" ? "error" : "")}>
+      <strong>{copy[0]}</strong>
+      <span>{copy[1]}</span>
+    </div>
+  );
+}
+
+function RunnerMetadataSection({
+  title,
+  items,
+}: {
+  title: string;
+  items: Array<[string, string | null | undefined]>;
+}) {
+  const visibleItems = items.filter(([, value]) => value !== null && value !== undefined && value !== "");
+  return (
+    <section className="runner-metadata-section">
+      <h4>{title}</h4>
+      {visibleItems.length > 0 ? (
+        <dl>
+          {visibleItems.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{renderRunnerMetadataValue(String(value))}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p>Not provided by runner.</p>
+      )}
+    </section>
+  );
+}
+
+function renderRunnerMetadataValue(value: string) {
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    return <a href={value} onClick={(event) => { event.preventDefault(); void openPath(value); }}>{value}</a>;
+  }
+
+  return <span>{value}</span>;
+}
+
+function formatRunnerEntryDetails(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value, null, 2);
 }
 
 function RunnerInspector({

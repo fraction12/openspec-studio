@@ -24,8 +24,49 @@ export interface RunnerStatus {
   pid?: number | null;
 }
 
-export type RunnerLogSource = "dispatch" | "stream" | "lifecycle" | "status";
-export type RunnerExecutionStatus = "accepted" | "running" | "completed" | "blocked" | "failed" | "unknown";
+export type RunnerLogSource = "dispatch" | "stream" | "lifecycle" | "status" | "diagnostic";
+export type RunnerLogRowKind = "run" | "lifecycle" | "stream" | "diagnostic";
+export type RunnerExecutionStatus = "accepted" | "running" | "completed" | "blocked" | "failed" | "conflict" | "unknown";
+export type RunnerExecutionLogLevel = "debug" | "info" | "warning" | "error";
+export type RunnerExecutionLogSource =
+  | "runner"
+  | "orchestrator"
+  | "agent"
+  | "tool"
+  | "git"
+  | "validation"
+  | "publication"
+  | "cleanup";
+export type RunnerExecutionLogPhase =
+  | "ingress"
+  | "workspace"
+  | "artifacts"
+  | "agent"
+  | "validation"
+  | "publication"
+  | "cleanup";
+export type RunnerExecutionLogUnavailableReason = "not-provided" | "disconnected" | "error" | "empty";
+
+export interface RunnerExecutionLogEntry {
+  eventId?: string | null;
+  runId?: string | null;
+  recordedAt: string;
+  level: RunnerExecutionLogLevel;
+  source: RunnerExecutionLogSource;
+  phase?: RunnerExecutionLogPhase | null;
+  message: string;
+  details?: unknown;
+  sequence?: number | null;
+  truncated?: boolean;
+  derived?: boolean;
+}
+
+export interface RunnerExecutionDetails {
+  entries: RunnerExecutionLogEntry[];
+  unavailableReason: RunnerExecutionLogUnavailableReason | null;
+  truncated: boolean;
+  droppedEntryCount: number;
+}
 
 export interface RunnerDispatchAttempt {
   eventId: string;
@@ -40,15 +81,39 @@ export interface RunnerDispatchAttempt {
   runId?: string | null;
   payload?: unknown;
   source?: RunnerLogSource;
+  rowKind?: RunnerLogRowKind;
+  rowState?: string | null;
+  endpoint?: string | null;
+  dedupeKey?: string | null;
+  repeatCount?: number;
+  firstRecordedAt?: string | null;
+  latestRecordedAt?: string | null;
   eventName?: string | null;
   executionStatus?: RunnerExecutionStatus | null;
+  repoChangeKey?: string | null;
   workspacePath?: string | null;
+  workspaceStatus?: string | null;
+  workspaceCreatedAt?: string | null;
+  workspaceUpdatedAt?: string | null;
   sessionId?: string | null;
+  sourceRepoPath?: string | null;
+  baseCommitSha?: string | null;
   branchName?: string | null;
   commitSha?: string | null;
   prUrl?: string | null;
+  prState?: string | null;
+  prMergedAt?: string | null;
+  prClosedAt?: string | null;
+  cleanupEligible?: boolean | null;
+  cleanupReason?: string | null;
+  cleanupStatus?: string | null;
+  cleanupError?: string | null;
   error?: string | null;
   recordedAt?: string | null;
+  executionLogEntries?: RunnerExecutionLogEntry[];
+  executionLogUnavailableReason?: RunnerExecutionLogUnavailableReason | null;
+  executionLogTruncated?: boolean;
+  executionLogDroppedEntryCount?: number;
 }
 
 export interface RunnerDispatchEligibility {

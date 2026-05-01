@@ -85,14 +85,42 @@ export interface RunnerStreamEventDto {
   recorded_at?: string | null;
   workspacePath?: string | null;
   workspace_path?: string | null;
+  workspaceStatus?: string | null;
+  workspace_status?: string | null;
+  workspaceCreatedAt?: string | null;
+  workspace_created_at?: string | null;
+  workspaceUpdatedAt?: string | null;
+  workspace_updated_at?: string | null;
   sessionId?: string | null;
   session_id?: string | null;
+  sourceRepoPath?: string | null;
+  source_repo_path?: string | null;
+  baseCommitSha?: string | null;
+  base_commit_sha?: string | null;
   branchName?: string | null;
   branch_name?: string | null;
   commitSha?: string | null;
   commit_sha?: string | null;
   prUrl?: string | null;
   pr_url?: string | null;
+  prState?: string | null;
+  pr_state?: string | null;
+  prMergedAt?: string | null;
+  pr_merged_at?: string | null;
+  prClosedAt?: string | null;
+  pr_closed_at?: string | null;
+  cleanupEligible?: boolean | null;
+  cleanup_eligible?: boolean | null;
+  cleanupReason?: string | null;
+  cleanup_reason?: string | null;
+  cleanupStatus?: string | null;
+  cleanup_status?: string | null;
+  cleanupError?: string | null;
+  cleanup_error?: string | null;
+  executionLogEntries?: unknown;
+  execution_log_entries?: unknown;
+  executionLogs?: unknown;
+  execution_logs?: unknown;
   error?: string | null;
   message?: string | null;
 }
@@ -188,6 +216,7 @@ export class StudioRunnerSession {
       if (repo?.path) {
         this.dependencies.rememberRunnerAttempt(createRunnerLifecycleLogEvent({
           repoPath: repo.path,
+          endpoint: this.dependencies.getSettings().endpoint,
           event: "secret.generated",
           message: "Session secret generated.",
           status: "unknown",
@@ -265,6 +294,7 @@ export class StudioRunnerSession {
       if (repo?.path) {
         this.dependencies.rememberRunnerAttempt(createRunnerLifecycleLogEvent({
           repoPath: repo.path,
+          endpoint,
           event: "runner.started",
           message: nextStatus.detail,
           status: "running",
@@ -300,6 +330,7 @@ export class StudioRunnerSession {
       if (repo?.path) {
         this.dependencies.rememberRunnerAttempt(createRunnerLifecycleLogEvent({
           repoPath: repo.path,
+          endpoint: this.dependencies.getSettings().endpoint,
           event: "runner.stopped",
           message: dto.message,
           status: "unknown",
@@ -470,7 +501,12 @@ export class StudioRunnerSession {
         previousAttempt: input.retryAttempt,
       });
 
-      this.dependencies.rememberRunnerAttempt(pendingAttempt);
+      this.dependencies.rememberRunnerAttempt({
+        ...pendingAttempt,
+        source: "dispatch",
+        rowKind: "run",
+        eventName: "build.requested",
+      });
       this.dependencies.setMessage("Sending signed build.requested to Studio Runner...");
 
       const response = await this.dependencies.invoke<RunnerDispatchResponseDto>("dispatch_studio_runner_event", {
@@ -493,7 +529,9 @@ export class StudioRunnerSession {
       this.dependencies.rememberRunnerAttempt({
         ...nextAttempt,
         source: "dispatch",
+        rowKind: "run",
         eventName: response.accepted ? "runner.accepted" : "runner.dispatch.failed",
+        executionStatus: response.accepted ? "accepted" : "failed",
       });
       this.dependencies.clearRunnerDispatchIssues(repoPath, changeName);
       this.dependencies.setMessage(
@@ -511,6 +549,7 @@ export class StudioRunnerSession {
         this.dependencies.rememberRunnerAttempt({
           ...failedAttempt,
           source: "dispatch",
+          rowKind: "run",
           eventName: "runner.dispatch.failed",
           executionStatus: "failed",
         });
@@ -540,6 +579,7 @@ export class StudioRunnerSession {
     if (currentRepoPath) {
       this.dependencies.rememberRunnerAttempt(createRunnerLifecycleLogEvent({
         repoPath: currentRepoPath,
+        endpoint: this.dependencies.getSettings().endpoint,
         event: "stream.error",
         message: message || "Runner stream failed.",
         status: "failed",
@@ -556,6 +596,7 @@ export class StudioRunnerSession {
     const connectingAt = new Date().toISOString();
     const connectingAttempt = createRunnerLifecycleLogEvent({
       repoPath: repo.path,
+      endpoint: this.dependencies.getSettings().endpoint,
       event: "stream.connecting",
       message: "Connecting Runner event stream.",
       status: "running",
@@ -572,6 +613,7 @@ export class StudioRunnerSession {
       }
       this.dependencies.replaceRunnerAttempt(connectingAttempt.eventId, createRunnerLifecycleLogEvent({
         repoPath: repo.path,
+        endpoint: this.dependencies.getSettings().endpoint,
         event: "stream.connected",
         message: "Runner event stream connected.",
         status: "running",
@@ -580,6 +622,7 @@ export class StudioRunnerSession {
       this.dependencies.setStreamStatus("error");
       this.dependencies.replaceRunnerAttempt(connectingAttempt.eventId, createRunnerLifecycleLogEvent({
         repoPath: repo.path,
+        endpoint: this.dependencies.getSettings().endpoint,
         event: "stream.error",
         message: this.dependencies.errorMessage(error),
         status: "failed",
@@ -624,10 +667,28 @@ export function runnerStreamEventFromDto(dto: RunnerStreamEventDto): RunnerStrea
     runId: dto.runId ?? dto.run_id ?? null,
     recordedAt: dto.recordedAt ?? dto.recorded_at ?? null,
     workspacePath: dto.workspacePath ?? dto.workspace_path ?? null,
+    workspaceStatus: dto.workspaceStatus ?? dto.workspace_status ?? null,
+    workspaceCreatedAt: dto.workspaceCreatedAt ?? dto.workspace_created_at ?? null,
+    workspaceUpdatedAt: dto.workspaceUpdatedAt ?? dto.workspace_updated_at ?? null,
     sessionId: dto.sessionId ?? dto.session_id ?? null,
+    sourceRepoPath: dto.sourceRepoPath ?? dto.source_repo_path ?? null,
+    baseCommitSha: dto.baseCommitSha ?? dto.base_commit_sha ?? null,
     branchName: dto.branchName ?? dto.branch_name ?? null,
     commitSha: dto.commitSha ?? dto.commit_sha ?? null,
     prUrl: dto.prUrl ?? dto.pr_url ?? null,
+    prState: dto.prState ?? dto.pr_state ?? null,
+    prMergedAt: dto.prMergedAt ?? dto.pr_merged_at ?? null,
+    prClosedAt: dto.prClosedAt ?? dto.pr_closed_at ?? null,
+    cleanupEligible: dto.cleanupEligible ?? dto.cleanup_eligible ?? null,
+    cleanupReason: dto.cleanupReason ?? dto.cleanup_reason ?? null,
+    cleanupStatus: dto.cleanupStatus ?? dto.cleanup_status ?? null,
+    cleanupError: dto.cleanupError ?? dto.cleanup_error ?? null,
+    executionLogEntries:
+      dto.executionLogEntries ??
+      dto.execution_log_entries ??
+      dto.executionLogs ??
+      dto.execution_logs ??
+      null,
     error: dto.error ?? null,
     message: dto.message ?? null,
   };

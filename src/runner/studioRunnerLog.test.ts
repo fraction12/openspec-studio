@@ -7,9 +7,13 @@ import {
   mergeRunnerStreamEvent,
   normalizeRunnerDispatchAttempts,
   replaceRunnerDispatchAttempt,
+  runnerAttemptEventLabel,
+  runnerAttemptExecutionDetails,
   runnerAttemptMessage,
   runnerAttemptResponseLabel,
   runnerAttemptRowId,
+  runnerAttemptRowKind,
+  runnerAttemptStateLabel,
   runnerAttemptStatusHealth,
   runnerAttemptStatusLabel,
   runnerDispatchHistoryForChange,
@@ -69,6 +73,16 @@ describe("Studio Runner Log Module", () => {
       status: "completed",
       prUrl: "https://github.com/example/repo/pull/1",
       commitSha: "abcdef123456",
+      sourceRepoPath: "/repo/source",
+      baseCommitSha: "11111112222222",
+      branchName: "studio/demo",
+      prState: "open",
+      workspaceStatus: "ready",
+      workspaceCreatedAt: "2026-04-29T12:00:30Z",
+      workspaceUpdatedAt: "2026-04-29T12:02:30Z",
+      cleanupEligible: true,
+      cleanupReason: "completed",
+      cleanupStatus: "pending",
       recordedAt: "2026-04-29T12:03:00Z",
     }, "/repo");
 
@@ -78,8 +92,127 @@ describe("Studio Runner Log Module", () => {
       executionStatus: "completed",
       prUrl: "https://github.com/example/repo/pull/1",
       commitSha: "abcdef123456",
+      sourceRepoPath: "/repo/source",
+      baseCommitSha: "11111112222222",
+      branchName: "studio/demo",
+      prState: "open",
+      workspaceStatus: "ready",
+      workspaceCreatedAt: "2026-04-29T12:00:30Z",
+      workspaceUpdatedAt: "2026-04-29T12:02:30Z",
+      cleanupEligible: true,
+      cleanupReason: "completed",
+      cleanupStatus: "pending",
       source: "stream",
     });
+  });
+
+  it("classifies row kinds and collapses repeated non-run events without collapsing runs", () => {
+    const firstStreamError = createRunnerLifecycleLogEvent({
+      repoPath: "/repo",
+      endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events",
+      event: "stream.error",
+      message: "Runner stream failed.",
+      status: "failed",
+      occurredAt: "2026-04-29T12:00:00Z",
+    });
+    const repeatedStreamError = createRunnerLifecycleLogEvent({
+      repoPath: "/repo",
+      endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events",
+      event: "stream.error",
+      message: "Runner stream failed.",
+      status: "failed",
+      occurredAt: "2026-04-29T12:01:00Z",
+    });
+
+    const collapsed = upsertRunnerDispatchAttempt(
+      upsertRunnerDispatchAttempt([], firstStreamError),
+      repeatedStreamError,
+    );
+
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0]).toMatchObject({
+      repeatCount: 2,
+      firstRecordedAt: "2026-04-29T12:00:00Z",
+      latestRecordedAt: "2026-04-29T12:01:00Z",
+    });
+    expect(runnerAttemptRowKind(collapsed[0])).toBe("stream");
+    expect(runnerAttemptStateLabel(collapsed[0])).toBe("error");
+    expect(runnerAttemptEventLabel(collapsed[0])).toBe("Stream · stream.error");
+
+    const distinctRuns = upsertRunnerDispatchAttempt(
+      [attempt({ eventId: "evt_one", runId: "run_one", message: "Runner running." })],
+      attempt({ eventId: "evt_two", runId: "run_two", message: "Runner running." }),
+    );
+
+    expect(distinctRuns.map((item) => item.eventId)).toEqual(["evt_two", "evt_one"]);
+  });
+
+  it("bounds and redacts structured execution log entries", () => {
+    const entries = Array.from({ length: 205 }, (_, index) => ({
+      recordedAt: `2026-04-29T12:${String(index % 60).padStart(2, "0")}:00Z`,
+      level: "info",
+      source: "agent",
+      phase: "agent",
+      message: index === 204 ? "x".repeat(5000) : `entry ${index}`,
+      sequence: index,
+      details: {
+        keep: "visible",
+        token: "secret-token",
+        nested: { authorization: "Bearer secret", value: "safe" },
+      },
+    }));
+
+    const [next] = mergeRunnerStreamEvent([], {
+      eventId: "evt_demo",
+      runId: "run_demo",
+      eventName: "runner.running",
+      repoPath: "/repo",
+      changeName: "demo",
+      status: "running",
+      executionLogEntries: entries,
+    }, "/repo");
+
+    const details = runnerAttemptExecutionDetails(next);
+    const lastEntry = details.entries[details.entries.length - 1];
+
+    expect(next.executionLogEntries).toHaveLength(200);
+    expect(next.executionLogEntries?.[0]?.sequence).toBe(5);
+    expect(next.executionLogTruncated).toBe(true);
+    expect(lastEntry?.message.length).toBeLessThanOrEqual(4096);
+    expect(JSON.stringify(lastEntry?.details)).toContain("[redacted]");
+    expect(JSON.stringify(lastEntry?.details)).not.toContain("secret-token");
+  });
+
+  it("derives summary milestones and unavailable state from current Symphony metadata", () => {
+    const details = runnerAttemptExecutionDetails(attempt({
+      eventId: "evt_demo",
+      runId: "run_demo",
+      repoChangeKey: "/repo::demo",
+      executionStatus: "blocked",
+      recordedAt: "2026-04-29T12:00:00Z",
+      workspacePath: "/tmp/work",
+      workspaceStatus: "ready",
+      workspaceCreatedAt: "2026-04-29T11:59:00Z",
+      workspaceUpdatedAt: "2026-04-29T12:00:30Z",
+      branchName: "studio/demo",
+      baseCommitSha: "111111122222",
+      commitSha: "abcdef123456",
+      prUrl: "https://github.com/example/repo/pull/1",
+      cleanupEligible: false,
+      cleanupReason: "blocked",
+      cleanupStatus: "skipped",
+      error: "Validation failed.",
+    }));
+
+    expect(details.unavailableReason).toBe("not-provided");
+    expect(details.entries.map((entry) => entry.phase)).toEqual([
+      "ingress",
+      "workspace",
+      "publication",
+      "cleanup",
+      "agent",
+    ]);
+    expect(details.entries.every((entry) => entry.derived)).toBe(true);
   });
 
   it("upserts, replaces, sorts, and caps runner log attempts", () => {
@@ -151,6 +284,9 @@ describe("Studio Runner Log Module", () => {
           statusCode: 202,
           executionStatus: "completed",
           source: "stream",
+          workspaceStatus: "ready",
+          cleanupEligible: true,
+          cleanupStatus: "complete",
         },
         { eventId: "", repoPath: "/repo" },
       ]),

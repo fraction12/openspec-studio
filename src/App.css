@@ -2062,20 +2062,28 @@ button:disabled {
 
 .runner-requests-table {
   --table-row-height: 78px;
-  width: max(100%, 1160px);
-  min-width: 1160px;
+  width: max(100%, 1240px);
+  min-width: 1240px;
+}
+
+.runner-requests-table col.runner-expand-col {
+  width: 58px;
 }
 
 .runner-requests-table col.runner-status-col {
-  width: 140px;
+  width: 132px;
 }
 
 .runner-requests-table col.runner-event-col {
-  width: 260px;
+  width: 250px;
+}
+
+.runner-requests-table col.runner-subject-col {
+  width: 220px;
 }
 
 .runner-requests-table col.runner-response-col {
-  width: 230px;
+  width: 410px;
 }
 
 .runner-requests-table col.runner-updated-col {
@@ -2090,6 +2098,31 @@ button:disabled {
 
 .runner-requests-table .health-pill {
   min-width: 112px;
+}
+
+.runner-expand-cell,
+.runner-state-cell {
+  vertical-align: top;
+}
+
+.runner-expand-button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-strong);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+}
+
+.runner-expand-button:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-subtle);
 }
 
 .runner-request-title-cell {
@@ -2118,10 +2151,219 @@ button:disabled {
   white-space: nowrap;
 }
 
+.runner-event-summary,
+.runner-subject-cell,
+.runner-message-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.runner-event-summary strong,
+.runner-subject-cell strong {
+  overflow: hidden;
+  color: var(--color-text-strong);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runner-subject-cell span,
+.runner-message-cell small {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runner-message-cell span,
+.runner-message-cell a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .runner-response-cell {
   line-height: var(--line-height-md);
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.runner-detail-row td {
+  padding: 0;
+  border-top: 0;
+  background: var(--color-surface-subtle);
+}
+
+.runner-row-details {
+  display: grid;
+  gap: var(--space-14);
+  padding: var(--space-14) var(--space-15) var(--space-16);
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.runner-detail-columns {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-12);
+}
+
+.runner-metadata-section {
+  min-width: 0;
+}
+
+.runner-metadata-section h4,
+.runner-execution-heading h4 {
+  margin: 0 0 var(--space-8);
+  color: var(--color-text-strong);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-md);
+}
+
+.runner-metadata-section p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+}
+
+.runner-metadata-section dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.runner-metadata-section dl div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.runner-metadata-section dt {
+  color: var(--color-muted);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.04em;
+  line-height: var(--line-height-sm);
+  text-transform: uppercase;
+}
+
+.runner-metadata-section dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+  overflow-wrap: anywhere;
+}
+
+.runner-execution-section {
+  display: grid;
+  gap: var(--space-10);
+}
+
+.runner-execution-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-10);
+}
+
+.runner-execution-heading span {
+  border: 1px solid #d9b86c;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  color: #6c4f10;
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+}
+
+.runner-log-notice {
+  display: grid;
+  gap: 2px;
+  border-left: 3px solid var(--color-border-strong);
+  padding: var(--space-8) var(--space-10);
+  background: var(--color-surface);
+}
+
+.runner-log-notice.error {
+  border-left-color: #b54b3f;
+}
+
+.runner-log-notice strong {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+}
+
+.runner-log-notice span {
+  color: var(--color-muted-strong);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+}
+
+.runner-execution-list {
+  display: grid;
+  gap: var(--space-8);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runner-execution-list li {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-10);
+  background: var(--color-surface);
+}
+
+.runner-execution-entry-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px var(--space-8);
+  align-items: center;
+}
+
+.runner-execution-entry-header span,
+.runner-execution-entry-header em {
+  color: var(--color-muted);
+  font-size: var(--font-size-2xs);
+  font-style: normal;
+  line-height: var(--line-height-sm);
+}
+
+.runner-execution-entry-header strong {
+  color: var(--color-text-strong);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+}
+
+.runner-execution-list p {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-md);
+}
+
+.runner-execution-list pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-sm);
+  padding: var(--space-8);
+  background: var(--color-surface-subtle);
+  color: var(--color-muted-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .runner-requests-table .updated-cell {
