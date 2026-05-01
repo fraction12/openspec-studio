@@ -7,6 +7,7 @@ import "./App.css";
 import {
   createOpenSpecOperationIssue,
   deriveChangeBuildStatus,
+  deriveRunnerBuildActionState,
   isPersistableLocalRepoPath,
   sameOpenSpecOperationScope,
   type OpenSpecOperationIssue,
@@ -101,6 +102,7 @@ import {
   latestRunnerAttempt,
   mergeRunnerStreamEvent,
   replaceRunnerDispatchAttempt,
+  runnerChangeIsBuilding,
   runnerAttemptEventLabel,
   runnerAttemptExecutionDetails,
   runnerAttemptResponseLabel,
@@ -486,6 +488,10 @@ function App() {
     runnerStatus,
     sessionSecretConfigured: runnerSessionSecretConfigured,
   });
+  const selectedChangeBuilding = useMemo(
+    () => runnerChangeIsBuilding(persistedAppState.runnerDispatchAttempts, repo?.path, selectedChange?.name),
+    [persistedAppState.runnerDispatchAttempts, repo?.path, selectedChange?.name],
+  );
   const repoRunnerDispatchHistory = useMemo(
     () => runnerDispatchHistoryForRepo(persistedAppState.runnerDispatchAttempts, repo?.path),
     [persistedAppState.runnerDispatchAttempts, repo?.path],
@@ -1177,6 +1183,7 @@ function App() {
         runnerSettings={runnerSettings}
         runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
+        selectedChangeBuilding={selectedChangeBuilding}
         runnerStreamStatus={runnerStreamStatus}
         artifactDetailModel={selectedChangeDetailModel}
         onDetailTabChange={setDetailTab}
@@ -1202,6 +1209,19 @@ function App() {
         onDismissIssue={dismissOperationIssue}
       />
     </div>
+  );
+}
+
+function BuildingActionLabel() {
+  return (
+    <span className="building-action-label">
+      Building
+      <span className="building-ellipsis" aria-hidden="true">
+        <span>.</span>
+        <span>.</span>
+        <span>.</span>
+      </span>
+    </span>
   );
 }
 
@@ -2144,6 +2164,7 @@ function Inspector({
   runnerSettings,
   runnerSessionSecretConfigured,
   runnerDispatchBusy,
+  selectedChangeBuilding,
   runnerStreamStatus,
   artifactDetailModel,
   onDetailTabChange,
@@ -2168,6 +2189,7 @@ function Inspector({
   runnerSettings: RunnerSettings;
   runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
+  selectedChangeBuilding: boolean;
   runnerStreamStatus: "disconnected" | "connecting" | "connected" | "error";
   artifactDetailModel: ArtifactDetailViewModel | null;
   onDetailTabChange: (tab: DetailTab) => void;
@@ -2251,8 +2273,11 @@ function Inspector({
   const tabs = artifactDetailModel?.tabs ?? [];
   const selectedDetailTab = artifactDetailModel?.selectedTab ?? "proposal";
   const selectedChangeIssues = artifactDetailModel?.selectedChangeIssues ?? [];
-  const runnerActionUnavailableReason =
-    runnerDispatchEligibility.reasons[0] ?? "Build with agent is unavailable for this change.";
+  const runnerActionState = deriveRunnerBuildActionState({
+    dispatchBusy: runnerDispatchBusy,
+    selectedChangeBuilding,
+    eligibility: runnerDispatchEligibility,
+  });
 
   return (
     <aside className="inspector artifact-inspector change-inspector" aria-label="Change artifact inspector">
@@ -2263,16 +2288,12 @@ function Inspector({
             <button
               type="button"
               className="primary-button"
-              disabled={runnerDispatchBusy || !runnerDispatchEligibility.eligible}
-              title={runnerDispatchEligibility.eligible ? undefined : runnerActionUnavailableReason}
-              aria-label={
-                runnerDispatchEligibility.eligible
-                  ? "Build selected change with agent"
-                  : "Build with agent unavailable: " + runnerActionUnavailableReason
-              }
+              disabled={runnerActionState.disabled}
+              title={runnerActionState.title}
+              aria-label={runnerActionState.ariaLabel}
               onClick={onDispatchRunner}
             >
-              {runnerDispatchBusy ? "Dispatching..." : "Build with agent"}
+              {runnerActionState.building ? <BuildingActionLabel /> : runnerActionState.label}
             </button>
           </div>
         ) : null}

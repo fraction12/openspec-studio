@@ -1,11 +1,11 @@
 - [x] 1.1 Define selected-change building state from existing Runner Log / Studio Runner Session data.
 - [x] 1.2 Define inspector button state precedence for dispatching, building, unavailable, and eligible states.
 - [x] 1.3 Define animated ellipsis behavior and reduced-motion fallback.
-- [ ] 2.1 Add a frontend model helper that detects in-flight runs for a repository/change.
-- [ ] 2.2 Wire selected-change building state into the change inspector action props.
-- [ ] 2.3 Disable the inspector Build action and show Building... when the selected change is already running.
-- [ ] 2.4 Add a simple ellipsis animation without layout shift and with reduced-motion fallback.
-- [ ] 2.5 Ensure non-run lifecycle/stream/diagnostic rows do not trigger Building state.
-- [ ] 2.6 Ensure completed, blocked, failed, and conflict states return to normal eligibility behavior.
-- [ ] 2.7 Add tests for same-change running detection, different-change eligibility, terminal-state reset, and non-run-row ignore behavior.
-- [ ] 3.1 Run TypeScript checks, relevant frontend tests, build if affected, and OpenSpec validation.
+- [x] 2.1 Add a frontend model helper that detects in-flight runs for a repository/change.
+- [x] 2.2 Wire selected-change building state into the change inspector action props.
+- [x] 2.3 Disable the inspector Build action and show Building... when the selected change is already running.
+- [x] 2.4 Add a simple ellipsis animation without layout shift and with reduced-motion fallback.
+- [x] 2.5 Ensure non-run lifecycle/stream/diagnostic rows do not trigger Building state.
+- [x] 2.6 Ensure completed, blocked, failed, and conflict states return to normal eligibility behavior.
+- [x] 2.7 Add tests for same-change running detection, different-change eligibility, terminal-state reset, and non-run-row ignore behavior.
+- [x] 3.1 Run TypeScript checks, relevant frontend tests, build if affected, and OpenSpec validation.

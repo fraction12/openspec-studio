@@ -121,6 +121,15 @@ export interface RunnerDispatchEligibility {
   reasons: string[];
 }
 
+export interface RunnerBuildActionState {
+  disabled: boolean;
+  label: "Build with agent" | "Building..." | "Dispatching...";
+  building: boolean;
+  ariaLabel: string;
+  title?: string;
+  unavailableReason?: string;
+}
+
 export interface RunnerDispatchChangeReadiness {
   kind: ChangeBuildStatusKind;
   label?: string;
@@ -750,6 +759,56 @@ export function deriveRunnerDispatchEligibility({
   return {
     eligible: reasons.length === 0,
     reasons,
+  };
+}
+
+export function deriveRunnerBuildActionState({
+  dispatchBusy,
+  selectedChangeBuilding,
+  eligibility,
+}: {
+  dispatchBusy: boolean;
+  selectedChangeBuilding: boolean;
+  eligibility: RunnerDispatchEligibility;
+}): RunnerBuildActionState {
+  if (dispatchBusy) {
+    return {
+      disabled: true,
+      label: "Dispatching...",
+      building: false,
+      ariaLabel: "Dispatching selected change to agent",
+    };
+  }
+
+  if (selectedChangeBuilding) {
+    return {
+      disabled: true,
+      label: "Building...",
+      building: true,
+      title: "This change is already being built by Studio Runner.",
+      ariaLabel: "Selected change is already building with agent",
+    };
+  }
+
+  if (!eligibility.eligible) {
+    const unavailableReason =
+      eligibility.reasons[0] ?? "Build with agent is unavailable for this change.";
+
+    return {
+      disabled: true,
+      label: "Build with agent",
+      building: false,
+      title: unavailableReason,
+      ariaLabel: "Build with agent unavailable: " + unavailableReason,
+      unavailableReason,
+    };
+  }
+
+  return {
+    disabled: false,
+    label: "Build with agent",
+    building: false,
+    ariaLabel: "Build selected change with agent",
   };
 }
 
