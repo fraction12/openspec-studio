@@ -9,7 +9,7 @@ The app already persists:
 - per-repo selected change/spec ids;
 - per-repo change/spec table sort preferences;
 - validation snapshots with file signatures and diagnostic detail;
-- Studio Runner state, endpoint, dispatch history, and execution metadata delivered by the Runner integration.
+- Studio Runner endpoint, dispatch history, and execution metadata delivered by the Runner integration.
 
 The app also already performs background refresh every 15 seconds for the active repository and restores the last successful repository on launch. Those behaviors are useful defaults, but users need explicit control over them.
 
@@ -17,26 +17,26 @@ The app also already performs background refresh every 15 seconds for the active
 
 In scope:
 
-- open/close Settings from global shell chrome;
+- open/close Settings from a global entry pinned at the bottom of the left panel;
 - app-wide toggles for launch restore and automatic background refresh;
 - recent repo management;
 - current-repo continuity reset for selection and table sort state;
 - validation snapshot/diagnostic cache clearing;
 - theme/density controls only when their stored values are applied by the shell immediately;
-- global Studio Runner configuration defaults for implemented Runner behavior, starting with model and effort;
+- global Studio Runner execution defaults for implemented Runner behavior, starting with model and effort;
 - explanatory copy for local data and privacy boundaries.
 
 Out of scope:
 
 - creating new OpenSpec authoring workflows;
 - generic provider management while OpenSpec is the only shipped provider;
-- runner session secret, start/stop lifecycle, live stream state, and dispatch history controls; these remain operational Runner workspace surfaces, not durable Settings controls;
+- runner endpoint, session secret, start/stop lifecycle, live stream state, and dispatch history controls; these remain operational Runner workspace surfaces, not durable Settings controls;
 - graph, timeline, guided workflow, or future adapter controls before those features exist;
 - editing OpenSpec project files from Settings.
 
 ## Navigation Model
 
-Use a dedicated Settings surface rather than hiding controls inside unrelated boards. The shell should expose a single Settings entry near global app/repository controls. Opening Settings should preserve the active repository/workspace in memory and let users return without losing selection or filter state.
+Use a dedicated Settings surface rather than hiding controls inside unrelated boards. The shell should expose a single Settings entry pinned to the bottom of the left panel, separated from repository picking and recent repository content. Opening Settings should replace the main workbench content area while preserving the active repository/workspace in memory and letting users return without losing selection or filter state.
 
 The Settings surface should distinguish scopes clearly:
 
@@ -44,7 +44,7 @@ The Settings surface should distinguish scopes clearly:
 - **Repositories**: recent repository list, remove one recent repo, clear all recents, clear last-repo restore target.
 - **Current Repository**: reset selected change/spec and table sort state for the active repo.
 - **Validation And Diagnostics**: show what local validation data may be stored and clear validation snapshots for the current repo or all repos.
-- **Integrations**: render only settings contributed by implemented capabilities. Studio Runner should expose durable global Runner defaults here; no placeholder cards for unavailable integrations.
+- **Integrations**: render only settings contributed by implemented capabilities. Studio Runner should expose durable global Runner execution defaults here; no endpoint editor and no placeholder cards for unavailable integrations.
 
 When no repository is active, current-repository controls should be unavailable or omitted, while app-wide and all-repo data controls remain available.
 
@@ -78,7 +78,7 @@ Add focused persistence helpers instead of mutating the state shape ad hoc from 
 - reset one repo's UI continuity state;
 - clear validation snapshot for one repo;
 - clear validation snapshots for all repos;
-- update global Studio Runner defaults.
+- update global Studio Runner execution defaults.
 
 Normalization must continue to drop invalid paths, invalid enum values, malformed snapshots, and unknown future versions safely.
 
@@ -128,11 +128,11 @@ Studio Runner defaults:
 - changed defaults apply only to future Studio-managed dispatches;
 - historical Runner Log rows remain immutable;
 - the Runner workspace may show a compact summary/link to Settings, but Settings is the source of truth for durable defaults;
-- session secret, start/stop/status, stream status, and dispatch history stay in the Runner workspace/inspector because they are operational state, not durable app preferences.
+- endpoint, session secret, start/stop/status, stream status, and dispatch history stay in the Runner workspace/inspector because they are operational state or connection configuration, not part of this first Settings pass.
 
 ## Coordination With Active Changes
 
-`introduce-studio-runner` owns runner behavior, signing secret handling, lifecycle controls, dispatch history, and event streaming. Because Runner behavior now exists, `app-settings` should host durable global Runner defaults such as model and effort, while leaving session-only secrets, lifecycle, status, and Runner Log/history in the Runner workspace.
+`introduce-studio-runner` owns runner behavior, endpoint editing, signing secret handling, lifecycle controls, dispatch history, and event streaming. Because Runner behavior now exists, `app-settings` should host durable global Runner execution defaults such as model and effort, while leaving endpoint, session-only secrets, lifecycle, status, and Runner Log/history in the Runner workspace.
 
 `introduce-openspec-provider-adapter` keeps OpenSpec as the only implemented provider. Settings should not expose provider selection until multiple implemented providers or configurable adapter roots exist.
 

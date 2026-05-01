@@ -1,7 +1,7 @@
 ## 1. Settings Scope And Navigation
 
-- [ ] 1.1 Add a global Settings entry to the shell without disrupting repository selection, board state, or inspector state.
-- [ ] 1.2 Implement a dedicated Settings surface with app-wide, repositories, current-repository, validation/diagnostics, and implemented integrations groups.
+- [ ] 1.1 Add a global Settings entry pinned to the bottom of the left panel without disrupting repository selection, board state, or inspector state.
+- [ ] 1.2 Implement a dedicated Settings surface that replaces the main workbench content area with app-wide, repositories, current-repository, validation/diagnostics, and implemented integrations groups.
 - [ ] 1.3 Hide or omit settings for unimplemented capabilities; render Studio Runner settings only for real durable Runner defaults and do not render placeholder provider/graph/timeline controls.
 
 ## 2. Persistence And Data Controls
@@ -18,7 +18,7 @@
 - [ ] 3.2 Gate automatic background repository refresh behind the auto-refresh setting while keeping manual refresh available.
 - [ ] 3.3 Ensure clearing validation snapshots updates the current workspace trust state without modifying OpenSpec files.
 - [ ] 3.4 Add theme/density controls only if the implementation applies those preferences immediately; otherwise leave them hidden.
-- [ ] 3.5 Add global Studio Runner model/effort controls in Settings and keep session secret, lifecycle, live status, selected-change dispatch, and Runner Log in the Runner workspace/action surfaces.
+- [ ] 3.5 Add global Studio Runner model/effort controls in Settings and keep endpoint editing, session secret, lifecycle, live status, selected-change dispatch, and Runner Log in the Runner workspace/action surfaces.
 
 ## 4. Verification
 

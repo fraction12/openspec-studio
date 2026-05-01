@@ -78,16 +78,22 @@ The system SHALL present recent repositories as a switcher that includes the act
 - **AND** failure to reopen a recent repository does not remove the current valid workspace
 
 ### Requirement: Repository paths are supportive details, not primary controls
-The system SHALL prioritize repository names and native actions while keeping full filesystem paths available for inspection and copying.
+The system SHALL prioritize repository names and native actions while keeping full filesystem paths available for inspection and copying outside primary chrome.
 
 #### Scenario: Repository path is long
 - **WHEN** the active repository path exceeds the available sidebar or header width
 - **THEN** the app displays the repository name as the primary label
-- **AND** the full path remains available through copy, tooltip, or detail affordance without breaking layout
+- **AND** the workspace header SHALL NOT show the full path as persistent secondary text
+- **AND** the full path remains available through copy, tooltip, recent-source detail, or a lower-emphasis detail affordance without breaking layout
 
 #### Scenario: User needs the repository in Finder
 - **WHEN** the user requests a filesystem action for the active repository
 - **THEN** the app can reveal the repository folder in the operating system file manager
+
+#### Scenario: User opens a repository
+- **WHEN** the user uses the left repository panel
+- **THEN** the panel SHALL show the native folder chooser and recent repositories
+- **AND** the panel SHALL NOT expose an `Enter path manually` affordance
 
 ### Requirement: Search state is scoped to its data surface
 The application SHALL avoid silently applying a search query from one primary data surface to another unrelated data surface.

@@ -6,7 +6,7 @@ The settings change should give users control over those existing behaviors with
 
 ## What Changes
 
-- Add a dedicated app settings surface reachable from the main shell.
+- Add a dedicated app settings surface reachable from a global Settings entry pinned at the bottom of the left panel.
 - Group settings by scope: app-wide behavior, current repository continuity, local data/privacy, and implemented feature-specific integrations.
 - Surface controls for existing behavior:
   - auto-reopen of the last successful repository on launch;
@@ -16,7 +16,8 @@ The settings change should give users control over those existing behaviors with
   - validation snapshot and diagnostic cache clearing;
   - theme/density preferences only if the shell applies them immediately.
 - Keep Settings local-first: preferences and data management use app-local persistence and never modify OpenSpec project files.
-- Avoid dormant or speculative controls. Studio Runner now exists, so Settings should include real global Runner configuration controls while provider, graph, timeline, and guided-workflow settings remain hidden until those capabilities expose real configuration.
+- Avoid dormant or speculative controls. Studio Runner now exists, so Settings should include real global Runner execution defaults while provider, graph, timeline, and guided-workflow settings remain hidden until those capabilities expose real configuration.
+- Keep the Studio Runner endpoint on the Runner page for this pass; Settings owns durable execution defaults, not live connection/lifecycle controls.
 
 ## Capabilities
 
@@ -31,16 +32,21 @@ The settings change should give users control over those existing behaviors with
 
 ## Impact
 
-- Frontend settings page/panel and navigation affordance.
+- Frontend settings page and left-panel navigation affordance.
 - Persistence model additions for user-controlled app behavior and global Runner defaults, plus helper operations for clearing recent repositories, repo UI state, and validation snapshots.
 - Tests for settings persistence, clearing behavior, launch restore behavior, auto-refresh gating, and no-op behavior outside Tauri where applicable.
 - Coordination with active changes:
-  - `introduce-studio-runner` now contributes real Runner behavior, so Settings should host global Runner defaults such as model and effort while operational lifecycle remains in the Runner workspace.
+  - `introduce-studio-runner` now contributes real Runner behavior, so Settings should host global Runner execution defaults such as model and effort while endpoint, session, stream, and operational lifecycle remain in the Runner workspace.
   - `introduce-openspec-provider-adapter` may later contribute provider selection or adapter controls, but this change should not expose provider management while OpenSpec is the only shipped provider.
+
+## Decisions
+
+- Settings should replace the main workbench content area while open, preserving the active repository, board, selection, filters, and inspector state for return.
+- The Settings navigation button should live at the bottom of the left panel because these are global app settings rather than repository-board controls.
+- Clearing validation snapshots should support both current repository and all repositories.
+- Theme/density controls stay hidden in the first implementation unless the shell applies them immediately.
+- Runner endpoint stays on the Runner page for now.
 
 ## Open Questions
 
-- Should Settings replace the workbench content area while open, or appear as a right-side/global panel?
-- Should clearing validation snapshots support current repo first, all repos, or both?
-- Should theme/density controls be part of the first implementation if they require visual application work, or should they remain hidden until the existing persisted fields are wired into the shell?
 - Which curated model aliases should ship as the initial global Runner default options before Studio can discover them from Symphony/Codex?

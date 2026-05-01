@@ -16,9 +16,15 @@ The settings surface SHALL expose controls only for behavior, persisted data, or
 ### Requirement: Settings distinguish app and repository scope
 The settings surface SHALL make app-wide controls, repository-history controls, current-repository controls, and validation/diagnostic data controls visually and behaviorally distinct.
 
+#### Scenario: Settings entry is globally placed
+- **WHEN** the shell renders the left panel
+- **THEN** it SHALL show a Settings navigation entry pinned at the bottom of the left panel
+- **AND** the Settings entry SHALL be visually distinct from repository selection and recent repository actions.
+
 #### Scenario: Settings opens while a repository is active
 - **WHEN** the user opens Settings from the shell
 - **THEN** the active repository and workspace remain loaded in memory
+- **AND** Settings SHALL replace the main workbench content area rather than opening in the selected-change or selected-spec inspector
 - **AND** returning to the workbench preserves the current board, selection, filters, and inspector state unless the user chose a reset action.
 
 #### Scenario: Settings opens without a repository
@@ -92,13 +98,14 @@ The settings surface SHALL allow users to clear app-local validation snapshots a
 
 
 ### Requirement: Global Studio Runner defaults are configurable
-The settings surface SHALL expose durable global defaults for implemented Studio Runner execution behavior while keeping operational runner state in the Runner workspace.
+The settings surface SHALL expose durable global defaults for implemented Studio Runner execution behavior while keeping operational runner state and endpoint configuration in the Runner workspace.
 
 #### Scenario: Runner defaults are available
 - **GIVEN** Studio Runner behavior is implemented
 - **WHEN** the user opens Settings
 - **THEN** Settings SHALL include a Studio Runner integration section for global Runner defaults
 - **AND** the section SHALL allow users to choose default model and effort values for future Studio-managed runner work
+- **AND** the section SHALL NOT include the Runner endpoint editor in the first implementation
 - **AND** default selections SHALL preserve Symphony/Codex configured defaults rather than forcing explicit values.
 
 #### Scenario: Runner defaults apply only to future work
@@ -109,7 +116,7 @@ The settings surface SHALL expose durable global defaults for implemented Studio
 
 #### Scenario: Operational Runner state stays out of Settings
 - **WHEN** the user opens Settings
-- **THEN** Settings SHALL NOT host session-secret generation, start, stop, live status, stream connection state, selected-change dispatch, or Runner Log/history as primary controls
+- **THEN** Settings SHALL NOT host Runner endpoint editing, session-secret generation, start, stop, live status, stream connection state, selected-change dispatch, or Runner Log/history as primary controls
 - **AND** those operational controls SHALL remain in the Runner workspace or selected-change action surface.
 
 ### Requirement: Future integrations contribute only real settings
@@ -122,7 +129,7 @@ The settings surface SHALL provide a place for implemented integrations to expos
 #### Scenario: Runner integration is available
 - **WHEN** Studio Runner behavior has been implemented
 - **THEN** Settings MAY show real durable Runner defaults
-- **AND** Settings SHALL still keep session-only secrets, lifecycle, and live operational history out of the durable settings surface.
+- **AND** Settings SHALL still keep endpoint editing, session-only secrets, lifecycle, and live operational history out of the durable settings surface.
 
 #### Scenario: Provider choice is unavailable
 - **WHEN** OpenSpec is the only implemented provider

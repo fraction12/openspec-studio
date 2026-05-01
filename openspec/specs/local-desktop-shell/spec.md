@@ -67,8 +67,9 @@ The system SHALL present global navigation, action, and status chrome with consi
 #### Scenario: Workspace header shows runner status
 - **WHEN** a repository workspace is loaded
 - **THEN** the workspace header SHALL show a compact Studio Runner status pill beside the Changes, Specs, and Runner view selector
-- **AND** the status pill SHALL use the same runner status classification as Studio Runner controls
+- **AND** the status pill SHALL use `Online` when the runner is available and `Offline` when the runner is unavailable
 - **AND** the status pill SHALL remain compact and SHALL NOT duplicate runner setup, lifecycle, or history controls
+- **AND** the header SHALL NOT show workbench/local eyebrow copy or the active repository filesystem path
 
 ### Requirement: First-run and launch recovery are actionable
 The system SHALL guide users to a useful repository selection state on launch without relying on a hardcoded development path.
@@ -191,10 +192,10 @@ The desktop app SHALL surface failed OpenSpec-backed operations as durable, insp
 ### Requirement: Local Studio Runner workspace
 The desktop shell SHALL provide Studio Runner as a first-class workspace-level surface, separate from selected change details, for local runner configuration, lifecycle, status, event streaming, and a repo-wide Runner Log.
 
-#### Scenario: Runner event stream connects after runner is reachable
+#### Scenario: Runner event stream connects after runner is online
 - **GIVEN** a real OpenSpec repository is open
 - **AND** Studio Runner endpoint is configured
-- **AND** Studio Runner is reachable
+- **AND** Studio Runner is online
 - **WHEN** Studio enters or refreshes the Runner workspace
 - **THEN** Studio SHALL connect to the runner's local SSE event stream
 - **AND** Studio SHALL derive the stream endpoint from the configured push dispatch endpoint
@@ -222,9 +223,14 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 
 #### Scenario: Runner stream lifecycle follows local runner lifecycle
 - **GIVEN** Studio starts, stops, restarts, or changes the configured runner endpoint
-- **WHEN** runner reachability or endpoint state changes
+- **WHEN** runner availability or endpoint state changes
 - **THEN** Studio SHALL start, stop, or reconnect the runner event stream accordingly
 - **AND** Studio SHALL expose bounded stream error or disconnected state without blocking the app
+
+#### Scenario: Runner inspector stays action focused
+- **WHEN** the user views the Runner workspace inspector
+- **THEN** the inspector SHALL show runner lifecycle, endpoint, session secret, and event stream controls
+- **AND** the inspector SHALL NOT show a `Repo runner` pill, runner availability pill, repository metadata list, or managed-by-Studio metadata list
 
 ### Requirement: Signed Studio Runner dispatch
 The desktop shell SHALL send Studio Runner dispatch requests with stable event identity, timestamped signatures, and at-least-once-safe semantics.

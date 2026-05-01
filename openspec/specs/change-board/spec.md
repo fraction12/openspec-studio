@@ -159,13 +159,13 @@ The system SHALL present changes and specs as source-backed OpenSpec artifacts r
 - **WHEN** the user views changes
 - **THEN** the board emphasizes change name, touched capabilities, task progress, and updated time
 - **AND** controls, counts, and status labels remain visually secondary to the artifact list
-- **AND** the source path is available from the selected change inspector rather than repeated under every row title
+- **AND** filesystem paths SHALL NOT be repeated under row titles or in the selected change inspector header
 
 #### Scenario: Specs board renders
 - **WHEN** the user views specs
-- **THEN** the board emphasizes capability name, requirement count, and last updated time
+- **THEN** the board emphasizes capability name, validation state, requirement count, and last updated time
 - **AND** the presentation supports quick scanning without duplicate summary content in the same row
-- **AND** the source path is available from the selected spec inspector rather than repeated under every row title
+- **AND** filesystem paths SHALL NOT be repeated under row titles or in the selected spec inspector header
 
 #### Scenario: Default board width fits desktop layouts
 - **WHEN** the user views changes on a normal desktop window
@@ -175,7 +175,7 @@ The system SHALL present changes and specs as source-backed OpenSpec artifacts r
 
 #### Scenario: Board width is compact
 - **WHEN** the board is narrower than the table's overview columns
-- **THEN** the table preserves change/spec name, trust, tasks, capabilities, updated time, and row actions when present
+- **THEN** the table preserves change/spec name, validation or build status, tasks, capabilities, updated time, and row actions when present
 - **AND** the table scrolls horizontally instead of hiding or partially clipping columns
 - **AND** compact shell breakpoints do not create hidden horizontal dead zones outside the table scroller
 
@@ -184,9 +184,11 @@ The system SHALL present changes and specs as source-backed OpenSpec artifacts r
 - **THEN** both boards use a shared table renderer for common table structure, row limits, scrolling, and interaction behavior
 - **AND** each board still defines context-specific columns, labels, empty states, and actions
 
-#### Scenario: Specs table renders trust state
-- **WHEN** a spec row shows the `Check needed` trust pill
-- **THEN** the pill has the same visual padding and internal spacing as comparable trust pills elsewhere in the app
+#### Scenario: Specs table renders validation state
+- **WHEN** a spec row shows a validation pill
+- **THEN** the column SHALL be titled `Validation`
+- **AND** the pill SHALL show `Validate`, `Valid`, or `Invalid`
+- **AND** the pill has the same visual padding and internal spacing as comparable status pills elsewhere in the app
 - **AND** the label and status dot do not appear clipped or crowded
 
 #### Scenario: Row titles need truncation
@@ -217,8 +219,14 @@ The system SHALL make the inspector feel like a focused review surface for OpenS
 
 #### Scenario: Change detail opens
 - **WHEN** a change is selected
-- **THEN** the inspector presents source path, phase, compact trust state, and artifact tabs with consistent alignment
+- **THEN** the inspector presents the readable change title and artifact tabs with consistent alignment
 - **AND** proposal, design, tasks, spec deltas, archive information, and validation are shown only when relevant to the selected change
+- **AND** the inspector header SHALL NOT show duplicate source path, phase, or trust/status metadata
+
+#### Scenario: Spec detail opens
+- **WHEN** a spec is selected
+- **THEN** the inspector presents the readable spec name and source preview
+- **AND** the inspector header SHALL NOT show a `Base spec` pill, source path, validation status pill, or `Open file` action
 
 #### Scenario: Artifact tab renders
 - **WHEN** an artifact tab is selected
