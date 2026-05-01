@@ -1,17 +1,20 @@
 import {
   buildRunnerDispatchPayload,
   createOpenSpecOperationIssue,
-  createRunnerLifecycleLogEvent,
   deriveRunnerDispatchEligibility,
   type OpenSpecOperationIssue,
   type RunnerDispatchAttempt,
   type RunnerDispatchRequestInput,
   type RunnerSettings,
   type RunnerStatus,
-  type RunnerStreamEventInput,
 } from "../appModel";
 import type { ChangeRecord, WorkspaceView } from "../domain/workspaceViewModel";
 import type { ValidationResult } from "../validation/results";
+import {
+  createRunnerDispatchAttempt,
+  createRunnerLifecycleLogEvent,
+  type RunnerStreamEventInput,
+} from "./studioRunnerLog";
 
 export type RunnerStreamStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -716,33 +719,6 @@ export function createRunnerEventId(): string {
     : Math.random().toString(36).slice(2);
 
   return "evt_" + random.replace(/-/g, "");
-}
-
-export function createRunnerDispatchAttempt(input: {
-  eventId: string;
-  repoPath: string;
-  changeName: string;
-  payload?: unknown;
-  status: RunnerDispatchAttempt["status"];
-  message: string;
-  statusCode?: number | null;
-  responseBody?: string | null;
-  runId?: string | null;
-  previousAttempt?: RunnerDispatchAttempt;
-}): RunnerDispatchAttempt {
-  return {
-    eventId: input.eventId,
-    repoPath: input.repoPath,
-    changeName: input.changeName,
-    status: input.status,
-    message: input.message,
-    statusCode: input.statusCode ?? null,
-    responseBody: input.responseBody ?? null,
-    runId: input.runId ?? null,
-    payload: input.payload ?? input.previousAttempt?.payload,
-    createdAt: input.previousAttempt?.createdAt ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
 }
 
 export function extractRunId(responseBody: string | null): string | null {

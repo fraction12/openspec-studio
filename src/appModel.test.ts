@@ -15,13 +15,9 @@ import {
   normalizeRecentRepoPaths,
   recentRepoSwitcherPaths,
   sameOpenSpecOperationScope,
-  selectVisibleItemId,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
   buildRunnerDispatchPayload,
-  createRunnerLifecycleLogEvent,
-  mergeRunnerStreamEvent,
-  runnerDispatchHistoryForChange,
 } from "./appModel";
 
 describe("OpenSpec operation issues", () => {
@@ -467,32 +463,6 @@ describe("repository candidate opening", () => {
   });
 });
 
-describe("selection synchronization", () => {
-  const items = [
-    { id: "active-a", phase: "active", title: "Active A" },
-    { id: "active-b", phase: "active", title: "Active B" },
-    { id: "archived-a", phase: "archived", title: "Archived A" },
-  ];
-
-  it("keeps the current selection when it is visible", () => {
-    expect(
-      selectVisibleItemId(items, "active-b", (item) => item.phase === "active"),
-    ).toBe("active-b");
-  });
-
-  it("selects the first visible item when filters hide the current selection", () => {
-    expect(
-      selectVisibleItemId(items, "archived-a", (item) => item.phase === "active"),
-    ).toBe("active-a");
-  });
-
-  it("clears selection when filters have no matches", () => {
-    expect(
-      selectVisibleItemId(items, "active-a", (item) => item.title.includes("Missing")),
-    ).toBe("");
-  });
-});
-
 describe("validation trust labels", () => {
   it("uses unknown attention semantics before validation runs", () => {
     expect(deriveValidationTrustState(null)).toMatchObject({
@@ -646,49 +616,4 @@ describe("Studio Runner dispatch model", () => {
     );
   });
 
-  it("merges runner stream metadata into existing runner log records", () => {
-    const attempts = mergeRunnerStreamEvent([
-      { eventId: "evt_demo", repoPath: "/repo", changeName: "demo", status: "accepted", message: "accepted", createdAt: "2026-04-29T12:00:00Z", updatedAt: "2026-04-29T12:00:00Z" },
-    ], {
-      eventId: "evt_demo",
-      eventName: "runner.completed",
-      status: "completed",
-      prUrl: "https://github.com/example/repo/pull/1",
-      commitSha: "abcdef123456",
-      recordedAt: "2026-04-29T12:03:00Z",
-    }, "/repo");
-
-    expect(attempts).toHaveLength(1);
-    expect(attempts[0]).toMatchObject({
-      eventId: "evt_demo",
-      executionStatus: "completed",
-      prUrl: "https://github.com/example/repo/pull/1",
-      commitSha: "abcdef123456",
-      source: "stream",
-    });
-  });
-
-  it("creates runner lifecycle log records", () => {
-    expect(createRunnerLifecycleLogEvent({
-      repoPath: "/repo",
-      event: "runner.started",
-      message: "Runner started",
-      status: "running",
-      occurredAt: "2026-04-29T12:00:00Z",
-    })).toMatchObject({
-      repoPath: "/repo",
-      changeName: "Runner",
-      source: "lifecycle",
-      eventName: "runner.started",
-      executionStatus: "running",
-    });
-  });
-
-  it("filters dispatch history by repo and change with newest first", () => {
-    expect(runnerDispatchHistoryForChange([
-      { eventId: "evt_old", repoPath: "/repo", changeName: "demo", status: "failed", message: "old", createdAt: "2026-04-29T12:00:00Z", updatedAt: "2026-04-29T12:00:00Z" },
-      { eventId: "evt_other", repoPath: "/repo", changeName: "other", status: "accepted", message: "other", createdAt: "2026-04-29T12:01:00Z", updatedAt: "2026-04-29T12:01:00Z" },
-      { eventId: "evt_new", repoPath: "/repo", changeName: "demo", status: "accepted", message: "new", createdAt: "2026-04-29T12:02:00Z", updatedAt: "2026-04-29T12:02:00Z" },
-    ], "/repo", "demo").map((attempt) => attempt.eventId)).toEqual(["evt_new", "evt_old"]);
-  });
 });

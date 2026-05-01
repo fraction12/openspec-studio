@@ -1,6 +1,10 @@
 import type { OpenSpecFileSignature, RunnerDispatchAttempt, RunnerSettings } from "./appModel";
 import { isPersistableLocalRepoPath } from "./appModel";
 import {
+  normalizeRunnerDispatchAttempts,
+  upsertRunnerDispatchAttempt as upsertRunnerLogAttempt,
+} from "./runner/studioRunnerLog";
+import {
   markValidationStaleAfterFileChange,
   type ValidationResult,
   type ValidationState,
@@ -218,10 +222,7 @@ export function upsertRunnerDispatchAttempt(
   state: PersistedAppState,
   attempt: RunnerDispatchAttempt,
 ): PersistedAppState {
-  const attempts = [
-    attempt,
-    ...(state.runnerDispatchAttempts ?? []).filter((item) => item.eventId !== attempt.eventId),
-  ].slice(0, 50);
+  const attempts = upsertRunnerLogAttempt(state.runnerDispatchAttempts, attempt);
 
   return normalizePersistedAppState({
     ...state,
@@ -419,61 +420,6 @@ function normalizeRunnerSettings(value: unknown): RunnerSettings | undefined {
   const endpoint = readNonEmptyString(value.endpoint);
 
   return endpoint ? { endpoint } : undefined;
-}
-
-function normalizeRunnerDispatchAttempts(value: unknown): RunnerDispatchAttempt[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const attempts: RunnerDispatchAttempt[] = [];
-
-  for (const item of value) {
-    if (!isRecord(item)) {
-      continue;
-    }
-
-    const eventId = readNonEmptyString(item.eventId);
-    const repoPath = readNonEmptyString(item.repoPath);
-    const changeName = readNonEmptyString(item.changeName);
-    const status = item.status === "pending" || item.status === "accepted" || item.status === "failed" ? item.status : undefined;
-    const createdAt = readNonEmptyString(item.createdAt);
-    const updatedAt = readNonEmptyString(item.updatedAt);
-
-    if (!eventId || !repoPath || !changeName || !status || !createdAt || !updatedAt) {
-      continue;
-    }
-
-    attempts.push({
-      eventId,
-      repoPath,
-      changeName,
-      status,
-      createdAt,
-      updatedAt,
-      message: typeof item.message === "string" ? item.message : "",
-      statusCode: readFiniteNumber(item.statusCode) ?? null,
-      responseBody: typeof item.responseBody === "string" ? item.responseBody : null,
-      runId: typeof item.runId === "string" ? item.runId : null,
-      payload: item.payload,
-      source: item.source === "dispatch" || item.source === "stream" || item.source === "lifecycle" || item.source === "status" ? item.source : "dispatch",
-      eventName: typeof item.eventName === "string" ? item.eventName : null,
-      executionStatus: item.executionStatus === "accepted" || item.executionStatus === "running" || item.executionStatus === "completed" || item.executionStatus === "blocked" || item.executionStatus === "failed" || item.executionStatus === "unknown" ? item.executionStatus : null,
-      workspacePath: typeof item.workspacePath === "string" ? item.workspacePath : null,
-      sessionId: typeof item.sessionId === "string" ? item.sessionId : null,
-      branchName: typeof item.branchName === "string" ? item.branchName : null,
-      commitSha: typeof item.commitSha === "string" ? item.commitSha : null,
-      prUrl: typeof item.prUrl === "string" ? item.prUrl : null,
-      error: typeof item.error === "string" ? item.error : null,
-      recordedAt: typeof item.recordedAt === "string" ? item.recordedAt : null,
-    });
-
-    if (attempts.length === 50) {
-      break;
-    }
-  }
-
-  return attempts;
 }
 
 function normalizeGlobalPreferences(value: unknown): PersistedGlobalPreferences {
