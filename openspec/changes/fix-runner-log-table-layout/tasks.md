@@ -1,0 +1,7 @@
+- [x] 1.1 Define Runner Log row click and layout behavior.
+- [x] 2.1 Make Runner Log summary rows clickable and keyboard-toggleable.
+- [x] 2.2 Prevent the Details button from double-toggling when clicked.
+- [x] 2.3 Make stream-row Subject values scan-friendly without exposing raw endpoint URLs as the primary subject.
+- [x] 2.4 Remove forced horizontal table width and tighten column wrapping/spacing.
+- [x] 2.5 Add focused tests for the subject display behavior.
+- [x] 3.1 Run TypeScript checks, relevant tests, build if affected, and OpenSpec validation.

@@ -2374,6 +2374,15 @@ function RunnerLogTable({ history, streamStatus }: { history: RunnerDispatchAtte
     });
   }
 
+  function handleRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, rowId: string) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+    toggleExpanded(rowId);
+  }
+
   return (
     <section className="runner-log-panel" aria-label="Studio Runner log">
       <div className="runner-log-header">
@@ -2424,14 +2433,27 @@ function RunnerLogTable({ history, streamStatus }: { history: RunnerDispatchAtte
                 const expanded = expandedRows.has(rowId);
                 return (
                   <Fragment key={rowId}>
-                    <tr key={rowId} className={expanded ? "is-expanded" : ""}>
+                    <tr
+                      key={rowId}
+                      role="row"
+                      tabIndex={0}
+                      aria-selected={expanded}
+                      aria-expanded={expanded}
+                      className={expanded ? "runner-log-row is-expanded is-selected" : "runner-log-row"}
+                      onClick={() => toggleExpanded(rowId)}
+                      onKeyDown={(event) => handleRowKeyDown(event, rowId)}
+                    >
                       <td className="runner-expand-cell">
                         <button
                           type="button"
                           className="runner-expand-button"
                           aria-expanded={expanded}
                           aria-label={(expanded ? "Collapse " : "Expand ") + runnerAttemptEventLabel(attempt)}
-                          onClick={() => toggleExpanded(rowId)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleExpanded(rowId);
+                          }}
+                          onKeyDown={(event) => event.stopPropagation()}
                         >
                           <span aria-hidden="true">{expanded ? "-" : "+"}</span>
                         </button>
@@ -2482,7 +2504,14 @@ function RunnerAttemptMessageCell({ attempt }: { attempt: RunnerDispatchAttempt 
     <div className="runner-message-cell">
       <span>{attempt.message}</span>
       {attempt.prUrl ? (
-        <a href={attempt.prUrl} onClick={(event) => { event.preventDefault(); void openPath(attempt.prUrl || ""); }}>
+        <a
+          href={attempt.prUrl}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void openPath(attempt.prUrl || "");
+          }}
+        >
           {response}
         </a>
       ) : response !== attempt.message ? (

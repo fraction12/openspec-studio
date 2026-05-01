@@ -17,6 +17,7 @@ import {
   runnerAttemptStateLabel,
   runnerAttemptStatusHealth,
   runnerAttemptStatusLabel,
+  runnerAttemptSubject,
   runnerDispatchHistoryForChange,
   runnerDispatchHistoryForRepo,
   upsertRunnerDispatchAttempt,
@@ -355,6 +356,18 @@ describe("Studio Runner Log Module", () => {
     expect(runnerAttemptResponseLabel(completed)).toBe("https://github.com/example/repo/pull/1");
     expect(runnerAttemptStatusLabel(completed)).toBe("completed");
     expect(runnerAttemptStatusHealth(completed)).toBe("valid");
+  });
+
+  it("uses a concise table subject for stream rows instead of the raw endpoint", () => {
+    const stream = createRunnerLifecycleLogEvent({
+      repoPath: "/repo",
+      event: "stream.connected",
+      message: "Runner event stream connected.",
+      status: "running",
+      endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events",
+    });
+
+    expect(runnerAttemptSubject(stream)).toBe("Event stream");
   });
 
   it("normalizes only persistence-safe runner log records", () => {

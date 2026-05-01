@@ -320,7 +320,7 @@ export function runnerAttemptEventLabel(attempt: RunnerDispatchAttempt): string 
 export function runnerAttemptSubject(attempt: RunnerDispatchAttempt): string {
   const rowKind = runnerAttemptRowKind(attempt);
   if (rowKind === "run") return attempt.changeName;
-  if (rowKind === "stream") return attempt.endpoint || "Runner stream";
+  if (rowKind === "stream") return "Event stream";
   if (rowKind === "diagnostic") return "Diagnostics";
   return attempt.endpoint || "Runner";
 }
