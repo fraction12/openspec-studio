@@ -1,0 +1,14 @@
+- [x] 1.1 Define the user-facing Studio Runner setup model and keep Symphony as implementation detail.
+- [x] 1.2 Define managed/default runner mode and advanced custom runner mode.
+- [x] 1.3 Define setup checklist categories for runner binary, compatibility, auth, repo readiness, endpoint, and workspace root.
+- [x] 1.4 Define setup state labels and diagnostic language.
+- [ ] 2.1 Extend runner health/version protocol to expose runner identity, version, protocol, and capabilities.
+- [ ] 2.2 Add Studio-side setup readiness model for runner, auth, repository, and workspace diagnostics.
+- [ ] 2.3 Build Runner workspace setup UI for not set up, checking, needs attention, ready, running, and incompatible/stale states.
+- [ ] 2.4 Add managed runner binary discovery/install/update path or explicitly document the alpha fallback when unavailable.
+- [ ] 2.5 Keep advanced custom runner path/endpoint configuration available with clear user-managed labeling.
+- [ ] 2.6 Add Codex and GitHub CLI readiness checks with actionable, redacted diagnostics.
+- [ ] 2.7 Add repository readiness checks for OpenSpec artifacts, validation, GitHub remote, fetchable base branch, and safe workspace root.
+- [ ] 2.8 Gate Build with agent on setup readiness and show checklist blockers when setup is incomplete.
+- [ ] 2.9 Add tests for setup state derivation, compatibility blockers, auth diagnostics, repository diagnostics, and custom runner mode.
+- [ ] 3.1 Run TypeScript checks, relevant frontend tests, Rust tests if bridge diagnostics change, build if affected, and OpenSpec validation.

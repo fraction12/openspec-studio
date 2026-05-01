@@ -190,7 +190,66 @@ The desktop app SHALL surface failed OpenSpec-backed operations as durable, insp
 - **THEN** the issues are removed from the visible issue surface without changing repository files.
 
 ### Requirement: Local Studio Runner workspace
-The desktop shell SHALL provide Studio Runner as a first-class workspace-level surface, separate from selected change details, for local runner configuration, lifecycle, status, event streaming, and a repo-wide Runner Log.
+The desktop shell SHALL provide Studio Runner as a first-class workspace-level surface, separate from selected change details, for local runner configuration, lifecycle, status, event streaming, execution-log inspection, and a repo-wide Runner Log.
+
+#### Scenario: Runner workspace uses summary table plus expandable details
+- **GIVEN** Studio Runner events exist for the current repository
+- **WHEN** the user views the Runner workspace
+- **THEN** Studio SHALL keep **Runner Log** as the primary summary table
+- **AND** run rows SHALL be expandable to show run execution details
+- **AND** Studio SHALL NOT replace the table with a terminal-style raw log.
+
+#### Scenario: Runner Log uses row-kind-aware columns
+- **GIVEN** the Runner Log contains actual run rows and non-run operational rows
+- **WHEN** Studio renders the table
+- **THEN** the table SHALL use columns equivalent to Event, State, Subject, Message, and Updated
+- **AND** the Event column SHALL identify whether the row is a run, runner lifecycle event, stream event, or diagnostic event
+- **AND** the Subject column SHALL show the change name for run rows and runner/stream context for non-run rows.
+
+#### Scenario: Status semantics match row kind
+- **GIVEN** the Runner Log contains both actual run rows and non-run operational rows
+- **WHEN** the table renders state information
+- **THEN** actual run rows SHALL use run statuses such as accepted, running, completed, blocked, failed, or conflict
+- **AND** lifecycle, stream, and diagnostic rows SHALL use event-appropriate labels such as started, stopped, connected, disconnected, info, warning, or error
+- **AND** lifecycle, stream, or diagnostic rows SHALL NOT appear as running, blocked, completed, or failed unless they describe an actual run.
+
+#### Scenario: Repeated non-run events are collapsed
+- **GIVEN** lifecycle, stream, or diagnostic events repeat with the same normalized meaning for the same repository and endpoint
+- **WHEN** the user views the Runner Log
+- **THEN** Studio SHALL collapse those duplicate non-run rows into one visible row
+- **AND** Studio SHALL expose repeat count or latest-occurrence context when the row repeated
+- **AND** Studio SHALL NOT collapse distinct run rows that have different event IDs or run IDs.
+
+#### Scenario: Runner stream updates the Runner Log
+- **GIVEN** Studio has recorded a local runner log event
+- **AND** the runner stream emits an event with the same event ID
+- **WHEN** Studio receives the stream event
+- **THEN** Studio SHALL merge the execution metadata into the existing Runner Log record
+- **AND** Studio SHALL NOT create a duplicate row for the same event ID.
+
+#### Scenario: Runner workspace shows current Symphony metadata
+- **GIVEN** runner stream events include available Symphony metadata
+- **WHEN** the user views or expands a run row
+- **THEN** Studio SHALL surface event ID, run ID, repository/change key, recorded time, and status when available
+- **AND** Studio SHALL surface workspace path, workspace status, workspace create/update timestamps, and session ID when available
+- **AND** Studio SHALL surface source repo path, base commit, branch, commit, PR URL/state/merged/closed timestamps, cleanup fields, and bounded error detail when available.
+
+#### Scenario: Runner Log row shows execution details
+- **GIVEN** a Runner Log run row has associated execution detail entries or summary metadata
+- **WHEN** the user expands that row
+- **THEN** Studio SHALL show chronological execution detail entries that explain runner, orchestrator, agent, tool, git, validation, publication, or cleanup activity
+- **AND** Studio SHALL distinguish summary-derived milestones from first-class execution-log entries when necessary.
+
+#### Scenario: Active runner progress is inspectable
+- **GIVEN** a Studio Runner run is active
+- **WHEN** the runner emits status or metadata updates
+- **THEN** Studio SHALL update the expanded run details without requiring terminal access or manual workspace inspection.
+
+#### Scenario: Execution logs are unavailable
+- **GIVEN** Symphony does not provide first-class structured execution-log entries for a run
+- **WHEN** the user expands the run row
+- **THEN** Studio SHALL show available summary-derived milestones and metadata
+- **AND** Studio SHALL show an explicit unavailable/not-yet-provided state for detailed execution logs instead of silently showing an empty detail area.
 
 #### Scenario: Runner event stream connects after runner is online
 - **GIVEN** a real OpenSpec repository is open
@@ -199,73 +258,39 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **WHEN** Studio enters or refreshes the Runner workspace
 - **THEN** Studio SHALL connect to the runner's local SSE event stream
 - **AND** Studio SHALL derive the stream endpoint from the configured push dispatch endpoint
-- **AND** Studio SHALL apply the same localhost-only endpoint restrictions used for runner dispatch
-
-#### Scenario: Runner stream updates the Runner Log
-- **GIVEN** Studio has recorded a local runner log event
-- **AND** the runner stream emits an event with the same event ID
-- **WHEN** Studio receives the stream event
-- **THEN** Studio SHALL merge the execution metadata into the existing Runner Log record
-- **AND** Studio SHALL NOT create a duplicate row for the same event ID
-
-#### Scenario: Runner workspace shows all Studio Runner events
-- **GIVEN** Studio Runner dispatch, stream, lifecycle, status, or error events exist for the current repository
-- **WHEN** the user views the Runner workspace
-- **THEN** Studio SHALL show them in a table titled **Runner Log**
-- **AND** Studio SHALL NOT title the table **Build requests**
-- **AND** Studio SHALL use subtext that describes runner events rather than only signed dispatches
-
-#### Scenario: Runner workspace shows publication metadata
-- **GIVEN** runner stream events include execution metadata
-- **WHEN** the user views the Runner Log
-- **THEN** Studio SHALL show runner execution status such as running, completed, blocked, or failed
-- **AND** Studio SHALL show PR URL, commit SHA, branch name, workspace path, session ID, and bounded error detail when available
+- **AND** Studio SHALL apply the same localhost-only endpoint restrictions used for runner dispatch.
 
 #### Scenario: Runner stream lifecycle follows local runner lifecycle
 - **GIVEN** Studio starts, stops, restarts, or changes the configured runner endpoint
 - **WHEN** runner availability or endpoint state changes
 - **THEN** Studio SHALL start, stop, or reconnect the runner event stream accordingly
-- **AND** Studio SHALL expose bounded stream error or disconnected state without blocking the app
+- **AND** Studio SHALL expose bounded stream error or disconnected state without blocking the app.
 
 #### Scenario: Runner inspector stays action focused
 - **WHEN** the user views the Runner workspace inspector
 - **THEN** the inspector SHALL show runner lifecycle, endpoint, session secret, and event stream controls
-- **AND** the inspector SHALL NOT show a `Repo runner` pill, runner availability pill, repository metadata list, or managed-by-Studio metadata list
+- **AND** the inspector SHALL NOT show a `Repo runner` pill, runner availability pill, repository metadata list, or managed-by-Studio metadata list.
 
 ### Requirement: Signed Studio Runner dispatch
 The desktop shell SHALL send Studio Runner dispatch requests with stable event identity, timestamped signatures, and at-least-once-safe semantics.
 
-#### Scenario: Dispatch uses push API instead of tracker polling
-- **GIVEN** Studio Runner is configured
-- **WHEN** Studio sends `build.requested`
-- **THEN** Studio SHALL use the runner's push dispatch API
-- **AND** Studio SHALL NOT require Linear configuration, tracker polling, or OpenSpec-as-tracker-adapter behavior for the OpenSpec dispatch path
+#### Scenario: Selected change cannot dispatch duplicate in-flight work
+- **GIVEN** Studio knows of an accepted or running Studio Runner event for the selected repository/change
+- **WHEN** the user views that change's inspector
+- **THEN** Studio SHALL disable the dispatch action for that selected change
+- **AND** Studio SHALL NOT send another `build.requested` event for that same repository/change from the disabled button.
 
-#### Scenario: Dispatch request includes verification headers
-- **GIVEN** Studio dispatches a `build.requested` event
-- **WHEN** the outbound request is created
-- **THEN** the request SHALL include a stable webhook event ID
-- **AND** the request SHALL include a timestamp header
-- **AND** the request SHALL include an HMAC-SHA256 signature header over the event ID, timestamp, and raw request body
+#### Scenario: Running detection ignores non-run rows
+- **GIVEN** the Runner Log contains lifecycle, stream, status, or diagnostic rows
+- **WHEN** Studio decides whether the selected change is building
+- **THEN** Studio SHALL ignore those non-run rows
+- **AND** Studio SHALL only consider actual run/dispatch rows for the same repository/change.
 
-#### Scenario: Payload is thin and change-scoped
-- **GIVEN** Studio dispatches a `build.requested` event
-- **WHEN** the payload is constructed
-- **THEN** the payload SHALL identify exactly one repository/change pair
-- **AND** the payload SHALL include validation state and relevant artifact paths
-- **AND** the payload SHALL NOT include arbitrary repository file contents by default
-
-#### Scenario: Duplicate delivery is safe
-- **GIVEN** Studio retries a failed delivery
-- **WHEN** the retry request is created
-- **THEN** Studio SHALL preserve the original event identity for that delivery record
-- **AND** the receiver SHALL be able to deduplicate the retry using the event ID
-
-#### Scenario: Delivery is bounded
-- **GIVEN** Studio sends a Studio Runner dispatch request
-- **WHEN** the endpoint is slow, unavailable, or returns a large response
-- **THEN** Studio SHALL apply a bounded timeout and bounded response/error capture
-- **AND** Studio SHALL record a failed delivery state instead of blocking the app indefinitely
+#### Scenario: Other changes remain governed by normal eligibility
+- **GIVEN** one change has an accepted or running Studio Runner event
+- **WHEN** the user selects a different active change
+- **THEN** Studio SHALL evaluate that different change using the normal dispatch eligibility rules
+- **AND** Studio SHALL NOT disable its Build action solely because another change is running.
 
 ### Requirement: Repository loading uses provider activation
 The desktop shell SHALL activate a deterministic spec provider when opening a repository instead of hard-coding all workspace behavior directly into the shell.

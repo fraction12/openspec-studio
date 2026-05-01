@@ -18,12 +18,29 @@ The Studio Runner Session module SHALL concentrate frontend operational Runner b
 - **WHEN** Studio Runner stream events or stream errors arrive
 - **THEN** the Studio Runner Session module SHALL normalize stream DTOs, update stream status, merge log events into persisted dispatch history, and preserve the existing Runner Log behavior.
 
+#### Scenario: Current Symphony stream metadata is preserved
+- **WHEN** Studio receives a runner stream payload
+- **THEN** the Studio Runner Session module SHALL preserve available identity fields such as event ID, run ID, repository/change key, recorded time, and status
+- **AND** it SHALL preserve available workspace/session fields such as workspace path, workspace status, workspace created/updated timestamps, and session ID
+- **AND** it SHALL preserve available git/publication fields such as source repo path, base commit, branch, commit, PR URL/state/merged/closed timestamps
+- **AND** it SHALL preserve available cleanup and error fields.
+
+#### Scenario: Runner log row kinds are normalized
+- **WHEN** Studio receives run, lifecycle, stream, status, or diagnostic runner events
+- **THEN** the Studio Runner Session module SHALL classify each summary row by kind
+- **AND** it SHALL derive dedupe keys and state labels appropriate to that row kind.
+
+#### Scenario: Runner execution log entries are coordinated
+- **WHEN** Studio receives structured execution log entries for a runner event or run
+- **THEN** the Studio Runner Session module SHALL merge, order, bound, and expose those entries by run/event identity
+- **AND** it SHALL preserve the existing Runner Log summary row behavior.
+
 ### Requirement: Studio Runner Session remains behavior-preserving
-The Studio Runner Session extraction SHALL NOT add Runner functionality, move endpoint editing into Settings, change durable defaults, change Tauri command names, or change visible Runner copy except where unavoidable for equivalent status reporting.
+The Studio Runner Session extraction SHALL NOT move endpoint editing into Settings, change durable defaults, change Tauri command names, or change visible Runner copy except where required by Runner Log execution details, duplicate cleanup, or row-kind-aware state labels.
 
 #### Scenario: Existing Runner policy helpers remain compatible
 - **WHEN** tests exercise dispatch eligibility, payload creation, stream log merging, lifecycle log events, and dispatch history filtering
-- **THEN** the results SHALL remain compatible with the existing app model behavior.
+- **THEN** the results SHALL remain compatible with the existing app model behavior unless explicitly changed by row-kind, dedupe, or execution-detail requirements.
 
 ### Requirement: Studio Runner Session delegates Runner Log history policy
 The Studio Runner Session module SHALL keep owning operational runner workflow while delegating reusable Runner Log history policy to the Studio Runner Log Module.
@@ -43,4 +60,51 @@ The Studio Runner Session module SHALL keep owning operational runner workflow w
 #### Scenario: Runner contracts remain stable
 - **WHEN** Runner Log policy moves behind the Studio Runner Log Module
 - **THEN** Studio Runner dispatch payloads, Tauri command names, endpoint handling, stream event DTO handling, and durable persistence shape SHALL remain compatible with existing behavior.
+
+### Requirement: Studio Runner execution logs are structured and bounded
+Studio SHALL represent runner execution logs as structured, bounded, run-scoped entries rather than unbounded raw terminal output.
+
+#### Scenario: Execution log entry is received
+- **WHEN** Studio receives an execution log entry for a known runner event or run
+- **THEN** Studio SHALL associate it with that run/event identity
+- **AND** Studio SHALL preserve its timestamp, source, level, phase, message, and bounded detail metadata when available.
+
+#### Scenario: Summary metadata is converted into milestones
+- **WHEN** no first-class execution log entries are available for a run
+- **THEN** Studio SHALL derive bounded milestone entries from available status, workspace, publication, cleanup, and error metadata
+- **AND** Studio SHALL mark detailed execution logs as unavailable/not-yet-provided when appropriate.
+
+#### Scenario: Execution log content exceeds bounds
+- **WHEN** a log entry or run log exceeds configured UI retention bounds
+- **THEN** Studio SHALL truncate or drop older content according to the bounds
+- **AND** Studio SHALL expose that truncation occurred.
+
+#### Scenario: Execution logs are retained within bounds
+- **WHEN** Studio stores execution detail entries
+- **THEN** it SHALL retain at most the latest 200 entries per run
+- **AND** it SHALL retain execution detail state for at most the latest 50 run rows per repository
+- **AND** it SHALL truncate per-entry message/detail display around 4 KB.
+
+#### Scenario: Execution logs are unavailable
+- **WHEN** the runner does not provide execution logs, the stream is disconnected, or a detail request fails
+- **THEN** Studio SHALL show an explicit unavailable/disconnected/error state instead of silently presenting an empty log.
+
+### Requirement: Runner Log duplicate cleanup is row-kind aware
+Studio SHALL collapse repeated non-run Runner Log rows without hiding distinct run attempts.
+
+#### Scenario: Duplicate lifecycle or stream event repeats
+- **WHEN** the same lifecycle, stream, status, or diagnostic event repeats for the same repository and endpoint with the same normalized message
+- **THEN** Studio SHALL update the existing row's repeat count or latest timestamp instead of appending a visually identical row.
+
+#### Scenario: Distinct run events look similar
+- **WHEN** two actual run rows have different event IDs or run IDs
+- **THEN** Studio SHALL keep them as distinct rows even if their status or message text matches.
+
+### Requirement: Runner Log state labels match row meaning
+Studio SHALL avoid applying run-only statuses to lifecycle, stream, status, or diagnostic rows.
+
+#### Scenario: Non-run row is rendered
+- **WHEN** a lifecycle, stream, status, or diagnostic row is displayed in the Runner Log
+- **THEN** Studio SHALL render an event-appropriate severity/state label such as connected, disconnected, info, warning, or error, or omit the badge
+- **AND** Studio SHALL NOT label the row running, blocked, completed, or failed unless the row describes an actual run.
 
