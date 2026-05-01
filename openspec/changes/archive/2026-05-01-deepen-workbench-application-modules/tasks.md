@@ -75,4 +75,4 @@
 - [x] 8.4 Run Rust checks/tests only if native files were touched; otherwise note that native files were not changed.
 - [x] 8.5 Run `openspec validate deepen-workbench-application-modules --strict`.
 - [x] 8.6 Run `openspec validate --all --strict` after all implementation tasks pass.
-- [ ] 8.7 Manually inspect the Changes, Specs, Runner, and inspector flows in the app or via screenshots if frontend behavior was meaningfully rewired.
+- [x] 8.7 Manually inspect the Changes, Specs, Runner, and inspector flows in the app or via screenshots if frontend behavior was meaningfully rewired.
