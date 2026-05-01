@@ -170,6 +170,8 @@ Studio sends `build.requested` to `POST /api/v1/studio-runner/events` with `webh
 
 After accepting the event, Studio Runner verifies and deduplicates the request, claims the repository/change pair, reads the referenced OpenSpec artifacts from disk, creates an isolated workspace, and enqueues one run through the Studio-owned Symphony orchestrator and `AgentRunner`. Duplicate deliveries reuse the same event identity so the runner can avoid spawning a second agent for the same build request.
 
+The Runner Log uses the existing Studio Runner event stream as the v1 source of truth for run identity, workspace/session, git/publication, cleanup, and error metadata. Expanded rows show bounded summary-derived milestones when Symphony has not yet emitted first-class execution-log entries. A future Symphony follow-up can add structured execution-log entries to the same SSE stream, or expose a localhost-only bounded detail endpoint, using the same safe fields and retention limits rather than streaming raw stdout, stderr, secrets, signatures, auth headers, or environment values into Studio state.
+
 ## Development
 
 Run checks:

@@ -309,16 +309,46 @@ pub(super) fn parse_runner_stream_event(
             .or_else(|| read_json_string(object, "recorded_at")),
         workspace_path: read_json_string(object, "workspacePath")
             .or_else(|| read_json_string(object, "workspace_path")),
+        workspace_status: read_json_string(object, "workspaceStatus")
+            .or_else(|| read_json_string(object, "workspace_status")),
+        workspace_created_at: read_json_string(object, "workspaceCreatedAt")
+            .or_else(|| read_json_string(object, "workspace_created_at")),
+        workspace_updated_at: read_json_string(object, "workspaceUpdatedAt")
+            .or_else(|| read_json_string(object, "workspace_updated_at")),
         session_id: read_json_string(object, "sessionId")
             .or_else(|| read_json_string(object, "session_id")),
+        source_repo_path: read_json_string(object, "sourceRepoPath")
+            .or_else(|| read_json_string(object, "source_repo_path")),
+        base_commit_sha: read_json_string(object, "baseCommitSha")
+            .or_else(|| read_json_string(object, "base_commit_sha")),
         branch_name: read_json_string(object, "branchName")
             .or_else(|| read_json_string(object, "branch_name")),
         commit_sha: read_json_string(object, "commitSha")
             .or_else(|| read_json_string(object, "commit_sha")),
         pr_url: read_json_string(object, "prUrl").or_else(|| read_json_string(object, "pr_url")),
+        pr_state: read_json_string(object, "prState").or_else(|| read_json_string(object, "pr_state")),
+        pr_merged_at: read_json_string(object, "prMergedAt")
+            .or_else(|| read_json_string(object, "pr_merged_at")),
+        pr_closed_at: read_json_string(object, "prClosedAt")
+            .or_else(|| read_json_string(object, "pr_closed_at")),
+        cleanup_eligible: read_json_bool(object, "cleanupEligible")
+            .or_else(|| read_json_bool(object, "cleanup_eligible")),
+        cleanup_reason: read_json_string(object, "cleanupReason")
+            .or_else(|| read_json_string(object, "cleanup_reason")),
+        cleanup_status: read_json_string(object, "cleanupStatus")
+            .or_else(|| read_json_string(object, "cleanup_status")),
+        cleanup_error: read_json_string(object, "cleanupError")
+            .or_else(|| read_json_string(object, "cleanup_error")),
         error: read_json_string(object, "error"),
         message: read_json_string(object, "message"),
     })
+}
+
+fn read_json_bool(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<bool> {
+    object.get(key)?.as_bool()
 }
 
 fn read_json_string(

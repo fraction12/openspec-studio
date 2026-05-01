@@ -5,6 +5,7 @@ import type { ChangeRecord, WorkspaceView } from "../domain/workspaceViewModel";
 import type { ValidationResult } from "../validation/results";
 import {
   defaultRunnerSettings,
+  runnerStreamEventFromDto,
   runnerStatusFromDto,
   StudioRunnerSession,
   unknownRunnerStatus,
@@ -116,6 +117,50 @@ describe("StudioRunnerSession", () => {
     ).toMatchObject({
       state: "offline",
       label: "Runner offline",
+    });
+  });
+
+  it("preserves current Symphony stream metadata fields from DTOs", () => {
+    expect(
+      runnerStreamEventFromDto({
+        eventName: "runner.completed",
+        eventId: "evt_demo",
+        runId: "run_demo",
+        repoChangeKey: "/repo::add-runner",
+        recordedAt: "2026-04-29T12:00:00Z",
+        status: "completed",
+        workspacePath: "/tmp/workspace",
+        workspaceStatus: "ready",
+        workspaceCreatedAt: "2026-04-29T11:59:00Z",
+        workspaceUpdatedAt: "2026-04-29T12:00:30Z",
+        sessionId: "session_demo",
+        sourceRepoPath: "/repo/source",
+        baseCommitSha: "111111122222",
+        branchName: "studio/add-runner",
+        commitSha: "abcdef123456",
+        prUrl: "https://github.com/example/repo/pull/1",
+        prState: "open",
+        prMergedAt: null,
+        prClosedAt: null,
+        cleanupEligible: true,
+        cleanupReason: "completed",
+        cleanupStatus: "pending",
+        cleanupError: null,
+        error: null,
+      }),
+    ).toMatchObject({
+      eventId: "evt_demo",
+      runId: "run_demo",
+      repoChangeKey: "/repo::add-runner",
+      workspaceStatus: "ready",
+      workspaceCreatedAt: "2026-04-29T11:59:00Z",
+      workspaceUpdatedAt: "2026-04-29T12:00:30Z",
+      sourceRepoPath: "/repo/source",
+      baseCommitSha: "111111122222",
+      prState: "open",
+      cleanupEligible: true,
+      cleanupReason: "completed",
+      cleanupStatus: "pending",
     });
   });
 });
