@@ -1,0 +1,22 @@
+- [x] 1.1 Inspect current Symphony Studio Runner stream and presenter payload fields.
+- [x] 1.2 Define current Symphony metadata Studio should consume before requiring new runner log events.
+- [x] 1.3 Define Runner Log row kinds and row-kind-aware state vocabulary.
+- [x] 1.4 Define duplicate cleanup rules for non-run lifecycle/stream/diagnostic rows.
+- [x] 1.5 Define structured execution log entry shape, source/phase/level vocabulary, bounds, and retention.
+- [x] 1.6 Define expandable-row UX and unavailable/not-yet-provided states.
+- [ ] 2.1 Extend Studio Runner stream DTO parsing to preserve all current Symphony metadata fields.
+- [ ] 2.2 Add frontend model helpers for row kind classification, state derivation, and non-run dedupe.
+- [ ] 2.3 Add frontend model helpers for merging, ordering, bounding, and normalizing run execution detail entries.
+- [ ] 2.4 Derive summary milestone entries from current Symphony status/workspace/publication/cleanup/error metadata.
+- [ ] 2.5 Keep distinct run rows keyed by event/run identity while collapsing repeated non-run rows.
+- [ ] 2.6 Add tests for current stream metadata preservation, row-kind state labels, dedupe, bounds, truncation, and unavailable states.
+- [ ] 3.1 Update Runner Log columns/copy to Event, State, Subject, Message, and Updated semantics or equivalent.
+- [ ] 3.2 Add expandable Runner Log rows for run details.
+- [ ] 3.3 Show run identity, status, workspace/session, git/publication, cleanup, and error metadata in expanded rows.
+- [ ] 3.4 Show chronological execution detail entries and summary-derived milestones in expanded rows.
+- [ ] 3.5 Show clear loading, empty, disconnected, unavailable/not-yet-provided, error, and truncated states.
+- [ ] 3.6 Show collapsed duplicate counts or latest-occurrence metadata for repeated non-run events.
+- [ ] 4.1 Document optional Symphony follow-up for first-class structured execution-log entries over SSE or a bounded local detail endpoint.
+- [ ] 4.2 Ensure logs redact or omit secrets, signatures, auth headers, and raw environment values.
+- [ ] 4.3 Verify active-run progress can be understood from Studio without terminal access.
+- [ ] 5.1 Run relevant frontend tests, TypeScript checks, and OpenSpec validation.
