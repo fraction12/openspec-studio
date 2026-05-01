@@ -534,6 +534,63 @@ button:disabled {
   box-shadow: none;
 }
 
+.building-action-label {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.building-ellipsis {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 0.35em);
+  width: 1.05em;
+}
+
+.building-ellipsis span {
+  display: inline-block;
+  width: 0.35em;
+  text-align: center;
+}
+
+.building-ellipsis span:nth-child(2) {
+  animation: building-dot-two 1.2s steps(1, end) infinite;
+}
+
+.building-ellipsis span:nth-child(3) {
+  animation: building-dot-three 1.2s steps(1, end) infinite;
+}
+
+@keyframes building-dot-two {
+  0%,
+  32% {
+    opacity: 0;
+  }
+
+  33%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes building-dot-three {
+  0%,
+  65% {
+    opacity: 0;
+  }
+
+  66%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .building-ellipsis span {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 .link-button {
   width: fit-content;
   border: 0;

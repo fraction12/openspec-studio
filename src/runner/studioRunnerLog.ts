@@ -247,6 +247,33 @@ export function runnerDispatchHistoryForChange(
   ).slice(0, 5);
 }
 
+export function runnerChangeIsBuilding(
+  attempts: RunnerDispatchAttempt[] | undefined,
+  repoPath: string | null | undefined,
+  changeName: string | null | undefined,
+): boolean {
+  if (!repoPath || !changeName) {
+    return false;
+  }
+
+  const latestRun = sortRunnerDispatchAttempts(
+    (attempts ?? []).filter(
+      (attempt) =>
+        runnerAttemptRowKind(attempt) === "run" &&
+        attempt.repoPath === repoPath &&
+        attempt.changeName === changeName,
+    ),
+  )[0];
+
+  if (!latestRun) {
+    return false;
+  }
+
+  const latestStatus = runnerAttemptStateLabel(latestRun);
+
+  return latestStatus === "accepted" || latestStatus === "running";
+}
+
 export function latestRunnerAttempt(
   attempts: RunnerDispatchAttempt[] | undefined,
   repoPath?: string | null,

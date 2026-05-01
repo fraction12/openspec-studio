@@ -8,6 +8,7 @@ import {
   decideRepositoryCandidateOpen,
   deriveChangeBuildStatus,
   deriveChangeHealth,
+  deriveRunnerBuildActionState,
   deriveRunnerDispatchEligibility,
   deriveValidationTrustState,
   extractJsonPayload,
@@ -614,6 +615,52 @@ describe("Studio Runner dispatch model", () => {
     }).reasons).toContain(
       "Change Build Status must be Ready before dispatching with agent. Current status: Done.",
     );
+  });
+
+  it("derives selected-change runner action precedence", () => {
+    const eligible = { eligible: true, reasons: [] };
+    const unavailable = { eligible: false, reasons: ["Studio Runner must be online."] };
+
+    expect(deriveRunnerBuildActionState({
+      dispatchBusy: true,
+      selectedChangeBuilding: true,
+      eligibility: unavailable,
+    })).toMatchObject({
+      disabled: true,
+      label: "Dispatching...",
+      building: false,
+    });
+
+    expect(deriveRunnerBuildActionState({
+      dispatchBusy: false,
+      selectedChangeBuilding: true,
+      eligibility: unavailable,
+    })).toMatchObject({
+      disabled: true,
+      label: "Building...",
+      building: true,
+    });
+
+    expect(deriveRunnerBuildActionState({
+      dispatchBusy: false,
+      selectedChangeBuilding: false,
+      eligibility: unavailable,
+    })).toMatchObject({
+      disabled: true,
+      label: "Build with agent",
+      unavailableReason: "Studio Runner must be online.",
+      building: false,
+    });
+
+    expect(deriveRunnerBuildActionState({
+      dispatchBusy: false,
+      selectedChangeBuilding: false,
+      eligibility: eligible,
+    })).toMatchObject({
+      disabled: false,
+      label: "Build with agent",
+      building: false,
+    });
   });
 
 });

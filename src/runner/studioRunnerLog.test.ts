@@ -7,6 +7,7 @@ import {
   mergeRunnerStreamEvent,
   normalizeRunnerDispatchAttempts,
   replaceRunnerDispatchAttempt,
+  runnerChangeIsBuilding,
   runnerAttemptEventLabel,
   runnerAttemptExecutionDetails,
   runnerAttemptMessage,
@@ -251,6 +252,92 @@ describe("Studio Runner Log Module", () => {
       "evt_old",
     ]);
     expect(latestRunnerAttempt(attempts, "/repo")?.eventId).toBe("evt_new");
+  });
+
+  it("detects an accepted or running run for the selected repository and change", () => {
+    const attempts = [
+      attempt({
+        eventId: "evt_demo",
+        repoPath: "/repo",
+        changeName: "demo",
+        executionStatus: "accepted",
+      }),
+      attempt({
+        eventId: "evt_other",
+        repoPath: "/repo",
+        changeName: "other",
+        executionStatus: "running",
+      }),
+    ];
+
+    expect(runnerChangeIsBuilding(attempts, "/repo", "demo")).toBe(true);
+    expect(runnerChangeIsBuilding(attempts, "/repo", "other")).toBe(true);
+    expect(runnerChangeIsBuilding(attempts, "/repo", "missing")).toBe(false);
+    expect(runnerChangeIsBuilding(attempts, "/other", "demo")).toBe(false);
+  });
+
+  it("uses the latest run state so terminal states stop selected-change building", () => {
+    const attempts = [
+      attempt({
+        eventId: "evt_running",
+        repoPath: "/repo",
+        changeName: "demo",
+        executionStatus: "running",
+        updatedAt: "2026-04-29T12:00:00Z",
+      }),
+      attempt({
+        eventId: "evt_completed",
+        repoPath: "/repo",
+        changeName: "demo",
+        executionStatus: "completed",
+        updatedAt: "2026-04-29T12:01:00Z",
+      }),
+    ];
+
+    expect(runnerChangeIsBuilding(attempts, "/repo", "demo")).toBe(false);
+  });
+
+  it("does not treat failed, blocked, or conflict run states as selected-change building", () => {
+    for (const executionStatus of ["failed", "blocked", "conflict"] as const) {
+      expect(
+        runnerChangeIsBuilding([
+          attempt({
+            eventId: "evt_" + executionStatus,
+            repoPath: "/repo",
+            changeName: "demo",
+            executionStatus,
+          }),
+        ], "/repo", "demo"),
+      ).toBe(false);
+    }
+  });
+
+  it("ignores non-run lifecycle, stream, and diagnostic rows for selected-change building", () => {
+    const attempts = [
+      attempt({
+        eventId: "evt_lifecycle",
+        repoPath: "/repo",
+        changeName: "demo",
+        executionStatus: "running",
+        rowKind: "lifecycle",
+      }),
+      attempt({
+        eventId: "evt_stream",
+        repoPath: "/repo",
+        changeName: "demo",
+        executionStatus: "accepted",
+        rowKind: "stream",
+      }),
+      attempt({
+        eventId: "evt_diagnostic",
+        repoPath: "/repo",
+        changeName: "demo",
+        executionStatus: "running",
+        rowKind: "diagnostic",
+      }),
+    ];
+
+    expect(runnerChangeIsBuilding(attempts, "/repo", "demo")).toBe(false);
   });
 
   it("derives row identity and display labels", () => {
