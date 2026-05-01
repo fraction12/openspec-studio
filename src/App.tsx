@@ -8,36 +8,37 @@ import {
   createOpenSpecOperationIssue,
   deriveChangeBuildStatus,
   isPersistableLocalRepoPath,
-  mergeRunnerStreamEvent,
-  selectVisibleItemId,
   sameOpenSpecOperationScope,
   type OpenSpecOperationIssue,
   deriveRunnerDispatchEligibility,
   type RunnerDispatchAttempt,
   type RunnerDispatchEligibility,
   type RunnerSettings,
-  type RunnerStreamEventInput,
   type RunnerStatus,
 } from "./appModel";
 import {
-  indexOpenSpecWorkspace,
-  type VirtualOpenSpecChangeStatusRecord,
-  type VirtualOpenSpecFileRecord,
-} from "./domain/openspecIndex";
-import {
-  nextTableSortDirection,
-  sortRowsByNumericValue,
+  boundedRows,
+  clampBoardTableWidth,
+  defaultBoardTableSort,
+  nextBoardTableSort,
+  nextFocusedRowId,
+  reconcileFocusedRowId,
+  resetBoardTableWidth,
+  sortAriaValue,
+  sortBoardRows,
+  sortButtonLabel,
   type BoardTableSortDirection,
+  type BoardTableSortState,
+  type BoardTableSortConfig,
 } from "./domain/boardTableModel";
 import {
-  artifactPathForTab,
   artifactHealth,
   buildWorkspaceView,
-  detailTabsForChange,
   formatTime,
   matchesChangeFilters,
   matchesSpecFilters,
   specValidationLabel,
+  type ArchiveInfo,
   type Artifact,
   type ChangePhase,
   type ChangeRecord,
@@ -49,6 +50,33 @@ import {
   type TaskProgress,
   type WorkspaceView,
 } from "./domain/workspaceViewModel";
+import {
+  buildArtifactDetailViewModel,
+  type ArtifactDetail,
+  type ArtifactDetailViewModel,
+} from "./domain/artifactDetailViewModel";
+import {
+  deriveBrowserPreviewRepositoryTransition,
+  deriveEmptyRepositoryOpenTransition,
+  deriveNoProviderRepositoryTransition,
+  deriveReadyRepositoryTransition,
+  deriveRefreshRepositoryTransition,
+  unknownGitStatus,
+  type CandidateRepoError,
+  type LoadState,
+  type OpenSpecGitStatus,
+  type RepositoryView,
+} from "./domain/repositoryOpeningFlow";
+import {
+  derivePersistedWorkspaceSelection,
+  initializeWorkspaceNavigation,
+  normalizeWorkspaceDetailTab,
+  reconcileVisibleChangeSelection,
+  reconcileVisibleSpecSelection,
+  retainWorkspaceNavigation,
+  type BoardView,
+  type WorkspaceNavigationState,
+} from "./domain/workspaceNavigationState";
 import {
   type ValidationResult,
 } from "./validation/results";
@@ -63,13 +91,25 @@ import {
   updatePersistedRepoSelection,
   updatePersistedRepoSort,
   updatePersistedValidationSnapshot,
-  upsertRunnerDispatchAttempt,
   type PersistedAppState,
   type PersistedRecentRepo,
 } from "./persistence";
 import { ProviderSession } from "./providers/providerSession";
 import { createBuiltInOpenSpecProvider } from "./providers/providerRegistry";
 import type { ProviderCapabilities } from "./providers/types";
+import {
+  latestRunnerAttempt,
+  mergeRunnerStreamEvent,
+  replaceRunnerDispatchAttempt,
+  runnerAttemptMessage,
+  runnerAttemptResponseLabel,
+  runnerAttemptRowId,
+  runnerAttemptStatusHealth,
+  runnerAttemptStatusLabel,
+  runnerDispatchHistoryForRepo,
+  type RunnerStreamEventInput,
+  upsertRunnerDispatchAttempt as upsertRunnerLogAttempt,
+} from "./runner/studioRunnerLog";
 import {
   defaultRunnerSettings,
   runnerRepoPath,
@@ -79,47 +119,6 @@ import {
   type RunnerStreamStatus,
 } from "./runner/studioRunnerSession";
 
-type RepoState = "ready" | "no-workspace" | "cli-failure";
-type BoardView = "changes" | "specs" | "runner";
-type LoadState = "idle" | "loading" | "loaded" | "error";
-type CandidateErrorKind = "missing" | "no-workspace" | "unavailable";
-
-interface RepositoryView {
-  id: string;
-  name: string;
-  path: string;
-  branch: string;
-  state: RepoState;
-  summary: string;
-  providerId?: string;
-  providerLabel?: string;
-  providerCapabilities?: ProviderCapabilities;
-}
-
-interface CandidateRepoError {
-  kind: CandidateErrorKind;
-  path: string;
-  title: string;
-  message: string;
-}
-
-interface OpenSpecGitStatus {
-  state: "unknown" | "loading" | "clean" | "dirty" | "unavailable";
-  dirtyCount: number;
-  entries: string[];
-  message: string;
-}
-
-interface BoundedRows<T> {
-  rows: T[];
-  hiddenCount: number;
-}
-
-interface BoardTableSortConfig<T> {
-  defaultDirection?: BoardTableSortDirection;
-  getValue: (row: T) => number | null | undefined;
-}
-
 interface BoardTableColumn<T> {
   id: string;
   label: string;
@@ -127,11 +126,6 @@ interface BoardTableColumn<T> {
   cellClassName?: string;
   sortable?: BoardTableSortConfig<T>;
   render: (row: T) => ReactNode;
-}
-
-interface BoardTableSortState {
-  columnId: string;
-  direction: BoardTableSortDirection;
 }
 
 interface BoardTableResizeConfig {
@@ -145,18 +139,10 @@ interface BoardTableResizeConfig {
   title: string;
 }
 
-const BROWSER_PREVIEW_REPO_PATH = "browser-preview://openspec-studio";
 const AUTO_REFRESH_INTERVAL_MS = 15_000;
 const MAX_OPERATION_ISSUES = 6;
 const MARKDOWN_BLOCK_CACHE_LIMIT = 40;
 const ROW_RENDER_BATCH_SIZE = 250;
-
-const unknownGitStatus: OpenSpecGitStatus = {
-  state: "unknown",
-  dirtyCount: 0,
-  entries: [],
-  message: "Git status has not been checked.",
-};
 
 const phaseLabels: Record<ChangePhase, string> = {
   active: "Active",
@@ -201,6 +187,8 @@ function App() {
   const workspaceRef = useRef<WorkspaceView | null>(workspace);
   const repoRef = useRef<RepositoryView | null>(repo);
   const gitStatusRef = useRef<OpenSpecGitStatus>(gitStatus);
+  const selectedChangeIdRef = useRef(selectedChangeId);
+  const selectedSpecIdRef = useRef(selectedSpecId);
   const runnerSettingsRef = useRef<RunnerSettings>(runnerSettings);
   const runnerStatusRef = useRef<RunnerStatus>(runnerStatus);
   const repoPathRef = useRef<string | null>(repo?.path ?? null);
@@ -214,6 +202,8 @@ function App() {
   workspaceRef.current = workspace;
   repoRef.current = repo;
   gitStatusRef.current = gitStatus;
+  selectedChangeIdRef.current = selectedChangeId;
+  selectedSpecIdRef.current = selectedSpecId;
   runnerSettingsRef.current = runnerSettings;
   runnerStatusRef.current = runnerStatus;
   repoPathRef.current = repo?.path ?? null;
@@ -357,16 +347,16 @@ function App() {
   }
 
   function rememberRunnerAttempt(attempt: RunnerDispatchAttempt) {
-    updatePersistedState((current) => upsertRunnerDispatchAttempt(current, attempt));
+    updatePersistedState((current) => ({
+      ...current,
+      runnerDispatchAttempts: upsertRunnerLogAttempt(current.runnerDispatchAttempts, attempt),
+    }));
   }
 
   function replaceRunnerAttempt(eventId: string, attempt: RunnerDispatchAttempt) {
     updatePersistedState((current) => ({
       ...current,
-      runnerDispatchAttempts: [
-        attempt,
-        ...(current.runnerDispatchAttempts ?? []).filter((item) => item.eventId !== eventId),
-      ].slice(0, 50),
+      runnerDispatchAttempts: replaceRunnerDispatchAttempt(current.runnerDispatchAttempts, eventId, attempt),
     }));
   }
 
@@ -493,8 +483,21 @@ function App() {
     sessionSecretConfigured: runnerSessionSecretConfigured,
   });
   const repoRunnerDispatchHistory = useMemo(
-    () => (persistedAppState.runnerDispatchAttempts ?? []).filter((attempt) => attempt.repoPath === repo?.path),
+    () => runnerDispatchHistoryForRepo(persistedAppState.runnerDispatchAttempts, repo?.path),
     [persistedAppState.runnerDispatchAttempts, repo?.path],
+  );
+  const selectedChangeDetailModel = useMemo(
+    () =>
+      selectedChange
+        ? buildArtifactDetailViewModel({
+            change: selectedChange,
+            requestedTab: detailTab,
+            artifactPreview,
+            validation: workspace?.validation ?? null,
+            operationIssues,
+          })
+        : null,
+    [artifactPreview, detailTab, operationIssues, selectedChange, workspace?.validation],
   );
 
   useEffect(() => {
@@ -502,14 +505,15 @@ function App() {
       return;
     }
 
-    const nextSelectedChangeId = selectVisibleItemId(
+    const nextSelection = reconcileVisibleChangeSelection({
       changes,
       selectedChangeId,
-      (change) => matchesChangeFilters(change, phase, deferredChangesQuery),
-    );
+      phase,
+      query: deferredChangesQuery,
+    });
 
-    if (nextSelectedChangeId !== selectedChangeId) {
-      setSelectedChangeId(nextSelectedChangeId);
+    if (nextSelection.selectedChangeId !== selectedChangeId) {
+      setSelectedChangeId(nextSelection.selectedChangeId);
       setDetailTab("proposal");
     }
   }, [changes, phase, deferredChangesQuery, selectedChangeId, view]);
@@ -519,12 +523,14 @@ function App() {
       return;
     }
 
-    const nextSelectedSpecId = selectVisibleItemId(specs, selectedSpecId, (spec) =>
-      matchesSpecFilters(spec, deferredSpecsQuery),
-    );
+    const nextSelection = reconcileVisibleSpecSelection({
+      specs,
+      selectedSpecId,
+      query: deferredSpecsQuery,
+    });
 
-    if (nextSelectedSpecId !== selectedSpecId) {
-      setSelectedSpecId(nextSelectedSpecId);
+    if (nextSelection.selectedSpecId !== selectedSpecId) {
+      setSelectedSpecId(nextSelection.selectedSpecId);
     }
   }, [deferredSpecsQuery, selectedSpecId, specs, view]);
 
@@ -533,9 +539,9 @@ function App() {
       return;
     }
 
-    const tabs = detailTabsForChange(selectedChange);
-    if (!tabs.some((tab) => tab.id === detailTab)) {
-      setDetailTab(tabs[0]?.id ?? "archive-info");
+    const nextDetailTab = normalizeWorkspaceDetailTab(selectedChange, detailTab);
+    if (nextDetailTab !== detailTab) {
+      setDetailTab(nextDetailTab);
     }
   }, [detailTab, selectedChange]);
 
@@ -544,16 +550,25 @@ function App() {
       return;
     }
 
+    const payload = derivePersistedWorkspaceSelection({
+      repoPath: repo.path,
+      repoState: repo.state,
+      workspaceFingerprint: workspace.fileSignature.fingerprint,
+      selectedChangeId,
+      selectedSpecId,
+    });
+
+    if (!payload) {
+      return;
+    }
+
     updatePersistedState((current) =>
-      updatePersistedRepoSelection(current, repo.path, {
-        changeId: selectedChangeId,
-        specId: selectedSpecId,
-      }),
+      updatePersistedRepoSelection(current, payload.repoPath, payload.selection),
     );
   }, [repo?.path, repo?.state, selectedChangeId, selectedSpecId, workspace?.fileSignature.fingerprint]);
 
   useEffect(() => {
-    const path = artifactPathForTab(selectedChange, detailTab);
+    const path = selectedChangeDetailModel?.selectedArtifactPath;
 
     if (!path) {
       setArtifactPreview("");
@@ -588,19 +603,15 @@ function App() {
           setMessage(errorMessage(error));
         }
       });
-  }, [detailTab, repo, selectedChange, workspace]);
+  }, [repo, selectedChangeDetailModel?.selectedArtifactPath, workspace]);
 
   async function loadRepository(repoPath: string) {
     const candidatePath = repoPath.trim();
 
     if (!candidatePath) {
-      setCandidateError({
-        kind: "missing",
-        path: "",
-        title: "Choose a repository folder",
-        message: "Select a local folder that contains an openspec/ directory.",
-      });
-      setMessage("Choose a repository folder to begin.");
+      const transition = deriveEmptyRepositoryOpenTransition();
+      setCandidateError(transition.candidateError);
+      setMessage(transition.message);
       return;
     }
 
@@ -609,40 +620,16 @@ function App() {
     setMessage("Reading local OpenSpec files from " + candidatePath);
 
     if (!isTauriRuntime()) {
-      const previewFiles: VirtualOpenSpecFileRecord[] = [];
-      const previewStatuses: VirtualOpenSpecChangeStatusRecord[] = [];
-      const indexed = indexOpenSpecWorkspace({
-        files: previewFiles,
-        changeStatuses: previewStatuses,
-      });
-      const previewRepo: RepositoryView = {
-        id: BROWSER_PREVIEW_REPO_PATH,
-        name: "openspec-studio",
-        path: BROWSER_PREVIEW_REPO_PATH,
-        branch: "browser-preview",
-        state: "ready",
-        summary: "Browser preview only",
-      };
-      const nextWorkspace = buildWorkspaceView(
-        indexed,
-        previewFiles,
-        null,
-        previewStatuses,
-      );
+      const transition = deriveBrowserPreviewRepositoryTransition();
 
-      repoRef.current = previewRepo;
-      workspaceRef.current = nextWorkspace;
-      setRepo(previewRepo);
-      setWorkspace(nextWorkspace);
-      setGitStatus({
-        state: "unavailable",
-        dirtyCount: 0,
-        entries: [],
-        message: "Git status requires the Tauri desktop runtime.",
-      });
-      selectFirstItems(nextWorkspace);
-      setLoadState("loaded");
-      setMessage("Browser preview loaded without repository data. Run the Tauri app to inspect local files.");
+      repoRef.current = transition.repository;
+      workspaceRef.current = transition.workspace;
+      setRepo(transition.repository);
+      setWorkspace(transition.workspace);
+      setGitStatus(transition.gitStatus);
+      applyWorkspaceNavigation(initializeWorkspaceNavigation(transition.workspace));
+      setLoadState(transition.loadState);
+      setMessage(transition.message);
       return;
     }
 
@@ -659,51 +646,44 @@ function App() {
       }
 
       if (result.kind === "no-provider") {
-        const nextRepo: RepositoryView = {
-          id: result.path,
-          name: result.name,
-          path: result.path,
-          branch: "local",
-          state: "no-workspace",
-          summary: result.summary,
-        };
-        if (!repo) {
-          repoRef.current = nextRepo;
+        const transition = deriveNoProviderRepositoryTransition(result, {
+          hasActiveRepository: Boolean(repo),
+        });
+        if (transition.repository) {
+          repoRef.current = transition.repository;
           workspaceRef.current = null;
-          setRepo(nextRepo);
+          setRepo(transition.repository);
           setWorkspace(null);
           setGitStatus(unknownGitStatus);
           setSelectedChangeId("");
           setSelectedSpecId("");
         }
-        setCandidateError({
-          kind: "no-workspace",
-          path: result.path,
-          title: "No OpenSpec workspace found",
-          message: "The selected folder does not contain an openspec/ directory.",
-        });
-        setLoadState("loaded");
-        setMessage("No OpenSpec workspace was found in " + result.path);
+        setCandidateError(transition.candidateError);
+        setLoadState(transition.loadState);
+        setMessage(transition.message);
         return;
       }
 
-      const isSameRepo = repo?.path === result.repository.path;
       const persistedRepoState = persistedAppStateRef.current.repoStateByPath[result.repository.path];
-      setGitStatus({ ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." });
-      repoRef.current = result.repository;
-      workspaceRef.current = result.workspace;
-      setRepo(result.repository);
-      setWorkspace(result.workspace);
-      setCandidateError(null);
-      void loadGitStatus(result.repository.path);
-      rememberRecentRepo(result.repository.path, result.repository.name);
-      if (isSameRepo) {
-        keepSelectionInWorkspace(result.workspace);
+      const transition = deriveReadyRepositoryTransition(result, {
+        currentRepoPath: repo?.path,
+      });
+
+      setGitStatus(transition.gitStatus);
+      repoRef.current = transition.repository;
+      workspaceRef.current = transition.workspace;
+      setRepo(transition.repository);
+      setWorkspace(transition.workspace);
+      setCandidateError(transition.candidateError);
+      void loadGitStatus(transition.repository.path);
+      rememberRecentRepo(transition.rememberRecentRepo.path, transition.rememberRecentRepo.name);
+      if (transition.navigationMode === "keep") {
+        keepSelectionInWorkspace(transition.workspace);
       } else {
-        restorePersistedSelection(result.workspace, persistedRepoState);
+        restorePersistedSelection(transition.workspace, persistedRepoState);
       }
-      setLoadState("loaded");
-      setMessage("Refreshed files: " + result.workspace.changes.length + " changes and " + result.workspace.specs.length + " specs.");
+      setLoadState(transition.loadState);
+      setMessage(transition.message);
     } catch (error) {
       setCandidateError({
         kind: "unavailable",
@@ -1056,16 +1036,22 @@ function App() {
         return;
       }
 
-      if (result.kind === "unchanged") {
+      const transition = deriveRefreshRepositoryTransition(result);
+
+      if (transition.kind === "stale") {
+        return;
+      }
+
+      if (transition.kind === "unchanged") {
         void loadGitStatus(repoPath, { quiet: true });
         return;
       }
 
-      workspaceRef.current = result.workspace;
-      setWorkspace(result.workspace);
-      keepSelectionInWorkspace(result.workspace);
-      void loadGitStatus(repoPath, { quiet: true });
-      setMessage("OpenSpec files changed. Local files refreshed.");
+      workspaceRef.current = transition.workspace;
+      setWorkspace(transition.workspace);
+      keepSelectionInWorkspace(transition.workspace);
+      void loadGitStatus(repoPath, { quiet: transition.gitStatusQuiet });
+      setMessage(transition.message);
     } catch (error) {
       if (repoRef.current?.path === repoPath) {
         setMessage(errorMessage(error));
@@ -1083,49 +1069,34 @@ function App() {
     );
   }
 
-  function selectFirstItems(nextWorkspace: WorkspaceView) {
-    const firstChange = nextWorkspace.changes.find((change) => change.phase === "active") ?? nextWorkspace.changes[0];
-    setSelectedChangeId(firstChange?.id ?? "");
-    setSelectedSpecId(nextWorkspace.specs[0]?.id ?? "");
-    setDetailTab("proposal");
-    setView("changes");
-    setPhase("active");
-    setChangesQuery("");
-    setSpecsQuery("");
-  }
-
   function restorePersistedSelection(
     nextWorkspace: WorkspaceView,
     persistedRepoState: PersistedAppState["repoStateByPath"][string] | undefined,
   ) {
-    const persistedChange = nextWorkspace.changes.find(
-      (change) => change.id === persistedRepoState?.lastSelectedChange,
-    );
-    const persistedSpec = nextWorkspace.specs.find(
-      (spec) => spec.id === persistedRepoState?.lastSelectedSpec,
-    );
-    const firstChange = nextWorkspace.changes.find((change) => change.phase === "active") ?? nextWorkspace.changes[0];
-
-    setSelectedChangeId(persistedChange?.id ?? firstChange?.id ?? "");
-    setSelectedSpecId(persistedSpec?.id ?? nextWorkspace.specs[0]?.id ?? "");
-    setDetailTab("proposal");
-    setView("changes");
-    setPhase("active");
-    setChangesQuery("");
-    setSpecsQuery("");
+    applyWorkspaceNavigation(initializeWorkspaceNavigation(nextWorkspace, {
+      lastSelectedChange: persistedRepoState?.lastSelectedChange,
+      lastSelectedSpec: persistedRepoState?.lastSelectedSpec,
+    }));
   }
 
   function keepSelectionInWorkspace(nextWorkspace: WorkspaceView) {
-    setSelectedChangeId((current) =>
-      nextWorkspace.changes.some((change) => change.id === current)
-        ? current
-        : nextWorkspace.changes[0]?.id ?? "",
-    );
-    setSelectedSpecId((current) =>
-      nextWorkspace.specs.some((spec) => spec.id === current)
-        ? current
-        : nextWorkspace.specs[0]?.id ?? "",
-    );
+    const nextSelection = retainWorkspaceNavigation(nextWorkspace, {
+      selectedChangeId: selectedChangeIdRef.current,
+      selectedSpecId: selectedSpecIdRef.current,
+    });
+
+    setSelectedChangeId(nextSelection.selectedChangeId);
+    setSelectedSpecId(nextSelection.selectedSpecId);
+  }
+
+  function applyWorkspaceNavigation(nextNavigation: WorkspaceNavigationState) {
+    setSelectedChangeId(nextNavigation.selectedChangeId);
+    setSelectedSpecId(nextNavigation.selectedSpecId);
+    setDetailTab(nextNavigation.detailTab);
+    setView(nextNavigation.view);
+    setPhase(nextNavigation.phase);
+    setChangesQuery(nextNavigation.changesQuery);
+    setSpecsQuery(nextNavigation.specsQuery);
   }
 
   return (
@@ -1202,9 +1173,7 @@ function App() {
         runnerSessionSecretConfigured={runnerSessionSecretConfigured}
         runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
         runnerStreamStatus={runnerStreamStatus}
-        detailTab={detailTab}
-        artifactPreview={artifactPreview}
-        operationIssues={operationIssues}
+        artifactDetailModel={selectedChangeDetailModel}
         onDetailTabChange={setDetailTab}
         onOpenArtifact={(artifact) => void openArtifact(artifact)}
         onValidate={() => void runValidation()}
@@ -1882,13 +1851,10 @@ function BoardTable<T extends { id: string }>({
   }, [columns, controlledSortState]);
 
   useEffect(() => {
-    if (selectedId && bounded.rows.some((row) => row.id === selectedId)) {
-      setFocusRowId(selectedId);
-      return;
-    }
+    const nextFocusRowId = reconcileFocusedRowId(bounded.rows, focusRowId, selectedId);
 
-    if (!bounded.rows.some((row) => row.id === focusRowId)) {
-      setFocusRowId(bounded.rows[0]?.id ?? "");
+    if (nextFocusRowId !== focusRowId) {
+      setFocusRowId(nextFocusRowId);
     }
   }, [bounded.rows, focusRowId, selectedId]);
 
@@ -1898,24 +1864,13 @@ function BoardTable<T extends { id: string }>({
   }
 
   function moveRowFocus(currentId: string, direction: "next" | "previous" | "first" | "last") {
-    if (bounded.rows.length === 0) {
+    const nextRowId = nextFocusedRowId(bounded.rows, currentId, direction);
+
+    if (!nextRowId) {
       return;
     }
 
-    const currentIndex = bounded.rows.findIndex((row) => row.id === currentId);
-    let nextIndex = currentIndex >= 0 ? currentIndex : 0;
-
-    if (direction === "first") {
-      nextIndex = 0;
-    } else if (direction === "last") {
-      nextIndex = bounded.rows.length - 1;
-    } else if (direction === "next") {
-      nextIndex = Math.min(nextIndex + 1, bounded.rows.length - 1);
-    } else {
-      nextIndex = Math.max(nextIndex - 1, 0);
-    }
-
-    focusTableRow(bounded.rows[nextIndex].id);
+    focusTableRow(nextRowId);
   }
 
   function startColumnResize(startX: number) {
@@ -1940,7 +1895,7 @@ function BoardTable<T extends { id: string }>({
       });
     };
     const handleMouseMove = (event: MouseEvent) => {
-      updateCssWidth(clampNumber(startWidth + event.clientX - startX, resize.minWidth, resize.maxWidth));
+      updateCssWidth(clampBoardTableWidth(startWidth + event.clientX - startX, resize));
     };
     const handleMouseUp = () => {
       if (animationFrame) {
@@ -1962,7 +1917,7 @@ function BoardTable<T extends { id: string }>({
       return;
     }
 
-    const nextWidth = clampNumber(width, resize.minWidth, resize.maxWidth);
+    const nextWidth = clampBoardTableWidth(width, resize);
     tableRef.current?.style.setProperty(resize.cssVariable, nextWidth + "px");
     setResizedWidth(nextWidth);
   }
@@ -1972,7 +1927,7 @@ function BoardTable<T extends { id: string }>({
       return;
     }
 
-    updateColumnWidth(resize.resetWidth);
+    updateColumnWidth(resetBoardTableWidth(resize));
   }
 
   function handleResizeKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
@@ -2005,13 +1960,11 @@ function BoardTable<T extends { id: string }>({
       return;
     }
 
-    const nextSortState = {
-      columnId: column.id,
-      direction:
-        activeSortState?.columnId === column.id
-          ? nextTableSortDirection(activeSortState.direction)
-          : column.sortable?.defaultDirection ?? "desc",
-    };
+    const nextSortState = nextBoardTableSort(column, activeSortState);
+
+    if (!nextSortState) {
+      return;
+    }
 
     if (controlledSortState === undefined) {
       setInternalSortState(nextSortState);
@@ -2185,9 +2138,7 @@ function Inspector({
   runnerSessionSecretConfigured,
   runnerDispatchBusy,
   runnerStreamStatus,
-  detailTab,
-  artifactPreview,
-  operationIssues,
+  artifactDetailModel,
   onDetailTabChange,
   onOpenArtifact,
   onValidate,
@@ -2211,9 +2162,7 @@ function Inspector({
   runnerSessionSecretConfigured: boolean;
   runnerDispatchBusy: boolean;
   runnerStreamStatus: "disconnected" | "connecting" | "connected" | "error";
-  detailTab: DetailTab;
-  artifactPreview: string;
-  operationIssues: OpenSpecOperationIssue[];
+  artifactDetailModel: ArtifactDetailViewModel | null;
   onDetailTabChange: (tab: DetailTab) => void;
   onOpenArtifact: (artifact: Artifact | SpecRecord) => void;
   onValidate: () => void;
@@ -2226,26 +2175,6 @@ function Inspector({
   onReconnectRunnerStream: () => void;
   onDispatchRunner: () => void;
 }) {
-  const tabs = selectedChange ? detailTabsForChange(selectedChange) : [];
-  const selectedDetailTab =
-    selectedChange && tabs.some((tab) => tab.id === detailTab)
-      ? detailTab
-      : tabs[0]?.id ?? "archive-info";
-  const selectedTaskDetail = useMemo(
-    () =>
-      selectedDetailTab === "tasks" && selectedChange?.taskProgress
-        ? parseTaskProgressContent(selectedChange.taskProgress.content)
-        : { items: [], groups: [] },
-    [selectedChange?.taskProgress, selectedDetailTab],
-  );
-  const selectedChangeIssues = selectedChange
-    ? operationIssues.filter((issue) => issue.target === selectedChange.name)
-    : [];
-  const selectedArtifactPath = selectedChange ? artifactPathForTab(selectedChange, selectedDetailTab) : undefined;
-  const selectedArtifactIssue = selectedArtifactPath
-    ? operationIssues.find((issue) => issue.kind === "artifact-read" && issue.target === selectedArtifactPath)
-    : undefined;
-
   if (!repo || !workspace) {
     return (
       <aside className="inspector artifact-inspector" aria-label="Artifact inspector">
@@ -2304,6 +2233,17 @@ function Inspector({
     );
   }
 
+  if (!artifactDetailModel) {
+    return (
+      <aside className="inspector artifact-inspector change-inspector" aria-label="Change artifact inspector">
+        <EmptyState compact title="No change selected" body="Choose a change to reveal artifacts and validation details." />
+      </aside>
+    );
+  }
+
+  const tabs = artifactDetailModel?.tabs ?? [];
+  const selectedDetailTab = artifactDetailModel?.selectedTab ?? "proposal";
+  const selectedChangeIssues = artifactDetailModel?.selectedChangeIssues ?? [];
   const runnerActionUnavailableReason =
     runnerDispatchEligibility.reasons[0] ?? "Build with agent is unavailable for this change.";
 
@@ -2353,14 +2293,10 @@ function Inspector({
           </section>
         ) : null}
         {renderDetailTab(
-          selectedChange,
-          selectedDetailTab,
-          artifactPreview,
-          workspace.validation,
-          selectedTaskDetail,
+          artifactDetailModel.detail,
           onOpenArtifact,
           onValidate,
-          selectedArtifactIssue,
+          artifactDetailModel.selectedArtifactIssue,
         )}
       </div>
     </aside>
@@ -2395,7 +2331,7 @@ function RunnerWorkspace({ history }: { history: RunnerDispatchAttempt[] }) {
 }
 
 function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
-  const latestAttempt = history[0] ?? null;
+  const latestAttempt = latestRunnerAttempt(history);
   const columns = useMemo<BoardTableColumn<RunnerDispatchAttempt>[]>(
     () => [
       {
@@ -2412,7 +2348,7 @@ function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
         id: "status",
         label: "Status",
         colClassName: "runner-status-col",
-        render: (attempt) => <RunnerAttemptStatusPill status={attempt.status} executionStatus={attempt.executionStatus} />,
+        render: (attempt) => <RunnerAttemptStatusPill attempt={attempt} />,
       },
       {
         id: "event",
@@ -2485,36 +2421,8 @@ function RunnerLogTable({ history }: { history: RunnerDispatchAttempt[] }) {
   );
 }
 
-function RunnerAttemptStatusPill({ status, executionStatus }: { status: RunnerDispatchAttempt["status"]; executionStatus?: RunnerDispatchAttempt["executionStatus"] | null }) {
-  const label = executionStatus || status;
-  const health: Health = label === "completed" || label === "accepted" ? "valid" : label === "failed" || label === "blocked" ? "invalid" : "stale";
-  return <HealthPill health={health} label={label} />;
-}
-
-function runnerAttemptRowId(attempt: RunnerDispatchAttempt) {
-  return `${attempt.eventId}-${attempt.updatedAt}-${attempt.status}`;
-}
-
-function runnerAttemptMessage(attempt: RunnerDispatchAttempt) {
-  const source = attempt.source ? `${attempt.source} · ` : "";
-  return `${source}${attempt.eventName || attempt.message}`;
-}
-
-function runnerAttemptResponseLabel(attempt: RunnerDispatchAttempt) {
-  if (attempt.prUrl) {
-    return attempt.prUrl;
-  }
-  if (attempt.error) {
-    return attempt.error;
-  }
-  const parts = [
-    attempt.branchName ? `branch ${attempt.branchName}` : null,
-    attempt.commitSha ? `commit ${attempt.commitSha.slice(0, 7)}` : null,
-    attempt.sessionId ? `session ${attempt.sessionId}` : null,
-    attempt.runId ? `run ${attempt.runId}` : null,
-    attempt.statusCode ? `HTTP ${attempt.statusCode}` : null,
-  ].filter(Boolean);
-  return parts.length ? parts.join(" · ") : attempt.message;
+function RunnerAttemptStatusPill({ attempt }: { attempt: RunnerDispatchAttempt }) {
+  return <HealthPill health={runnerAttemptStatusHealth(attempt)} label={runnerAttemptStatusLabel(attempt)} />;
 }
 
 function RunnerInspector({
@@ -2633,91 +2541,87 @@ function formatRunnerDateTime(value: string): string {
 }
 
 function renderDetailTab(
-  change: ChangeRecord,
-  tab: DetailTab,
-  artifactPreview: string,
-  validation: ValidationResult | null,
-  taskDetail: { items: TaskItem[]; groups: TaskGroup[] },
+  detail: ArtifactDetail,
   onOpenArtifact: (artifact: Artifact) => void,
   onValidate: () => void,
   artifactIssue?: OpenSpecOperationIssue,
 ) {
-  if (tab === "archive-info") {
-    return <ArchiveInfoPanel change={change} onOpenArtifact={onOpenArtifact} />;
+  if (detail.kind === "archive-info") {
+    return (
+      <ArchiveInfoPanel
+        archiveInfo={detail.archiveInfo}
+        emptyTitle={detail.emptyTitle}
+        emptyBody={detail.emptyBody}
+        onOpenArtifact={onOpenArtifact}
+      />
+    );
   }
 
-  if (tab === "proposal" || tab === "design") {
+  if (detail.kind === "artifact") {
     return (
       <section className="inspector-section artifact-preview-section">
-        <h3>{tab === "proposal" ? "proposal.md" : "design.md"}</h3>
+        <h3>{detail.title}</h3>
         {artifactIssue ? <OperationIssueCallout issue={artifactIssue} /> : null}
-        <MarkdownPreview content={artifactPreview} emptyText="No artifact preview available." />
+        <MarkdownPreview content={detail.content} emptyText={detail.emptyText} />
       </section>
     );
   }
 
-  if (tab === "tasks") {
-    if (!change.taskProgress) {
+  if (detail.kind === "tasks") {
+    if (detail.unavailable) {
       return (
         <EmptyState compact tone="warning" title="Task progress unavailable" body="tasks.md is missing." />
       );
     }
-
-    const completedTasks = taskDetail.items.filter((item) => item.done);
-    const remainingGroups = filterTaskGroups(taskDetail.groups, false);
-    const completedGroups = filterTaskGroups(taskDetail.groups, true);
-    const remainingCount = remainingGroups.reduce((total, group) => total + group.items.length, 0);
 
     return (
       <>
         <section className="inspector-section artifact-task-section">
           <div className="section-title-row">
             <h3>Open tasks</h3>
-            <span>{remainingCount}</span>
+            <span>{detail.remainingCount}</span>
           </div>
-          {remainingCount > 0 ? (
-            <TaskGroups groups={remainingGroups} />
+          {detail.remainingCount > 0 ? (
+            <TaskGroups groups={detail.remainingGroups} />
           ) : (
             <p className="muted-copy">No remaining tasks. This change is ready for final checks.</p>
           )}
         </section>
         <details className="disclosure task-history">
           <summary>
-            Completed tasks <span>{completedTasks.length}</span>
+            Completed tasks <span>{detail.completedCount}</span>
           </summary>
-          <TaskGroups groups={completedGroups} compact />
+          <TaskGroups groups={detail.completedGroups} compact />
         </details>
         <section className="inspector-section progress-section artifact-progress-section">
           <div className="section-title-row">
             <h3>tasks.md progress</h3>
-            <span>{remainingCount} left</span>
+            <span>{detail.remainingCount} left</span>
           </div>
-          <TaskProgressCell progress={change.taskProgress} expanded />
+          <TaskProgressCell progress={detail.taskProgress} expanded />
         </section>
       </>
     );
   }
 
-  if (tab === "spec-delta") {
-    const specArtifacts = change.artifacts.filter((artifact) => artifact.id.startsWith("delta-"));
-
-    return specArtifacts.length > 0 ? (
+  if (detail.kind === "spec-delta") {
+    return detail.artifacts.length > 0 ? (
       <section className="inspector-section artifact-delta-section">
         <h3>Delta specs</h3>
-        <ArtifactList artifacts={specArtifacts} onOpenArtifact={onOpenArtifact} />
+        <ArtifactList artifacts={detail.artifacts} onOpenArtifact={onOpenArtifact} />
       </section>
     ) : (
-      <EmptyState compact tone="warning" title="No spec deltas" body="No delta specs are indexed for this change." />
+      <EmptyState compact tone="warning" title={detail.emptyTitle} body={detail.emptyBody} />
     );
   }
 
   return (
     <>
-      {validation?.diagnostics.length ? (
+      {detail.diagnostics.length ? (
         <details className="disclosure" open>
           <summary>OpenSpec command output</summary>
           <ul className="message-list">
-            {validation.diagnostics.map((diagnostic) => (
+            {detail.diagnostics.map((diagnostic) => (
               <li key={diagnostic.id} className="message error">
                 <strong>{diagnostic.kind === "command-failure" ? "Command problem" : "Output problem"}</strong>
                 <span>{diagnostic.message}</span>
@@ -2728,11 +2632,11 @@ function renderDetailTab(
       ) : null}
       <details className="disclosure" open>
         <summary>Linked check messages</summary>
-        {change.validationIssues.length === 0 ? (
+        {detail.validationIssues.length === 0 ? (
           <p className="muted-copy">No check messages are linked to this change.</p>
         ) : (
           <ul className="message-list">
-            {change.validationIssues.map((issue) => (
+            {detail.validationIssues.map((issue) => (
               <li key={issue.id} className={"message " + issue.severity}>
                 <strong>{issue.code ?? issue.severity}</strong>
                 <span>{issue.message}</span>
@@ -2748,18 +2652,18 @@ function renderDetailTab(
 
       <details className="disclosure">
         <summary>Artifact files</summary>
-        <ArtifactList artifacts={change.artifacts} onOpenArtifact={onOpenArtifact} showMissing />
+        <ArtifactList artifacts={detail.artifacts} onOpenArtifact={onOpenArtifact} showMissing />
       </details>
 
       <details className="disclosure">
         <summary>Archive readiness</summary>
         <div className="readiness-summary">
           <HealthPill
-            health={change.archiveReadiness.ready ? "ready" : "blocked"}
-            label={change.archiveReadiness.ready ? "Ready to archive" : "Not ready"}
+            health={detail.archiveReadiness.ready ? "ready" : "blocked"}
+            label={detail.archiveReadiness.ready ? "Ready to archive" : "Not ready"}
           />
           <ul className="detail-list">
-            {change.archiveReadiness.reasons.map((reason) => (
+            {detail.archiveReadiness.reasons.map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
           </ul>
@@ -2770,21 +2674,23 @@ function renderDetailTab(
 }
 
 function ArchiveInfoPanel({
-  change,
+  archiveInfo,
+  emptyTitle,
+  emptyBody,
   onOpenArtifact,
 }: {
-  change: ChangeRecord;
+  archiveInfo: ArchiveInfo | undefined;
+  emptyTitle: string;
+  emptyBody: string;
   onOpenArtifact: (artifact: Artifact) => void;
 }) {
-  const archiveInfo = change.archiveInfo;
-
   if (!archiveInfo) {
     return (
       <EmptyState
         compact
         tone="warning"
-        title="Archive information unavailable"
-        body="No archive metadata was derived for this change."
+        title={emptyTitle}
+        body={emptyBody}
       />
     );
   }
@@ -3228,56 +3134,6 @@ function OperationIssueCallout({
   );
 }
 
-function parseTaskProgressContent(content: string | undefined): { items: TaskItem[]; groups: TaskGroup[] } {
-  if (!content) {
-    return { items: [], groups: [] };
-  }
-
-  const groups: TaskGroup[] = [];
-  let currentGroup: TaskGroup = { title: "Tasks", items: [] };
-
-  for (const line of content.split(/\r?\n/)) {
-    const heading = /^\s*#{1,6}\s+(.+)$/.exec(line);
-    if (heading) {
-      if (currentGroup.items.length > 0 || currentGroup.title !== "Tasks") {
-        groups.push(currentGroup);
-      }
-      currentGroup = { title: cleanMarkdownText(heading[1] ?? "Tasks"), items: [] };
-      continue;
-    }
-
-    const task = /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(line);
-    if (!task) {
-      continue;
-    }
-
-    currentGroup.items.push({
-      done: task[1]?.toLowerCase() === "x",
-      label: task[2] ?? "",
-    });
-  }
-
-  if (currentGroup.items.length > 0 || groups.length === 0) {
-    groups.push(currentGroup);
-  }
-
-  const populatedGroups = groups.filter((group) => group.items.length > 0);
-
-  return {
-    items: populatedGroups.flatMap((group) => group.items),
-    groups: populatedGroups,
-  };
-}
-
-function filterTaskGroups(groups: TaskGroup[], done: boolean): TaskGroup[] {
-  return groups
-    .map((group) => ({
-      title: group.title,
-      items: group.items.filter((item) => item.done === done),
-    }))
-    .filter((group) => group.items.length > 0);
-}
-
 function confirmArchiveChanges(changeNames: string[]): boolean {
   if (typeof window.confirm !== "function") {
     return true;
@@ -3376,10 +3232,6 @@ function formatCapabilities(capabilities: string[]): string {
   return capabilities.slice(0, 2).join(", ") + " +" + (capabilities.length - 2);
 }
 
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
 function areGitStatusesEqual(left: OpenSpecGitStatus, right: OpenSpecGitStatus): boolean {
   return (
     left.state === right.state &&
@@ -3388,82 +3240,6 @@ function areGitStatusesEqual(left: OpenSpecGitStatus, right: OpenSpecGitStatus):
     left.entries.length === right.entries.length &&
     left.entries.every((entry, index) => entry === right.entries[index])
   );
-}
-
-function defaultBoardTableSort<T>(columns: BoardTableColumn<T>[]): BoardTableSortState | null {
-  const column = columns.find((candidate) => candidate.sortable);
-
-  if (!column?.sortable) {
-    return null;
-  }
-
-  return {
-    columnId: column.id,
-    direction: column.sortable.defaultDirection ?? "desc",
-  };
-}
-
-function sortBoardRows<T extends { id: string }>(
-  rows: T[],
-  columns: BoardTableColumn<T>[],
-  sortState: BoardTableSortState | null,
-): T[] {
-  if (!sortState) {
-    return rows;
-  }
-
-  const column = columns.find((candidate) => candidate.id === sortState.columnId);
-
-  if (!column?.sortable) {
-    return rows;
-  }
-
-  return sortRowsByNumericValue(rows, sortState.direction, column.sortable.getValue);
-}
-
-function sortAriaValue<T>(column: BoardTableColumn<T>, sortState: BoardTableSortState | null) {
-  if (!column.sortable) {
-    return undefined;
-  }
-
-  if (sortState?.columnId !== column.id) {
-    return "none" as const;
-  }
-
-  return sortState.direction === "desc" ? "descending" : "ascending";
-}
-
-function sortButtonLabel<T>(column: BoardTableColumn<T>, sortState: BoardTableSortState | null): string {
-  if (sortState?.columnId !== column.id) {
-    return "Sort by " + column.label;
-  }
-
-  const current = sortState.direction === "desc" ? "newest first" : "oldest first";
-  const next = nextTableSortDirection(sortState.direction) === "desc" ? "newest first" : "oldest first";
-
-  return column.label + ": sorted " + current + ". Activate to sort " + next + ".";
-}
-
-function boundedRows<T extends { id: string }>(
-  rows: T[],
-  selectedId: string,
-  limit: number,
-): BoundedRows<T> {
-  if (rows.length <= limit) {
-    return { rows, hiddenCount: 0 };
-  }
-
-  const bounded = rows.slice(0, limit);
-  const selectedIndex = selectedId ? rows.findIndex((row) => row.id === selectedId) : -1;
-
-  if (selectedIndex >= limit) {
-    bounded.push(rows[selectedIndex]);
-  }
-
-  return {
-    rows: bounded,
-    hiddenCount: rows.length - bounded.length,
-  };
 }
 
 function absoluteArtifactPath(repoPath: string, artifactPath: string): string {
