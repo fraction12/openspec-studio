@@ -13,3 +13,12 @@ The active repository/provider workflow owner for a loaded workspace. It coordin
 
 ### Provider Workspace
 The source-backed workspace state returned by a Provider Session. It carries provider identity, provider capabilities, indexed changes, specs, artifacts, validation state, file signatures, diagnostics, source paths, and modified timestamps.
+
+### Workspace View-Model
+The UI-ready projection of a Provider Workspace. It derives change records, spec records, archive readiness, build status, health, artifacts, summaries, timestamps, validation issue maps, and search text from indexed OpenSpec data without owning repository IO or app shell state.
+
+### Studio Runner Session
+The frontend workflow owner for Studio Runner coordination. It owns Runner settings defaults, session-secret setup, lifecycle/status transitions, dispatch persistence, stream event merging, and Runner diagnostics behind a small Interface used by the app shell.
+
+### Native Bridge Module
+A Rust bridge Module behind the Tauri command seam. It keeps native behavior local by separating shared command/process utilities from local OpenSpec operations and Studio Runner operations while preserving the external command Interface.

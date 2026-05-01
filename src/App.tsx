@@ -5,40 +5,51 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import {
-  buildOpenSpecFileSignature,
-  buildVirtualFilesByPath,
-  deriveChangeBuildStatus,
-  deriveChangeHealth,
   createOpenSpecOperationIssue,
-  createRunnerLifecycleLogEvent,
+  deriveChangeBuildStatus,
   isPersistableLocalRepoPath,
+  mergeRunnerStreamEvent,
   selectVisibleItemId,
   sameOpenSpecOperationScope,
-  type ChangeHealth,
-  type ChangeBuildStatusState,
   type OpenSpecOperationIssue,
-  type OpenSpecFileSignature,
-  buildRunnerDispatchPayload,
   deriveRunnerDispatchEligibility,
-  mergeRunnerStreamEvent,
   type RunnerDispatchAttempt,
   type RunnerDispatchEligibility,
-  type RunnerDispatchRequestInput,
   type RunnerSettings,
   type RunnerStreamEventInput,
   type RunnerStatus,
 } from "./appModel";
 import {
   indexOpenSpecWorkspace,
-  type IndexedActiveChange,
-  type IndexedArchivedChange,
-  type IndexedSpec,
-  type IndexedTaskProgress,
   type VirtualOpenSpecChangeStatusRecord,
   type VirtualOpenSpecFileRecord,
 } from "./domain/openspecIndex";
 import {
-  type ValidationIssue,
+  nextTableSortDirection,
+  sortRowsByNumericValue,
+  type BoardTableSortDirection,
+} from "./domain/boardTableModel";
+import {
+  artifactPathForTab,
+  artifactHealth,
+  buildWorkspaceView,
+  detailTabsForChange,
+  formatTime,
+  matchesChangeFilters,
+  matchesSpecFilters,
+  specValidationLabel,
+  type Artifact,
+  type ChangePhase,
+  type ChangeRecord,
+  type DetailTab,
+  type Health,
+  type SpecRecord,
+  type TaskGroup,
+  type TaskItem,
+  type TaskProgress,
+  type WorkspaceView,
+} from "./domain/workspaceViewModel";
+import {
   type ValidationResult,
 } from "./validation/results";
 import {
@@ -59,106 +70,19 @@ import {
 import { ProviderSession } from "./providers/providerSession";
 import { createBuiltInOpenSpecProvider } from "./providers/providerRegistry";
 import type { ProviderCapabilities } from "./providers/types";
+import {
+  defaultRunnerSettings,
+  runnerRepoPath,
+  StudioRunnerSession,
+  unknownRunnerStatus,
+  type RunnerStreamEventDto,
+  type RunnerStreamStatus,
+} from "./runner/studioRunnerSession";
 
 type RepoState = "ready" | "no-workspace" | "cli-failure";
 type BoardView = "changes" | "specs" | "runner";
-type ChangePhase = "active" | "archive-ready" | "archived";
-type DetailTab = "proposal" | "design" | "tasks" | "spec-delta" | "status" | "archive-info";
-type Health = ChangeHealth;
-type ArtifactStatus = "present" | "missing" | "blocked";
 type LoadState = "idle" | "loading" | "loaded" | "error";
 type CandidateErrorKind = "missing" | "no-workspace" | "unavailable";
-export type BoardTableSortDirection = "asc" | "desc";
-
-interface RunnerStatusDto {
-  configured: boolean;
-  reachable: boolean;
-  status: string;
-  endpoint?: string | null;
-  runner_endpoint?: string | null;
-  runnerEndpoint?: string | null;
-  runner_repo_path?: string | null;
-  runnerRepoPath?: string | null;
-  status_code?: number | null;
-  statusCode?: number | null;
-  message: string;
-  response_body?: string | null;
-  responseBody?: string | null;
-  managed?: boolean;
-  pid?: number | null;
-}
-
-interface RunnerLifecycleResponseDto {
-  started: boolean;
-  endpoint: string;
-  port: number;
-  pid?: number | null;
-  message: string;
-}
-
-interface RunnerDispatchResponseDto {
-  event_id: string;
-  eventId?: string;
-  status_code: number;
-  statusCode?: number;
-  accepted: boolean;
-  message: string;
-  response_body?: string | null;
-  responseBody?: string | null;
-  run_id?: string | null;
-  runId?: string | null;
-}
-
-interface RunnerStreamEventDto {
-  eventName?: string | null;
-  event_name?: string | null;
-  eventId?: string | null;
-  event_id?: string | null;
-  repoPath?: string | null;
-  repo_path?: string | null;
-  repoChangeKey?: string | null;
-  repo_change_key?: string | null;
-  changeName?: string | null;
-  change_name?: string | null;
-  status?: string | null;
-  runId?: string | null;
-  run_id?: string | null;
-  recordedAt?: string | null;
-  recorded_at?: string | null;
-  workspacePath?: string | null;
-  workspace_path?: string | null;
-  sessionId?: string | null;
-  session_id?: string | null;
-  branchName?: string | null;
-  branch_name?: string | null;
-  commitSha?: string | null;
-  commit_sha?: string | null;
-  prUrl?: string | null;
-  pr_url?: string | null;
-  error?: string | null;
-  message?: string | null;
-}
-
-interface RunnerStreamResponseDto {
-  streaming: boolean;
-  endpoint: string;
-  message: string;
-}
-
-interface RunnerDispatchRequestDto {
-  eventId: string;
-  repoPath: string;
-  repoName: string;
-  changeName: string;
-  artifactPaths: string[];
-  validation: {
-    state: ValidationResult["state"];
-    checkedAt: string | null;
-    issueCount: number;
-  };
-  gitRef: string;
-  requestedBy: string;
-}
 
 interface RepositoryView {
   id: string;
@@ -179,99 +103,11 @@ interface CandidateRepoError {
   message: string;
 }
 
-interface Artifact {
-  id: string;
-  label: string;
-  path: string;
-  status: ArtifactStatus;
-  note: string;
-}
-
-interface TaskItem {
-  label: string;
-  done: boolean;
-}
-
-interface TaskGroup {
-  title: string;
-  items: TaskItem[];
-}
-
-interface TaskProgress {
-  done: number;
-  total: number;
-  content: string | undefined;
-}
-
-interface ChangeRecord {
-  id: string;
-  name: string;
-  title: string;
-  phase: ChangePhase;
-  health: Health;
-  statusLabel: string;
-  buildStatus: ChangeBuildStatusState;
-  summary: string;
-  capabilities: string[];
-  updatedAt: string;
-  modifiedTimeMs: number | null;
-  taskProgress: TaskProgress | null;
-  artifacts: Artifact[];
-  deltaSpecs: string[];
-  validationIssues: ValidationIssue[];
-  archiveInfo?: ArchiveInfo;
-  archiveReadiness: {
-    ready: boolean;
-    reasons: string[];
-  };
-  searchText: string;
-}
-
-interface ArchiveInfo {
-  path: string;
-  archivedDate: string | null;
-  originalName: string | null;
-  files: Artifact[];
-}
-
-interface SpecRecord {
-  id: string;
-  capability: string;
-  path: string;
-  health: Health;
-  requirements: number;
-  updatedAt: string;
-  modifiedTimeMs: number | null;
-  summary: string;
-  summaryQuality: "available" | "missing";
-  validationIssues: ValidationIssue[];
-  requirementsPreview: string[];
-  sourceContent: string;
-  searchText: string;
-}
-
-interface WorkspaceView {
-  providerId?: string;
-  providerLabel?: string;
-  providerCapabilities?: ProviderCapabilities;
-  changes: ChangeRecord[];
-  specs: SpecRecord[];
-  filesByPath: Record<string, VirtualOpenSpecFileRecord>;
-  fileSignature: OpenSpecFileSignature;
-  changeStatuses: VirtualOpenSpecChangeStatusRecord[];
-  validation: ValidationResult | null;
-}
-
 interface OpenSpecGitStatus {
   state: "unknown" | "loading" | "clean" | "dirty" | "unavailable";
   dirtyCount: number;
   entries: string[];
   message: string;
-}
-
-interface ValidationIssueMaps {
-  byChange: Map<string, ValidationIssue[]>;
-  bySpec: Map<string, ValidationIssue[]>;
 }
 
 interface BoundedRows<T> {
@@ -315,16 +151,6 @@ const MAX_OPERATION_ISSUES = 6;
 const MARKDOWN_BLOCK_CACHE_LIMIT = 40;
 const ROW_RENDER_BATCH_SIZE = 250;
 
-const defaultRunnerSettings: RunnerSettings = {
-  endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events",
-};
-
-const unknownRunnerStatus: RunnerStatus = {
-  state: "offline",
-  label: "Runner offline",
-  detail: "Add a local Studio Runner endpoint and generate a session secret to enable Build with agent.",
-};
-
 const unknownGitStatus: OpenSpecGitStatus = {
   state: "unknown",
   dirtyCount: 0,
@@ -332,32 +158,10 @@ const unknownGitStatus: OpenSpecGitStatus = {
   message: "Git status has not been checked.",
 };
 
-const healthLabels: Record<Health, string> = {
-  valid: "Checked",
-  stale: "Check needed",
-  invalid: "Needs attention",
-  missing: "Incomplete",
-  blocked: "Blocked",
-  ready: "Ready",
-};
-
 const phaseLabels: Record<ChangePhase, string> = {
   active: "Active",
   "archive-ready": "Archive ready",
   archived: "Archived",
-};
-
-const activeDetailTabs: Array<{ id: DetailTab; label: string }> = [
-  { id: "proposal", label: "Proposal" },
-  { id: "design", label: "Design" },
-  { id: "tasks", label: "Tasks" },
-  { id: "spec-delta", label: "Spec changes" },
-  { id: "status", label: "Checks" },
-];
-
-const archiveInfoTab: { id: DetailTab; label: string } = {
-  id: "archive-info",
-  label: "Archive info",
 };
 
 function App() {
@@ -384,15 +188,15 @@ function App() {
   const [runnerSessionSecretConfigured, setRunnerSessionSecretConfigured] = useState(false);
   const [runnerDispatchBusy, setRunnerDispatchBusy] = useState(false);
   const [runnerLifecycleBusy, setRunnerLifecycleBusy] = useState(false);
-  const [runnerStreamStatus, setRunnerStreamStatus] = useState<"disconnected" | "connecting" | "connected" | "error">("disconnected");
+  const [runnerStreamStatus, setRunnerStreamStatus] = useState<RunnerStreamStatus>("disconnected");
   const [message, setMessage] = useState("Loading local workspace...");
   const [operationIssues, setOperationIssues] = useState<OpenSpecOperationIssue[]>([]);
-  const runnerStatusGenerationRef = useRef(0);
   const runnerSessionSecretConfiguredRef = useRef(runnerSessionSecretConfigured);
   const archiveInFlightRef = useRef(false);
   const persistenceReadyRef = useRef(false);
   const chooseRepositoryFolderRef = useRef<() => Promise<void>>(async () => undefined);
   const providerSessionRef = useRef<ProviderSession<WorkspaceView> | null>(null);
+  const runnerSessionRef = useRef<StudioRunnerSession | null>(null);
   const persistedAppStateRef = useRef<PersistedAppState>(persistedAppState);
   const workspaceRef = useRef<WorkspaceView | null>(workspace);
   const repoRef = useRef<RepositoryView | null>(repo);
@@ -452,6 +256,52 @@ function App() {
     return providerSessionRef.current;
   }
 
+  function getRunnerSession() {
+    if (!runnerSessionRef.current) {
+      runnerSessionRef.current = new StudioRunnerSession({
+        invoke,
+        isTauriRuntime,
+        getSettings: () => runnerSettingsRef.current,
+        updateSettings: updateRunnerSettings,
+        getStatus: () => runnerStatusRef.current,
+        setStatus: (status) => {
+          runnerStatusRef.current = status;
+          setRunnerStatus(status);
+        },
+        isSessionSecretConfigured: () => runnerSessionSecretConfiguredRef.current,
+        setSessionSecretConfigured: (configured) => {
+          runnerSessionSecretConfiguredRef.current = configured;
+          setRunnerSessionSecretConfigured(configured);
+        },
+        setDispatchBusy: setRunnerDispatchBusy,
+        setLifecycleBusy: setRunnerLifecycleBusy,
+        setStreamStatus: setRunnerStreamStatus,
+        setMessage,
+        getRunnerRepoPath: runnerRepoPath,
+        getWorkspace: () => workspaceRef.current,
+        setWorkspace: (nextWorkspace) => {
+          workspaceRef.current = nextWorkspace;
+          setWorkspace(nextWorkspace);
+        },
+        getGitStatus: () => gitStatusRef.current,
+        validateWorkspace: (repoPath) =>
+          getProviderSession().validate(repoPath, workspaceRef.current, repoRef.current?.path),
+        rememberValidationSnapshot,
+        rememberRunnerAttempt,
+        replaceRunnerAttempt,
+        mergeRunnerStreamEvent: rememberRunnerStreamEvent,
+        recordOperationIssue,
+        clearRunnerDispatchIssues: (repoPath, changeName) =>
+          clearOperationIssues(
+            (issue) => issue.kind === "runner-dispatch" && issue.repoPath === repoPath && issue.target === changeName,
+          ),
+        errorMessage,
+      });
+    }
+
+    return runnerSessionRef.current;
+  }
+
   async function initializeAppPersistence() {
     let initialState = createDefaultPersistedAppState();
 
@@ -506,359 +356,11 @@ function App() {
     }));
   }
 
-  async function configureRunnerSessionSecret() {
-    if (!isTauriRuntime()) {
-      setMessage("Studio Runner session setup requires the Tauri desktop runtime.");
-      return;
-    }
-
-    try {
-      const secret = createRunnerSessionSecret();
-      await invoke("configure_studio_runner_session_secret", { secret });
-      runnerSessionSecretConfiguredRef.current = true;
-      setRunnerSessionSecretConfigured(true);
-      setMessage("Studio Runner session secret generated for this app session.");
-      if (repo?.path) {
-        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "secret.generated", message: "Session secret generated.", status: "unknown" }));
-      }
-      await checkRunnerStatus({ quiet: true, force: true });
-    } catch (error) {
-      runnerSessionSecretConfiguredRef.current = false;
-      setRunnerSessionSecretConfigured(false);
-      setMessage("Studio Runner session setup failed: " + errorMessage(error));
-    }
-  }
-
-  async function clearRunnerSessionSecret() {
-    if (isTauriRuntime()) {
-      try {
-        await invoke("clear_studio_runner_session_secret");
-      } catch (error) {
-        console.warn("Studio Runner session secret could not be cleared.", error);
-      }
-    }
-    runnerSessionSecretConfiguredRef.current = false;
-    setRunnerSessionSecretConfigured(false);
-    runnerStatusRef.current = unknownRunnerStatus;
-    setRunnerStatus(unknownRunnerStatus);
-    setMessage("Studio Runner session secret cleared.");
-  }
-
-  async function startRunner() {
-    if (!isTauriRuntime()) {
-      setMessage("Starting Studio Runner requires the Tauri desktop runtime.");
-      return;
-    }
-
-    let hasSessionSecret = runnerSessionSecretConfiguredRef.current;
-    if (!hasSessionSecret) {
-      try {
-        const secret = createRunnerSessionSecret();
-        await invoke("configure_studio_runner_session_secret", { secret });
-        runnerSessionSecretConfiguredRef.current = true;
-        setRunnerSessionSecretConfigured(true);
-        hasSessionSecret = true;
-      } catch (error) {
-        runnerSessionSecretConfiguredRef.current = false;
-        setRunnerSessionSecretConfigured(false);
-        setMessage("Studio Runner session setup failed: " + errorMessage(error));
-        return;
-      }
-    }
-
-    const endpoint = runnerSettingsRef.current.endpoint.trim() || defaultRunnerSettings.endpoint;
-    if (!runnerSettingsRef.current.endpoint.trim()) {
-      updateRunnerSettings(defaultRunnerSettings);
-      runnerSettingsRef.current = defaultRunnerSettings;
-    }
-
-    const startedRequestId = ++runnerStatusGenerationRef.current;
-    setRunnerLifecycleBusy(true);
-    setRunnerStatus({
-      state: "starting",
-      label: "Starting runner",
-      detail: "Starting local Studio Runner and waiting for health check.",
-      endpoint,
-    });
-    try {
-      const dto = await invoke<RunnerLifecycleResponseDto>("restart_studio_runner", {
-        request: {
-          repoPath: runnerRepoPath(),
-          endpoint,
-        },
-      });
-      const nextStatus: RunnerStatus = {
-        state: "online",
-        label: "Runner online",
-        detail: dto.message || "Studio Runner started and passed health check.",
-        endpoint: dto.endpoint || endpoint,
-        managed: true,
-        pid: dto.pid ?? null,
-      };
-      if (repo?.path) {
-        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "runner.started", message: nextStatus.detail, status: "running" }));
-      }
-      runnerStatusRef.current = nextStatus;
-      setRunnerStatus(nextStatus);
-      setMessage(dto.message);
-      void checkRunnerStatus({ quiet: true, force: true, requestId: startedRequestId });
-    } catch (error) {
-      const nextStatus: RunnerStatus = {
-        state: "offline",
-        label: "Runner offline",
-        detail: errorMessage(error),
-        endpoint,
-      };
-      runnerStatusRef.current = nextStatus;
-      setRunnerStatus(nextStatus);
-      setMessage("Studio Runner start failed: " + errorMessage(error));
-    } finally {
-      setRunnerLifecycleBusy(false);
-    }
-  }
-
-  async function stopRunner() {
-    if (!isTauriRuntime()) {
-      setMessage("Stopping Studio Runner requires the Tauri desktop runtime.");
-      return;
-    }
-    setRunnerLifecycleBusy(true);
-    try {
-      const dto = await invoke<RunnerLifecycleResponseDto>("stop_studio_runner");
-      setMessage(dto.message);
-      if (repo?.path) {
-        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({ repoPath: repo.path, event: "runner.stopped", message: dto.message, status: "unknown" }));
-      }
-      runnerStatusRef.current = unknownRunnerStatus;
-      setRunnerStatus(unknownRunnerStatus);
-    } catch (error) {
-      setMessage("Studio Runner stop failed: " + errorMessage(error));
-    } finally {
-      setRunnerLifecycleBusy(false);
-    }
-  }
-
-  async function checkRunnerStatus(options: { quiet?: boolean; force?: boolean; requestId?: number } = {}) {
-    const settings = runnerSettingsRef.current;
-    const requestId = options.requestId ?? ++runnerStatusGenerationRef.current;
-
-    if (!settings.endpoint.trim() || (!options.force && !runnerSessionSecretConfiguredRef.current)) {
-      const nextStatus = { ...unknownRunnerStatus };
-      if (!options.quiet) {
-        setMessage(nextStatus.detail);
-      }
-      runnerStatusRef.current = nextStatus;
-      setRunnerStatus(nextStatus);
-      return nextStatus;
-    }
-
-    if (!isTauriRuntime()) {
-      const nextStatus: RunnerStatus = {
-        state: "offline",
-        label: "Runner offline",
-        detail: "Runner status checks require the Tauri desktop runtime.",
-      };
-      runnerStatusRef.current = nextStatus;
-      setRunnerStatus(nextStatus);
-      if (!options.quiet) {
-        setMessage(nextStatus.detail);
-      }
-      return nextStatus;
-    }
-
-    if (!options.quiet) {
-      const checkingStatus: RunnerStatus = {
-        state: "checking",
-        label: "Checking runner",
-        detail: "Checking the configured Studio Runner endpoint.",
-        endpoint: settings.endpoint,
-      };
-      runnerStatusRef.current = checkingStatus;
-      setRunnerStatus(checkingStatus);
-    }
-
-    try {
-      const dto = await invoke<RunnerStatusDto>("check_studio_runner_status", {
-        settings: {
-          ...settings,
-          repoPath: runnerRepoPath(),
-        },
-      });
-      if (runnerStatusGenerationRef.current !== requestId) {
-        return runnerStatusRef.current;
-      }
-      const nextStatus = runnerStatusFromDto(dto, runnerStatusRef.current);
-      runnerStatusRef.current = nextStatus;
-      setRunnerStatus(nextStatus);
-      if (!options.quiet) {
-        setMessage(nextStatus.detail);
-      }
-      return nextStatus;
-    } catch (error) {
-      if (runnerStatusGenerationRef.current !== requestId) {
-        return runnerStatusRef.current;
-      }
-      const nextStatus: RunnerStatus = {
-        state: "offline",
-        label: "Runner offline",
-        detail: errorMessage(error),
-        endpoint: settings.endpoint,
-      };
-      runnerStatusRef.current = nextStatus;
-      setRunnerStatus(nextStatus);
-      if (!options.quiet) {
-        setMessage(nextStatus.detail);
-      }
-      return nextStatus;
-    }
-  }
-
-  async function dispatchSelectedChange(options: { retryAttempt?: RunnerDispatchAttempt } = {}) {
-    if (!repo || repo.state !== "ready" || !workspace || !selectedChange) {
-      setMessage("Select an active OpenSpec change before dispatching.");
-      return;
-    }
-
-    if (!isTauriRuntime()) {
-      setMessage("Build with agent requires the Tauri desktop runtime.");
-      return;
-    }
-
-    const initialEligibility = deriveRunnerDispatchEligibility({
-      repoReady: true,
-      change: selectedChange,
-      runnerSettings,
-      runnerStatus,
-      sessionSecretConfigured: runnerSessionSecretConfigured,
-    });
-
-    if (!options.retryAttempt && !initialEligibility.eligible) {
-      setMessage(initialEligibility.reasons[0] ?? "This change is not ready for runner dispatch.");
-      return;
-    }
-
-    setRunnerDispatchBusy(true);
-    setMessage(options.retryAttempt ? "Retrying Studio Runner dispatch..." : "Preparing Studio Runner dispatch...");
-    const repoPath = repo.path;
-    const changeName = selectedChange.name;
-
-    let pendingAttempt: RunnerDispatchAttempt | undefined;
-
-    try {
-      let validation = workspaceRef.current?.validation ?? null;
-      if (!validation || validation.state !== "pass") {
-        setMessage("Validating before Studio Runner dispatch...");
-        const validationResult = await getProviderSession().validate(repoPath, workspaceRef.current, repoRef.current?.path);
-        if (validationResult.kind === "stale") {
-          return;
-        }
-        if (validationResult.kind === "unsupported") {
-          setMessage(validationResult.message);
-          return;
-        }
-        validation = validationResult.validation;
-        workspaceRef.current = validationResult.workspace;
-        setWorkspace(validationResult.workspace);
-        rememberValidationSnapshot(repoPath, validation);
-      }
-
-      const latestChange = workspaceRef.current?.changes.find((change) => change.name === changeName) ?? selectedChange;
-      const latestEligibility = deriveRunnerDispatchEligibility({
-        repoReady: true,
-        change: latestChange,
-        runnerSettings,
-        runnerStatus: runnerStatus.state === "online"
-          ? runnerStatus
-          : await checkRunnerStatus({ quiet: true }),
-        sessionSecretConfigured: runnerSessionSecretConfigured,
-      });
-
-      if (!latestEligibility.eligible) {
-        setMessage(latestEligibility.reasons[0] ?? "This change is not ready for runner dispatch.");
-        return;
-      }
-
-      const eventId = options.retryAttempt?.eventId ?? createRunnerEventId();
-      const payload = buildRunnerDispatchPayload({
-        eventId,
-        repo,
-        change: latestChange,
-        validation,
-        gitStatus: gitStatusRef.current,
-      });
-      pendingAttempt = createRunnerDispatchAttempt({
-        eventId,
-        repoPath,
-        changeName,
-        payload,
-        status: "pending",
-        message: options.retryAttempt ? "Retrying dispatch." : "Dispatch queued.",
-        previousAttempt: options.retryAttempt,
-      });
-
-      rememberRunnerDispatchAttempt(pendingAttempt);
-      setMessage("Sending signed build.requested to Studio Runner...");
-
-      const response = await invoke<RunnerDispatchResponseDto>("dispatch_studio_runner_event", {
-        settings: runnerSettings,
-        request: toRunnerDispatchRequestDto(payload),
-      });
-      const accepted = Boolean(response.accepted);
-      const statusCode = response.status_code ?? response.statusCode;
-      const responseBody = response.response_body ?? response.responseBody ?? null;
-      const runId = response.run_id ?? response.runId ?? extractRunId(responseBody);
-      const nextAttempt = createRunnerDispatchAttempt({
-        ...pendingAttempt,
-        status: accepted ? "accepted" : "failed",
-        statusCode,
-        runId,
-        responseBody,
-        message: response.message,
-      });
-
-      rememberRunnerDispatchAttempt({ ...nextAttempt, source: "dispatch", eventName: response.accepted ? "runner.accepted" : "runner.dispatch.failed" });
-      clearOperationIssues(
-        (issue) => issue.kind === "runner-dispatch" && issue.repoPath === repoPath && issue.target === changeName,
-      );
-      setMessage(
-        accepted
-          ? "Studio Runner accepted " + changeName + (runId ? " as " + runId + "." : ".")
-          : "Studio Runner dispatch failed: " + response.message,
-      );
-    } catch (error) {
-      if (pendingAttempt) {
-        const failedAttempt = createRunnerDispatchAttempt({
-          ...pendingAttempt,
-          status: "failed",
-          message: errorMessage(error),
-        });
-        rememberRunnerDispatchAttempt({ ...failedAttempt, source: "dispatch", eventName: "runner.dispatch.failed", executionStatus: "failed" });
-      }
-      recordOperationIssue(
-        createOpenSpecOperationIssue({
-          kind: "runner-dispatch",
-          title: "Runner dispatch failed",
-          message: errorMessage(error),
-          fallbackMessage: "Studio Runner dispatch did not complete.",
-          repoPath,
-          target: changeName,
-        }),
-      );
-      setMessage("Studio Runner dispatch failed: " + errorMessage(error));
-    } finally {
-      setRunnerDispatchBusy(false);
-    }
-  }
-
-  function rememberRunnerDispatchAttempt(attempt: RunnerDispatchAttempt) {
+  function rememberRunnerAttempt(attempt: RunnerDispatchAttempt) {
     updatePersistedState((current) => upsertRunnerDispatchAttempt(current, attempt));
   }
 
-  function rememberRunnerLogEvent(attempt: RunnerDispatchAttempt) {
-    updatePersistedState((current) => upsertRunnerDispatchAttempt(current, attempt));
-  }
-
-  function replaceRunnerLogEvent(eventId: string, attempt: RunnerDispatchAttempt) {
+  function replaceRunnerAttempt(eventId: string, attempt: RunnerDispatchAttempt) {
     updatePersistedState((current) => ({
       ...current,
       runnerDispatchAttempts: [
@@ -917,7 +419,7 @@ function App() {
       if (disposed) {
         return;
       }
-      rememberRunnerStreamEvent(runnerStreamEventFromDto(event.payload));
+      getRunnerSession().handleStreamEvent(event.payload);
     }).then((nextUnlisten) => {
       if (disposed) {
         nextUnlisten();
@@ -930,16 +432,7 @@ function App() {
       if (disposed) {
         return;
       }
-      setRunnerStreamStatus("error");
-      const currentRepoPath = repoPathRef.current;
-      if (currentRepoPath) {
-        rememberRunnerLogEvent(createRunnerLifecycleLogEvent({
-          repoPath: currentRepoPath,
-          event: "stream.error",
-          message: event.payload || "Runner stream failed.",
-          status: "failed",
-        }));
-      }
+      getRunnerSession().handleStreamError(event.payload, repoPathRef.current);
     }).then((nextUnlisten) => {
       if (disposed) {
         nextUnlisten();
@@ -955,74 +448,17 @@ function App() {
     };
   }, []);
 
-  async function startRunnerStream(options: { quiet?: boolean } = {}) {
-    if (!isTauriRuntime() || !repo?.path || runnerStatusRef.current.state !== "online") {
-      return;
-    }
-
-    setRunnerStreamStatus("connecting");
-    const connectingAt = new Date().toISOString();
-    const connectingEventId = `local_stream_connecting_${Date.parse(connectingAt)}`;
-    rememberRunnerLogEvent(createRunnerLifecycleLogEvent({
-      repoPath: repo.path,
-      event: "stream.connecting",
-      message: "Connecting Runner event stream.",
-      status: "running",
-      occurredAt: connectingAt,
-    }));
-    try {
-      await invoke<RunnerStreamResponseDto>("start_studio_runner_event_stream", {
-        request: { endpoint: runnerSettingsRef.current.endpoint, repoPath: repo.path },
-      });
-      setRunnerStreamStatus("connected");
-      if (!options.quiet) {
-        setMessage("Studio Runner stream connected.");
-      }
-      replaceRunnerLogEvent(connectingEventId, createRunnerLifecycleLogEvent({
-        repoPath: repo.path,
-        event: "stream.connected",
-        message: "Runner event stream connected.",
-        status: "running",
-      }));
-    } catch (error) {
-      setRunnerStreamStatus("error");
-      replaceRunnerLogEvent(connectingEventId, createRunnerLifecycleLogEvent({
-        repoPath: repo.path,
-        event: "stream.error",
-        message: errorMessage(error),
-        status: "failed",
-      }));
-      if (!options.quiet) {
-        setMessage("Studio Runner stream failed: " + errorMessage(error));
-      }
-    }
-  }
-
-  async function stopRunnerStream() {
-    if (!isTauriRuntime()) {
-      setRunnerStreamStatus("disconnected");
-      return;
-    }
-
-    try {
-      await invoke<RunnerStreamResponseDto>("stop_studio_runner_event_stream");
-    } catch (error) {
-      console.warn("Studio Runner stream could not be stopped.", error);
-    }
-    setRunnerStreamStatus("disconnected");
-  }
-
   useEffect(() => {
     if (runnerStatus.state === "online" && repo?.path) {
-      void startRunnerStream({ quiet: true });
+      void getRunnerSession().startStream(repo, { quiet: true });
       return;
     }
 
-    void stopRunnerStream();
+    void getRunnerSession().stopStream();
   }, [runnerStatus.state, runnerSettings.endpoint, repo?.path]);
 
   useEffect(() => {
-    void checkRunnerStatus({ quiet: true });
+    void getRunnerSession().checkStatus({ quiet: true });
   }, [runnerSettings.endpoint, runnerSessionSecretConfigured]);
 
   useEffect(() => {
@@ -1773,13 +1209,13 @@ function App() {
         onOpenArtifact={(artifact) => void openArtifact(artifact)}
         onValidate={() => void runValidation()}
         onRunnerSettingsChange={updateRunnerSettings}
-        onConfigureRunnerSessionSecret={() => void configureRunnerSessionSecret()}
-        onClearRunnerSessionSecret={() => void clearRunnerSessionSecret()}
-        onCheckRunnerStatus={() => void checkRunnerStatus()}
-        onStartRunner={() => void startRunner()}
-        onStopRunner={() => void stopRunner()}
-        onReconnectRunnerStream={() => void startRunnerStream()}
-        onDispatchRunner={() => void dispatchSelectedChange()}
+        onConfigureRunnerSessionSecret={() => void getRunnerSession().configureSessionSecret(repo)}
+        onClearRunnerSessionSecret={() => void getRunnerSession().clearSessionSecret()}
+        onCheckRunnerStatus={() => void getRunnerSession().checkStatus()}
+        onStartRunner={() => void getRunnerSession().startRunner(repo)}
+        onStopRunner={() => void getRunnerSession().stopRunner(repo)}
+        onReconnectRunnerStream={() => void getRunnerSession().startStream(repo)}
+        onDispatchRunner={() => void getRunnerSession().dispatchSelectedChange({ repo, selectedChange })}
       />
 
       <StatusBand
@@ -3333,26 +2769,6 @@ function renderDetailTab(
   );
 }
 
-export function detailTabsForChange(change: ChangeRecord): Array<{ id: DetailTab; label: string }> {
-  if (change.phase !== "archived") {
-    return activeDetailTabs;
-  }
-
-  const tabs = activeDetailTabs.filter((tab) => {
-    if (tab.id === "status") {
-      return false;
-    }
-
-    if (tab.id === "spec-delta") {
-      return change.deltaSpecs.length > 0;
-    }
-
-    return change.artifacts.some((artifact) => artifact.id === tab.id && artifact.status === "present");
-  });
-
-  return [...tabs, archiveInfoTab];
-}
-
 function ArchiveInfoPanel({
   change,
   onOpenArtifact,
@@ -3812,238 +3228,6 @@ function OperationIssueCallout({
   );
 }
 
-export function buildWorkspaceView(
-  indexed: ReturnType<typeof indexOpenSpecWorkspace>,
-  files: VirtualOpenSpecFileRecord[],
-  validation: ValidationResult | null,
-  changeStatuses: VirtualOpenSpecChangeStatusRecord[],
-  fileSignature = buildOpenSpecFileSignature(files),
-): WorkspaceView {
-  const filesByPath = buildVirtualFilesByPath(files);
-  const validationIssueMaps = buildValidationIssueMaps(validation);
-  const changes: ChangeRecord[] = [
-    ...indexed.activeChanges.map((change) =>
-      activeChangeToView(change, filesByPath, validation, validationIssueMaps),
-    ),
-    ...indexed.archivedChanges.map((change) => archivedChangeToView(change, filesByPath)),
-  ];
-
-  return {
-    changes,
-    specs: indexed.specs.map((spec) => specToView(spec, filesByPath, validation, validationIssueMaps)),
-    filesByPath,
-    fileSignature,
-    changeStatuses,
-    validation,
-  };
-}
-
-function activeChangeToView(
-  change: IndexedActiveChange,
-  filesByPath: Record<string, VirtualOpenSpecFileRecord>,
-  validation: ValidationResult | null,
-  validationIssueMaps: ValidationIssueMaps,
-): ChangeRecord {
-  const artifacts: Artifact[] = [
-    requiredArtifact("proposal", "Proposal", change.artifacts.proposal),
-    requiredArtifact("design", "Design", change.artifacts.design),
-    requiredArtifact("tasks", "Tasks", change.artifacts.tasks),
-    ...change.artifacts.deltaSpecs.map((spec) => ({
-      id: "delta-" + spec.capability,
-      label: spec.capability,
-      path: spec.path,
-      status: "present" as const,
-      note: "Delta spec",
-    })),
-  ];
-  const taskProgress = taskProgressToView(change.taskProgress, filesByPath[change.artifacts.tasks.path]?.content);
-  const validationIssues = validationIssueMaps.byChange.get(change.name) ?? [];
-  const blockingValidationIssues = validationIssues.filter(isBlockingValidationIssue);
-  const missingArtifacts = artifacts.filter((artifact) => artifact.status === "missing");
-  const health = deriveChangeHealth({
-    workflowStatus: change.workflowStatus.status,
-    missingArtifactCount: missingArtifacts.length,
-    validation,
-    validationIssueCount: blockingValidationIssues.length,
-  });
-  const archiveReady = Boolean(
-    taskProgress &&
-      taskProgress.total > 0 &&
-      taskProgress.done === taskProgress.total,
-  );
-  const phase: ChangePhase = archiveReady ? "archive-ready" : "active";
-  const buildStatus = deriveChangeBuildStatus({
-    phase,
-    taskProgress,
-    validation,
-    validationIssueCount: blockingValidationIssues.length,
-  });
-
-  const record: ChangeRecord = {
-    id: change.name,
-    name: change.name,
-    title: titleize(change.name),
-    phase,
-    health,
-    statusLabel: healthLabels[health],
-    buildStatus,
-    summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "OpenSpec change",
-    capabilities: change.touchedCapabilities.map((capability) => capability.capability),
-    updatedAt: formatTime(change.modifiedTimeMs),
-    modifiedTimeMs: change.modifiedTimeMs ?? null,
-    taskProgress,
-    artifacts,
-    deltaSpecs: change.artifacts.deltaSpecs.map((spec) => spec.path),
-    validationIssues,
-    archiveReadiness: {
-      ready: archiveReady,
-      reasons: archiveReady
-        ? ["All tasks are complete. Archive will run validation before changing files."]
-        : readinessReasons(taskProgress),
-    },
-    searchText: "",
-  };
-  record.searchText = searchableText([
-    record.title,
-    record.name,
-    ...record.capabilities,
-  ]);
-
-  return record;
-}
-
-export function archivedChangeToView(
-  change: IndexedArchivedChange,
-  filesByPath: Record<string, VirtualOpenSpecFileRecord>,
-): ChangeRecord {
-  const requiredArtifacts = [
-    requiredArtifact("proposal", "Proposal", change.artifacts.proposal),
-    requiredArtifact("design", "Design", change.artifacts.design),
-    requiredArtifact("tasks", "Tasks", change.artifacts.tasks),
-  ].filter((artifact) => artifact.status === "present");
-  const deltaArtifacts = change.artifacts.deltaSpecs.map((spec) => ({
-    id: "delta-" + spec.capability,
-    label: spec.capability,
-    path: spec.path,
-    status: "present" as const,
-    note: "Archived delta spec",
-  }));
-  const artifacts = [...requiredArtifacts, ...deltaArtifacts];
-
-  const record: ChangeRecord = {
-    id: change.name,
-    name: change.name,
-    title: titleize(change.name),
-    phase: "archived",
-    health: "valid",
-    statusLabel: "Archived",
-    buildStatus: deriveChangeBuildStatus({
-      phase: "archive-ready",
-      taskProgress: null,
-      validation: null,
-      validationIssueCount: 0,
-    }),
-    summary: summaryFromContent(filesByPath[change.artifacts.proposal.path]?.content) ?? "Archived OpenSpec change",
-    capabilities: change.touchedCapabilities.map((capability) => capability.capability),
-    updatedAt: formatTime(change.modifiedTimeMs),
-    modifiedTimeMs: change.modifiedTimeMs ?? null,
-    taskProgress: taskProgressToView(change.taskProgress, filesByPath[change.artifacts.tasks.path]?.content),
-    artifacts,
-    deltaSpecs: change.artifacts.deltaSpecs.map((spec) => spec.path),
-    validationIssues: [],
-    archiveInfo: {
-      path: change.path,
-      archivedDate: change.archiveMetadata.archivedDate ?? null,
-      originalName: change.archiveMetadata.originalName ?? null,
-      files: artifacts,
-    },
-    archiveReadiness: {
-      ready: true,
-      reasons: ["Archived."],
-    },
-    searchText: "",
-  };
-  record.searchText = searchableText([
-    record.title,
-    record.name,
-    ...record.capabilities,
-  ]);
-
-  return record;
-}
-
-function specToView(
-  spec: IndexedSpec,
-  filesByPath: Record<string, VirtualOpenSpecFileRecord>,
-  validation: ValidationResult | null,
-  validationIssueMaps: ValidationIssueMaps,
-): SpecRecord {
-  const issues = validationIssueMaps.bySpec.get(spec.capability) ?? [];
-  const content = filesByPath[spec.path]?.content;
-  const summary = summaryFromContent(content);
-
-  const record: SpecRecord = {
-    id: spec.capability,
-    capability: spec.capability,
-    path: spec.path,
-    health: specHealthFromValidation(validation, issues),
-    requirements: countRequirements(content),
-    updatedAt: formatTime(spec.modifiedTimeMs),
-    modifiedTimeMs: spec.modifiedTimeMs ?? null,
-    summary: summary ?? "",
-    summaryQuality: summary ? "available" : "missing",
-    validationIssues: issues,
-    requirementsPreview: extractRequirementTitles(content, 6),
-    sourceContent: content ?? "",
-    searchText: "",
-  };
-  record.searchText = searchableText([record.capability, record.summary]);
-
-  return record;
-}
-
-function requiredArtifact(
-  id: string,
-  label: string,
-  artifact: { exists: boolean; path: string; workflowStatus?: string },
-): Artifact {
-  return {
-    id,
-    label,
-    path: artifact.path,
-    status: artifact.exists ? workflowArtifactStatus(artifact.workflowStatus) : "missing",
-    note:
-      artifact.workflowStatus && artifact.workflowStatus !== "done"
-        ? "Progress: " + artifact.workflowStatus
-        : artifact.exists
-          ? ""
-          : "Missing",
-  };
-}
-
-function workflowArtifactStatus(status: string | undefined): ArtifactStatus {
-  if (status === "blocked") {
-    return "blocked";
-  }
-
-  return "present";
-}
-
-function taskProgressToView(
-  progress: IndexedTaskProgress,
-  content: string | undefined,
-): TaskProgress | null {
-  if (!progress.available) {
-    return null;
-  }
-
-  return {
-    done: progress.completed,
-    total: progress.total,
-    content,
-  };
-}
-
 function parseTaskProgressContent(content: string | undefined): { items: TaskItem[]; groups: TaskGroup[] } {
   if (!content) {
     return { items: [], groups: [] };
@@ -4094,109 +3278,6 @@ function filterTaskGroups(groups: TaskGroup[], done: boolean): TaskGroup[] {
     .filter((group) => group.items.length > 0);
 }
 
-function buildValidationIssueMaps(validation: ValidationResult | null): ValidationIssueMaps {
-  const byChange = new Map<string, ValidationIssue[]>();
-  const bySpec = new Map<string, ValidationIssue[]>();
-
-  for (const issue of validation?.issues ?? []) {
-    for (const association of issue.associations) {
-      if (association.kind === "change") {
-        const current = byChange.get(association.id);
-        if (current) {
-          current.push(issue);
-        } else {
-          byChange.set(association.id, [issue]);
-        }
-        continue;
-      }
-
-      if (association.kind === "spec") {
-        const current = bySpec.get(association.id);
-        if (current) {
-          current.push(issue);
-        } else {
-          bySpec.set(association.id, [issue]);
-        }
-      }
-    }
-  }
-
-  return { byChange, bySpec };
-}
-
-function matchesChangeFilters(change: ChangeRecord, phase: ChangePhase, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-
-  return (
-    change.phase === phase &&
-    (normalizedQuery.length === 0 ||
-      change.searchText.includes(normalizedQuery))
-  );
-}
-
-function searchableText(parts: string[]): string {
-  return parts
-    .filter((part) => part.length > 0)
-    .join("\n")
-    .toLowerCase();
-}
-
-function matchesSpecFilters(spec: SpecRecord, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-
-  return (
-    normalizedQuery.length === 0 ||
-    spec.searchText.includes(normalizedQuery)
-  );
-}
-
-function isBlockingValidationIssue(issue: ValidationIssue): boolean {
-  return issue.severity === "error";
-}
-
-function specHealthFromValidation(
-  validation: ValidationResult | null,
-  issues: ValidationIssue[],
-): Health {
-  if (!validation || validation.state === "stale") {
-    return "stale";
-  }
-
-  if (
-    validation.diagnostics.length > 0 ||
-    validation.state === "fail" ||
-    issues.some(isBlockingValidationIssue)
-  ) {
-    return "invalid";
-  }
-
-  return "valid";
-}
-
-function specValidationLabel(health: Health): string {
-  if (health === "valid") {
-    return "Valid";
-  }
-
-  if (health === "invalid") {
-    return "Invalid";
-  }
-
-  return "Validate";
-}
-
-function readinessReasons(taskProgress: TaskProgress | null): string[] {
-  const reasons: string[] = [];
-
-  if (!taskProgress) {
-    reasons.push("Task progress is unavailable.");
-  } else if (taskProgress.done < taskProgress.total) {
-    reasons.push(taskProgress.total - taskProgress.done + " tasks remain open.");
-  }
-
-  return reasons.length > 0 ? reasons : ["Complete all tasks to make this change archive-ready."];
-}
-
 function confirmArchiveChanges(changeNames: string[]): boolean {
   if (typeof window.confirm !== "function") {
     return true;
@@ -4210,97 +3291,6 @@ function confirmArchiveChanges(changeNames: string[]): boolean {
       "?\n\n" +
       changeNames.join("\n"),
   );
-}
-
-function artifactPathForTab(change: ChangeRecord | null, tab: DetailTab): string | undefined {
-  if (!change) {
-    return undefined;
-  }
-
-  if (tab === "proposal") {
-    return change.artifacts.find((artifact) => artifact.id === "proposal" && artifact.status === "present")?.path;
-  }
-
-  if (tab === "design") {
-    return change.artifacts.find((artifact) => artifact.id === "design" && artifact.status === "present")?.path;
-  }
-
-  return undefined;
-}
-
-function artifactHealth(status: ArtifactStatus): Health {
-  if (status === "present") {
-    return "valid";
-  }
-
-  return status === "blocked" ? "blocked" : "missing";
-}
-
-function countRequirements(content: string | undefined): number {
-  return (content?.match(/^### Requirement:/gm) ?? []).length;
-}
-
-function summaryFromContent(content: string | undefined): string | undefined {
-  const line = content
-    ?.split(/\r?\n/)
-    .map((candidate) => candidate.trim())
-    .find((candidate) => candidate.length > 0 && !candidate.startsWith("#") && !candidate.startsWith("-"));
-
-  if (!line || isPlaceholderSummary(line)) {
-    return undefined;
-  }
-
-  return line;
-}
-
-function extractRequirementTitles(content: string | undefined, limit: number): string[] {
-  if (!content) {
-    return [];
-  }
-
-  return content
-    .split(/\r?\n/)
-    .map((line) => /^### Requirement:\s*(.+)$/.exec(line.trim())?.[1])
-    .filter((line): line is string => Boolean(line))
-    .slice(0, limit);
-}
-
-function isPlaceholderSummary(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-
-  return (
-    normalized === "tbd" ||
-    normalized.startsWith("tbd ") ||
-    normalized.startsWith("tbd-") ||
-    normalized === "todo" ||
-    normalized === "n/a" ||
-    normalized.includes("placeholder") ||
-    normalized.includes("to be defined")
-  );
-}
-
-function titleize(value: string): string {
-  return value
-    .replace(/^\d{4}-\d{2}-\d{2}-/, "")
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function formatTime(modifiedTimeMs: number | undefined): string {
-  if (!modifiedTimeMs) {
-    return "Unknown";
-  }
-
-  const date = new Date(modifiedTimeMs);
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const year = String(date.getFullYear()).slice(-2);
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-
-  return month + "/" + day + "/" + year + " @ " + hours + ":" + minutes;
 }
 
 function formatValidationTimestamp(value: string | null): string {
@@ -4431,51 +3421,6 @@ function sortBoardRows<T extends { id: string }>(
   return sortRowsByNumericValue(rows, sortState.direction, column.sortable.getValue);
 }
 
-export function sortRowsByUpdatedTime<T extends { modifiedTimeMs?: number | null }>(
-  rows: T[],
-  direction: BoardTableSortDirection,
-): T[] {
-  return sortRowsByNumericValue(rows, direction, (row) => row.modifiedTimeMs);
-}
-
-function sortRowsByNumericValue<T>(
-  rows: T[],
-  direction: BoardTableSortDirection,
-  getValue: (row: T) => number | null | undefined,
-): T[] {
-  return rows
-    .map((row, index) => ({ index, row, value: getValue(row) }))
-    .sort((left, right) => {
-      const leftKnown = typeof left.value === "number" && Number.isFinite(left.value);
-      const rightKnown = typeof right.value === "number" && Number.isFinite(right.value);
-
-      if (!leftKnown && !rightKnown) {
-        return left.index - right.index;
-      }
-
-      if (!leftKnown) {
-        return 1;
-      }
-
-      if (!rightKnown) {
-        return -1;
-      }
-
-      const diff = left.value! - right.value!;
-
-      if (diff === 0) {
-        return left.index - right.index;
-      }
-
-      return direction === "asc" ? diff : -diff;
-    })
-    .map(({ row }) => row);
-}
-
-export function nextTableSortDirection(direction: BoardTableSortDirection): BoardTableSortDirection {
-  return direction === "desc" ? "asc" : "desc";
-}
-
 function sortAriaValue<T>(column: BoardTableColumn<T>, sortState: BoardTableSortState | null) {
   if (!column.sortable) {
     return undefined;
@@ -4519,164 +3464,6 @@ function boundedRows<T extends { id: string }>(
     rows: bounded,
     hiddenCount: rows.length - bounded.length,
   };
-}
-
-
-function runnerStreamEventFromDto(dto: RunnerStreamEventDto): RunnerStreamEventInput {
-  return {
-    eventName: dto.eventName ?? dto.event_name ?? null,
-    eventId: dto.eventId ?? dto.event_id ?? null,
-    repoPath: dto.repoPath ?? dto.repo_path ?? null,
-    repoChangeKey: dto.repoChangeKey ?? dto.repo_change_key ?? null,
-    changeName: dto.changeName ?? dto.change_name ?? null,
-    status: dto.status ?? null,
-    runId: dto.runId ?? dto.run_id ?? null,
-    recordedAt: dto.recordedAt ?? dto.recorded_at ?? null,
-    workspacePath: dto.workspacePath ?? dto.workspace_path ?? null,
-    sessionId: dto.sessionId ?? dto.session_id ?? null,
-    branchName: dto.branchName ?? dto.branch_name ?? null,
-    commitSha: dto.commitSha ?? dto.commit_sha ?? null,
-    prUrl: dto.prUrl ?? dto.pr_url ?? null,
-    error: dto.error ?? null,
-    message: dto.message ?? null,
-  };
-}
-
-function runnerStatusFromDto(dto: RunnerStatusDto, previousStatus?: RunnerStatus): RunnerStatus {
-  const endpoint = dto.endpoint ?? dto.runnerEndpoint ?? dto.runner_endpoint ?? previousStatus?.endpoint;
-  const statusCode = dto.status_code ?? dto.statusCode ?? null;
-  const managed = Boolean(dto.managed);
-  const pid = dto.pid ?? null;
-
-  if (!dto.configured) {
-    if (previousStatus?.managed && endpoint && previousStatus.endpoint === endpoint) {
-      return {
-        ...unknownRunnerStatus,
-        endpoint,
-        managed: previousStatus.managed,
-        pid: previousStatus.pid ?? null,
-      };
-    }
-    return { ...unknownRunnerStatus, endpoint };
-  }
-
-  if (dto.reachable) {
-    return {
-      state: "online",
-      label: "Runner online",
-      detail: dto.message || "Studio Runner responded to health check.",
-      statusCode,
-      endpoint,
-      managed,
-      pid,
-    };
-  }
-
-  return {
-    state: "offline",
-    label: "Runner offline",
-    detail: dto.message || "Studio Runner did not respond successfully.",
-    statusCode,
-    endpoint,
-    managed,
-    pid,
-  };
-}
-
-
-
-function runnerRepoPath(): string {
-  if (typeof import.meta !== "undefined" && import.meta.env?.VITE_OPENSPEC_STUDIO_RUNNER_REPO) {
-    return import.meta.env.VITE_OPENSPEC_STUDIO_RUNNER_REPO;
-  }
-
-  return "/Volumes/MacSSD/Projects/symphony/elixir";
-}
-
-function createRunnerSessionSecret(): string {
-  const bytes = new Uint8Array(32);
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-
-  let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-
-  return btoa(binary);
-}
-
-function toRunnerDispatchRequestDto(request: RunnerDispatchRequestInput): RunnerDispatchRequestDto {
-  return {
-    eventId: request.eventId,
-    repoPath: request.repoPath,
-    repoName: request.repoName,
-    changeName: request.changeName,
-    artifactPaths: request.artifactPaths,
-    validation: request.validation,
-    gitRef: request.gitRef,
-    requestedBy: request.requestedBy,
-  };
-}
-
-function createRunnerEventId(): string {
-  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2);
-
-  return "evt_" + random.replace(/-/g, "");
-}
-
-function createRunnerDispatchAttempt(input: {
-  eventId: string;
-  repoPath: string;
-  changeName: string;
-  payload?: unknown;
-  status: RunnerDispatchAttempt["status"];
-  message: string;
-  statusCode?: number | null;
-  responseBody?: string | null;
-  runId?: string | null;
-  previousAttempt?: RunnerDispatchAttempt;
-}): RunnerDispatchAttempt {
-  return {
-    eventId: input.eventId,
-    repoPath: input.repoPath,
-    changeName: input.changeName,
-    status: input.status,
-    message: input.message,
-    statusCode: input.statusCode ?? null,
-    responseBody: input.responseBody ?? null,
-    runId: input.runId ?? null,
-    payload: input.payload ?? input.previousAttempt?.payload,
-    createdAt: input.previousAttempt?.createdAt ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-function extractRunId(responseBody: string | null): string | null {
-  if (!responseBody) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(responseBody) as unknown;
-    if (parsed && typeof parsed === "object" && "run_id" in parsed && typeof parsed.run_id === "string") {
-      return parsed.run_id;
-    }
-    if (parsed && typeof parsed === "object" && "runId" in parsed && typeof parsed.runId === "string") {
-      return parsed.runId;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
 }
 
 function absoluteArtifactPath(repoPath: string, artifactPath: string): string {

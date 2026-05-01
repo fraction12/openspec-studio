@@ -4,9 +4,11 @@ import {
   archivedChangeToView,
   buildWorkspaceView,
   detailTabsForChange,
+} from "./domain/workspaceViewModel";
+import {
   nextTableSortDirection,
   sortRowsByUpdatedTime,
-} from "./App";
+} from "./domain/boardTableModel";
 import type { IndexedArchivedChange, VirtualOpenSpecFileRecord } from "./domain/openspecIndex";
 import { indexOpenSpecWorkspace } from "./domain/openspecIndex";
 import type { ValidationResult } from "./validation/results";

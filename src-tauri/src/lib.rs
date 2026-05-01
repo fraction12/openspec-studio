@@ -33,24 +33,24 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            bridge::archive_change,
-            bridge::read_openspec_artifact_file,
-            bridge::list_openspec_file_records,
-            bridge::list_openspec_file_metadata_records,
-            bridge::list_openspec_file_records_with_options,
-            bridge::get_openspec_git_status,
-            bridge::pick_repository_folder,
-            bridge::run_openspec_command,
-            bridge::validate_repo,
-            bridge::configure_studio_runner_session_secret,
-            bridge::clear_studio_runner_session_secret,
-            bridge::start_studio_runner,
-            bridge::restart_studio_runner,
-            bridge::stop_studio_runner,
-            bridge::check_studio_runner_status,
-            bridge::start_studio_runner_event_stream,
-            bridge::stop_studio_runner_event_stream,
-            bridge::dispatch_studio_runner_event
+            bridge::openspec::archive_change,
+            bridge::openspec::read_openspec_artifact_file,
+            bridge::openspec::list_openspec_file_records,
+            bridge::openspec::list_openspec_file_metadata_records,
+            bridge::openspec::list_openspec_file_records_with_options,
+            bridge::openspec::get_openspec_git_status,
+            bridge::openspec::pick_repository_folder,
+            bridge::openspec::run_openspec_command,
+            bridge::openspec::validate_repo,
+            bridge::studio_runner::configure_studio_runner_session_secret,
+            bridge::studio_runner::clear_studio_runner_session_secret,
+            bridge::studio_runner::start_studio_runner,
+            bridge::studio_runner::restart_studio_runner,
+            bridge::studio_runner::stop_studio_runner,
+            bridge::studio_runner::check_studio_runner_status,
+            bridge::studio_runner::start_studio_runner_event_stream,
+            bridge::studio_runner::stop_studio_runner_event_stream,
+            bridge::studio_runner::dispatch_studio_runner_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
