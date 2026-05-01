@@ -1,6 +1,6 @@
 ## Overview
 
-Introduce a provider architecture while keeping OpenSpec as the only implemented provider. The goal is architectural separation, not new product surface area. The app should still look and behave like OpenSpec Studio, but internally the OpenSpec-specific filesystem, command, and indexing assumptions should live behind an `OpenSpecProvider` boundary.
+Introduce a provider architecture while keeping OpenSpec as the only implemented provider. The goal is architectural separation, not new product surface area. The app should still look and behave like OpenSpec Studio, but internally the OpenSpec-specific filesystem, command, indexing, and workflow sequencing assumptions should live behind a provider session boundary.
 
 This is the foundation for a later Adapter Foundry. Foundry is explicitly out of scope here; this change defines the deterministic contract that a future foundry-created adapter would have to satisfy.
 
@@ -18,7 +18,7 @@ The current app has the right building blocks, but the orchestration is concentr
 - `src/appModel.ts` contains reusable guards and result normalization for file records, validation trust, repository candidate decisions, and operation issues.
 - `src-tauri/src/bridge.rs` already enforces the local safety boundary: canonical repository paths, required `openspec/`, path-bounded artifact reads, allowlisted OpenSpec command shapes, dedicated archive command validation, bounded command execution, and bounded file traversal.
 
-The provider change should keep the Rust bridge narrow and move frontend orchestration into a provider module instead of expanding bridge powers.
+The provider change should keep the Rust bridge narrow and move frontend orchestration into a provider session module instead of expanding bridge powers.
 
 ## Provider Contract
 
@@ -43,6 +43,7 @@ Suggested frontend modules:
 - `src/providers/types.ts`: provider contract, capability flags, detection/index/action result types.
 - `src/providers/openspecProvider.ts`: OpenSpec detection, indexing orchestration, artifact read, validation, archive, Git status, and operation diagnostics.
 - `src/providers/providerRegistry.ts`: built-in provider list and deterministic activation helper.
+- `src/providers/providerSession.ts`: active repository/provider workflow owner that coordinates load, refresh, validation, archive, artifact reads, Git status, diagnostics, and stale-result guards.
 
 The provider should receive dependencies for bridge invocation and operation issue reporting rather than importing React state directly. That keeps the provider testable and avoids turning it into a second app component.
 
@@ -63,6 +64,38 @@ OpenSpecProvider = {
   }
 }
 ```
+
+## Provider Session Module
+
+The `ProviderSession` is the deeper module chosen for this change. A `SpecProvider` adapter knows how to perform deterministic provider operations. The `ProviderSession` owns the active repository workflow that currently lives in `App.tsx`.
+
+The session interface should hide these ordering rules from the shell:
+
+- repository detection and activation
+- provider-backed workspace indexing
+- metadata-only refresh followed by full refresh when file signatures change
+- validation restore/staleness checks
+- per-change status loading, freshness-aware caching, and bounded concurrency
+- artifact reads and artifact-read diagnostics
+- validation execution, validation diagnostics, and validation snapshot results
+- archive execution, post-archive verification, and partial bulk-archive reporting
+- provider-backed Git status loading
+- operation diagnostics for repository read, status, artifact read, validation, archive, and Git failures
+- stale-result guards for repository load, refresh, validation, artifact preview, archive, and Git status completions
+
+`App.tsx` should remain responsible for UI state such as the selected tab, selected row, current search query, busy indicators, and displaying messages. It should not know OpenSpec command shapes, OpenSpec bridge command names, status cache keys, or the exact sequence of provider operations needed for load/refresh/validation/archive.
+
+The session should accept dependencies rather than import Tauri or React directly:
+
+```ts
+type ProviderSessionDependencies = {
+  invoke: InvokeAdapter
+  now: () => Date
+  isRuntimeAvailable: () => boolean
+}
+```
+
+Session operations should return structured results and diagnostics. The shell may decide how to present messages, but it should not inspect command stdout/stderr to derive provider state.
 
 ## Normalized Workspace Model
 
@@ -140,16 +173,17 @@ The current browser fallback should remain visibly non-repository-backed. It mus
 
 1. Define provider types and capabilities.
 2. Add `spec-provider-adapters` delta requirements.
-3. Extract the existing `App.tsx` OpenSpec orchestration into `OpenSpecProvider` while keeping `indexOpenSpecWorkspace` pure.
-4. Update app load flow to activate the OpenSpec provider rather than directly assuming OpenSpec.
-5. Carry provider metadata through repository/workspace state.
-6. Gate validation, archive, artifact read, status, and Git actions from provider capabilities.
-7. Keep existing UI and tests passing.
-8. Add focused tests that prove OpenSpec remains the active provider and unsupported providers cannot invoke actions.
+3. Extract the existing `App.tsx` OpenSpec operation implementations into `OpenSpecProvider` while keeping `indexOpenSpecWorkspace` pure.
+4. Add `ProviderSession` and move repository load, refresh, validation, archive, artifact read, Git status, operation diagnostics, status caching, and stale-result guard ownership into it.
+5. Update app load flow to activate the OpenSpec provider through a session rather than directly assuming OpenSpec.
+6. Carry provider metadata through repository/workspace state.
+7. Gate validation, archive, artifact read, status, and Git actions from provider capabilities.
+8. Keep existing UI and tests passing.
+9. Add focused tests that prove OpenSpec remains the active provider, unsupported providers cannot invoke actions, and stale provider completions cannot overwrite newer session state.
 
 ## Risks
 
 - Refactor churn without visible benefit: keep the change behavior-preserving.
 - Over-generalizing too early: only model concepts the current UI already needs.
 - Security regression: do not replace command allowlists with provider-supplied arbitrary commands.
-- State race regression: preserve the existing generation/ref guards that prevent stale repository, validation, artifact preview, refresh, archive, and Git status results from overwriting newer state.
+- State race regression: move the existing generation/ref guards into the provider session deliberately, and test that stale repository, validation, artifact preview, refresh, archive, and Git status results cannot overwrite newer state.

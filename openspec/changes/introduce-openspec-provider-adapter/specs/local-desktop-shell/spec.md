@@ -18,6 +18,11 @@ The desktop shell SHALL activate a deterministic spec provider when opening a re
 - **THEN** the app shows an actionable repository-unavailable state
 - **AND** the previous ready workspace remains intact when one exists.
 
+#### Scenario: Shell delegates provider workflow to session
+- **WHEN** the desktop shell loads, refreshes, validates, archives, reads artifacts, or checks provider Git status
+- **THEN** it performs the operation through the active provider session
+- **AND** shell code does not duplicate provider-specific command shapes or workflow ordering.
+
 ### Requirement: Provider identity is visible to app state
 The desktop shell SHALL carry the active provider identity in repository or workspace state.
 

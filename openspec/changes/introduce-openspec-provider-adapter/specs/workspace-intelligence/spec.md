@@ -18,6 +18,11 @@ The system SHALL derive workspace intelligence through the active spec provider.
 - **THEN** it supplies or preserves a file signature based on source paths, modified times, sizes, and file kinds
 - **AND** validation staleness and background refresh logic can compare snapshots without re-reading every artifact body.
 
+#### Scenario: Provider session owns refresh decision
+- **WHEN** provider-backed metadata refresh observes the same file signature as the active workspace
+- **THEN** the provider session skips full artifact reads and may refresh lightweight provider status such as Git status
+- **AND** when the signature differs it rebuilds the provider workspace through the same indexing path used for initial load.
+
 ### Requirement: Provider model remains deterministic
 The provider-backed indexing model SHALL be deterministic and inspectable.
 

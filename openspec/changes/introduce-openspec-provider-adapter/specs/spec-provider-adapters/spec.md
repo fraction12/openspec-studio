@@ -52,6 +52,29 @@ The system SHALL represent provider-indexed repository data as source-backed wor
 - **THEN** the resulting workspace data is equivalent to the current direct OpenSpec indexing output
 - **AND** no fake, hard-coded, or browser-preview OpenSpec records are mixed into the provider-backed workspace.
 
+### Requirement: Provider session owns active repository orchestration
+The system SHALL coordinate active repository/provider workflow through a provider session module rather than scattering provider operation ordering through the UI shell.
+
+#### Scenario: Provider session loads a workspace
+- **WHEN** the user selects a repository
+- **THEN** the provider session detects and activates the matching provider, indexes the workspace, restores current validation when possible, records provider capabilities, and returns source-backed workspace state
+- **AND** the UI shell does not invoke OpenSpec file listing, status, validation, archive, artifact read, or Git commands directly.
+
+#### Scenario: Provider session refreshes a workspace
+- **WHEN** a provider-backed workspace refresh runs
+- **THEN** the provider session compares provider file signatures, skips full reads when signatures match, performs full indexing when signatures differ, and preserves or stales validation according to the current file signature
+- **AND** refresh diagnostics are returned without invalidating the active repository unless repository selection itself is no longer valid.
+
+#### Scenario: Provider session performs write workflow
+- **WHEN** the user archives one or more provider-backed changes
+- **THEN** the provider session runs the required pre-archive validation, invokes only supported archive actions, verifies post-archive workspace state, and reports partial bulk-archive progress when applicable
+- **AND** the UI shell does not duplicate archive ordering rules.
+
+#### Scenario: Provider session rejects unsupported action
+- **WHEN** the active provider lacks validation, archive, artifact read, change status, or Git status support
+- **THEN** the provider session rejects the action before bridge invocation
+- **AND** the rejection is returned as a provider capability diagnostic.
+
 ### Requirement: Provider actions preserve local safety boundaries
 Provider-backed actions SHALL preserve the existing Tauri bridge restrictions for paths, command shapes, command output, command timeouts, and write operations.
 
@@ -93,7 +116,7 @@ Provider-backed asynchronous work SHALL preserve the current behavior that preve
 
 #### Scenario: Repository changes during provider work
 - **WHEN** a provider-backed repository load, refresh, artifact read, validation, archive, or Git status request completes after the user has selected a different repository or a newer request has started
-- **THEN** the app ignores the stale completion
+- **THEN** the provider session marks or returns the completion as stale and the app ignores it
 - **AND** newer repository, workspace, selection, artifact preview, validation, archive, and Git state are not overwritten.
 
 ### Requirement: Adapter Foundry remains out of scope

@@ -5,23 +5,17 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import {
-  activeChangeNamesFromFileRecords,
-  buildVirtualFilesByPath,
   buildOpenSpecFileSignature,
+  buildVirtualFilesByPath,
   deriveChangeBuildStatus,
   deriveChangeHealth,
-  decideRepositoryCandidateOpen,
   createOpenSpecOperationIssue,
   createRunnerLifecycleLogEvent,
-  extractJsonPayload,
   isPersistableLocalRepoPath,
   selectVisibleItemId,
   sameOpenSpecOperationScope,
-  toVirtualChangeStatusRecord,
-  toVirtualFileRecords,
   type ChangeHealth,
   type ChangeBuildStatusState,
-  type BridgeFileRecord,
   type OpenSpecOperationIssue,
   type OpenSpecFileSignature,
   buildRunnerDispatchPayload,
@@ -44,9 +38,6 @@ import {
   type VirtualOpenSpecFileRecord,
 } from "./domain/openspecIndex";
 import {
-  createValidationCommandFailureResult,
-  markValidationStaleAfterFileChange,
-  parseValidationResult,
   type ValidationIssue,
   type ValidationResult,
 } from "./validation/results";
@@ -62,10 +53,12 @@ import {
   updatePersistedRepoSort,
   updatePersistedValidationSnapshot,
   upsertRunnerDispatchAttempt,
-  validationFromPersistedSnapshot,
   type PersistedAppState,
   type PersistedRecentRepo,
 } from "./persistence";
+import { ProviderSession } from "./providers/providerSession";
+import { createBuiltInOpenSpecProvider } from "./providers/providerRegistry";
+import type { ProviderCapabilities } from "./providers/types";
 
 type RepoState = "ready" | "no-workspace" | "cli-failure";
 type BoardView = "changes" | "specs" | "runner";
@@ -76,24 +69,6 @@ type ArtifactStatus = "present" | "missing" | "blocked";
 type LoadState = "idle" | "loading" | "loaded" | "error";
 type CandidateErrorKind = "missing" | "no-workspace" | "unavailable";
 export type BoardTableSortDirection = "asc" | "desc";
-
-interface RepositoryValidationDto {
-  path: string;
-  name: string;
-  has_openspec?: boolean;
-  hasOpenSpec?: boolean;
-  openspec_path?: string | null;
-  openspecPath?: string | null;
-}
-
-interface CommandResultDto {
-  stdout: string;
-  stderr: string;
-  status_code?: number | null;
-  statusCode?: number | null;
-  success: boolean;
-}
-
 
 interface RunnerStatusDto {
   configured: boolean;
@@ -185,14 +160,6 @@ interface RunnerDispatchRequestDto {
   requestedBy: string;
 }
 
-interface OpenSpecGitStatusDto {
-  available: boolean;
-  dirty_count?: number;
-  dirtyCount?: number;
-  entries: string[];
-  message?: string | null;
-}
-
 interface RepositoryView {
   id: string;
   name: string;
@@ -200,6 +167,9 @@ interface RepositoryView {
   branch: string;
   state: RepoState;
   summary: string;
+  providerId?: string;
+  providerLabel?: string;
+  providerCapabilities?: ProviderCapabilities;
 }
 
 interface CandidateRepoError {
@@ -281,6 +251,9 @@ interface SpecRecord {
 }
 
 interface WorkspaceView {
+  providerId?: string;
+  providerLabel?: string;
+  providerCapabilities?: ProviderCapabilities;
   changes: ChangeRecord[];
   specs: SpecRecord[];
   filesByPath: Record<string, VirtualOpenSpecFileRecord>;
@@ -299,11 +272,6 @@ interface OpenSpecGitStatus {
 interface ValidationIssueMaps {
   byChange: Map<string, ValidationIssue[]>;
   bySpec: Map<string, ValidationIssue[]>;
-}
-
-interface StatusCacheEntry {
-  freshnessKey: string;
-  record: VirtualOpenSpecChangeStatusRecord;
 }
 
 interface BoundedRows<T> {
@@ -343,9 +311,7 @@ interface BoardTableResizeConfig {
 
 const BROWSER_PREVIEW_REPO_PATH = "browser-preview://openspec-studio";
 const AUTO_REFRESH_INTERVAL_MS = 15_000;
-const STATUS_COMMAND_CONCURRENCY = 4;
 const MAX_OPERATION_ISSUES = 6;
-const STATUS_CACHE_LIMIT = 300;
 const MARKDOWN_BLOCK_CACHE_LIMIT = 40;
 const ROW_RENDER_BATCH_SIZE = 250;
 
@@ -421,18 +387,12 @@ function App() {
   const [runnerStreamStatus, setRunnerStreamStatus] = useState<"disconnected" | "connecting" | "connected" | "error">("disconnected");
   const [message, setMessage] = useState("Loading local workspace...");
   const [operationIssues, setOperationIssues] = useState<OpenSpecOperationIssue[]>([]);
-  const repoLoadGenerationRef = useRef(0);
-  const refreshGenerationRef = useRef(0);
-  const gitStatusGenerationRef = useRef(0);
   const runnerStatusGenerationRef = useRef(0);
   const runnerSessionSecretConfiguredRef = useRef(runnerSessionSecretConfigured);
-  const artifactPreviewGenerationRef = useRef(0);
-  const validationGenerationRef = useRef(0);
   const archiveInFlightRef = useRef(false);
   const persistenceReadyRef = useRef(false);
   const chooseRepositoryFolderRef = useRef<() => Promise<void>>(async () => undefined);
-  const statusCacheRef = useRef<Map<string, StatusCacheEntry>>(new Map());
-  const backgroundRefreshInFlightRef = useRef<Set<string>>(new Set());
+  const providerSessionRef = useRef<ProviderSession<WorkspaceView> | null>(null);
   const persistedAppStateRef = useRef<PersistedAppState>(persistedAppState);
   const workspaceRef = useRef<WorkspaceView | null>(workspace);
   const repoRef = useRef<RepositoryView | null>(repo);
@@ -469,6 +429,27 @@ function App() {
 
   function dismissOperationIssue(issueId: string) {
     setOperationIssues((current) => current.filter((issue) => issue.id !== issueId));
+  }
+
+  function getProviderSession() {
+    if (!providerSessionRef.current) {
+      const issues = {
+        record: recordOperationIssue,
+        clear: clearOperationIssues,
+      };
+      providerSessionRef.current = new ProviderSession<WorkspaceView>({
+        provider: createBuiltInOpenSpecProvider({
+          invoke,
+          issues,
+          now: () => new Date(),
+        }),
+        issues,
+        buildWorkspace: ({ indexed, files, validation, changeStatuses, fileSignature }) =>
+          buildWorkspaceView(indexed, files, validation, changeStatuses, fileSignature),
+      });
+    }
+
+    return providerSessionRef.current;
   }
 
   async function initializeAppPersistence() {
@@ -767,9 +748,17 @@ function App() {
       let validation = workspaceRef.current?.validation ?? null;
       if (!validation || validation.state !== "pass") {
         setMessage("Validating before Studio Runner dispatch...");
-        validation = await runValidationCommand(repoPath);
-        applyValidationResult(validation);
-        recordValidationOperationResult(repoPath, validation);
+        const validationResult = await getProviderSession().validate(repoPath, workspaceRef.current, repoRef.current?.path);
+        if (validationResult.kind === "stale") {
+          return;
+        }
+        if (validationResult.kind === "unsupported") {
+          setMessage(validationResult.message);
+          return;
+        }
+        validation = validationResult.validation;
+        workspaceRef.current = validationResult.workspace;
+        setWorkspace(validationResult.workspace);
         rememberValidationSnapshot(repoPath, validation);
       }
 
@@ -1128,7 +1117,6 @@ function App() {
   }, [repo?.path, repo?.state, selectedChangeId, selectedSpecId, workspace?.fileSignature.fingerprint]);
 
   useEffect(() => {
-    const requestId = ++artifactPreviewGenerationRef.current;
     const path = artifactPathForTab(selectedChange, detailTab);
 
     if (!path) {
@@ -1148,40 +1136,25 @@ function App() {
     }
 
     const repoPath = repo.path;
-    void invoke<{ contents: string }>("read_openspec_artifact_file", {
-      repoPath,
-      artifactPath: path,
-    })
+    void getProviderSession()
+      .readArtifact(repoPath, path, repoRef.current?.path)
       .then((artifact) => {
-        if (artifactPreviewGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
+        if (artifact.kind === "read") {
           setArtifactPreview(artifact.contents);
-          clearOperationIssues(
-            (issue) => issue.kind === "artifact-read" && issue.repoPath === repoPath && issue.target === path,
-          );
+        } else if (artifact.kind === "unsupported") {
+          setArtifactPreview("");
+          setMessage(artifact.message);
         }
       })
       .catch((error) => {
-        if (artifactPreviewGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
-          recordOperationIssue(
-            createOpenSpecOperationIssue({
-              kind: "artifact-read",
-              title: "Artifact read failed",
-              message: errorMessage(error),
-              fallbackMessage: "OpenSpec artifact could not be read.",
-              repoPath,
-              target: path,
-            }),
-          );
+        if (repoRef.current?.path === repoPath) {
           setArtifactPreview("");
+          setMessage(errorMessage(error));
         }
       });
   }, [detailTab, repo, selectedChange, workspace]);
 
   async function loadRepository(repoPath: string) {
-    const requestId = ++repoLoadGenerationRef.current;
-    refreshGenerationRef.current += 1;
-    artifactPreviewGenerationRef.current += 1;
-    validationGenerationRef.current += 1;
     const candidatePath = repoPath.trim();
 
     if (!candidatePath) {
@@ -1221,10 +1194,6 @@ function App() {
         previewStatuses,
       );
 
-      if (repoLoadGenerationRef.current !== requestId) {
-        return;
-      }
-
       repoRef.current = previewRepo;
       workspaceRef.current = nextWorkspace;
       setRepo(previewRepo);
@@ -1242,29 +1211,26 @@ function App() {
     }
 
     try {
-      const validation = await invoke<RepositoryValidationDto>("validate_repo", { repoPath: candidatePath });
-      if (repoLoadGenerationRef.current !== requestId) {
+      const result = await getProviderSession().loadRepository({
+        repoPath: candidatePath,
+        currentRepoPath: repoRef.current?.path,
+        currentWorkspace: workspaceRef.current,
+        persistedValidation: persistedAppStateRef.current.repoStateByPath[candidatePath]?.lastValidation,
+      });
+
+      if (result.kind === "stale") {
         return;
       }
 
-      const hasOpenSpec = Boolean(validation.has_openspec ?? validation.hasOpenSpec);
-      const candidateDecision = decideRepositoryCandidateOpen({
-        readable: true,
-        hasOpenSpec,
-      });
-      const isSameRepo = repo?.path === validation.path;
-      const nextRepo: RepositoryView = {
-        id: validation.path,
-        name: validation.name,
-        path: validation.path,
-        branch: "local",
-        state: hasOpenSpec ? "ready" : "no-workspace",
-        summary: hasOpenSpec ? "OpenSpec workspace" : "No openspec/ directory",
-      };
-
-      setGitStatus(hasOpenSpec ? { ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." } : unknownGitStatus);
-
-      if (!candidateDecision.promote) {
+      if (result.kind === "no-provider") {
+        const nextRepo: RepositoryView = {
+          id: result.path,
+          name: result.name,
+          path: result.path,
+          branch: "local",
+          state: "no-workspace",
+          summary: result.summary,
+        };
         if (!repo) {
           repoRef.current = nextRepo;
           workspaceRef.current = null;
@@ -1276,84 +1242,40 @@ function App() {
         }
         setCandidateError({
           kind: "no-workspace",
-          path: validation.path,
+          path: result.path,
           title: "No OpenSpec workspace found",
           message: "The selected folder does not contain an openspec/ directory.",
         });
         setLoadState("loaded");
-        setMessage("No OpenSpec workspace was found in " + validation.path);
+        setMessage("No OpenSpec workspace was found in " + result.path);
         return;
       }
 
-      const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
-        repoPath: validation.path,
-      });
-      if (repoLoadGenerationRef.current !== requestId) {
-        return;
-      }
-
-      const fileRecords = toVirtualFileRecords(fileDtos);
-      const changeStatuses = await loadChangeStatuses(
-        validation.path,
-        fileRecords,
-        activeChangeNamesFromFileRecords(fileRecords),
-      );
-      if (repoLoadGenerationRef.current !== requestId) {
-        return;
-      }
-
-      const fileSignature = buildOpenSpecFileSignature(fileRecords);
-      const indexed = indexOpenSpecWorkspace({ files: fileRecords, changeStatuses });
-      const persistedRepoState = persistedAppStateRef.current.repoStateByPath[validation.path];
-      const restoredValidation = isSameRepo
-        ? validationForFileRecords(workspaceRef.current?.validation ?? null, workspaceRef.current?.fileSignature, fileSignature)
-        : validationFromPersistedSnapshot(persistedRepoState?.lastValidation, fileSignature);
-      const nextWorkspace = buildWorkspaceView(
-        indexed,
-        fileRecords,
-        restoredValidation,
-        changeStatuses,
-        fileSignature,
-      );
-
-      repoRef.current = nextRepo;
-      workspaceRef.current = nextWorkspace;
-      setRepo(nextRepo);
-      setWorkspace(nextWorkspace);
+      const isSameRepo = repo?.path === result.repository.path;
+      const persistedRepoState = persistedAppStateRef.current.repoStateByPath[result.repository.path];
+      setGitStatus({ ...unknownGitStatus, state: "loading", message: "Checking OpenSpec Git status..." });
+      repoRef.current = result.repository;
+      workspaceRef.current = result.workspace;
+      setRepo(result.repository);
+      setWorkspace(result.workspace);
       setCandidateError(null);
-      clearOperationIssues(
-        (issue) => issue.kind === "repository-read" && issue.repoPath === validation.path,
-      );
-      void loadGitStatus(validation.path);
-      rememberRecentRepo(validation.path, validation.name);
+      void loadGitStatus(result.repository.path);
+      rememberRecentRepo(result.repository.path, result.repository.name);
       if (isSameRepo) {
-        keepSelectionInWorkspace(nextWorkspace);
+        keepSelectionInWorkspace(result.workspace);
       } else {
-        restorePersistedSelection(nextWorkspace, persistedRepoState);
+        restorePersistedSelection(result.workspace, persistedRepoState);
       }
       setLoadState("loaded");
-      setMessage("Refreshed files: " + nextWorkspace.changes.length + " changes and " + nextWorkspace.specs.length + " specs.");
+      setMessage("Refreshed files: " + result.workspace.changes.length + " changes and " + result.workspace.specs.length + " specs.");
     } catch (error) {
-      if (repoLoadGenerationRef.current !== requestId) {
-        return;
-      }
-
       setCandidateError({
         kind: "unavailable",
         path: candidatePath,
         title: "Repository unavailable",
         message: errorMessage(error),
       });
-      recordOperationIssue(
-        createOpenSpecOperationIssue({
-          kind: "repository-read",
-          title: "Repository read failed",
-          message: errorMessage(error),
-          fallbackMessage: "OpenSpec repository files could not be read.",
-          repoPath: candidatePath,
-          target: "openspec",
-        }),
-      );
+      getProviderSession().recordRepositoryReadFailure(candidatePath, error);
       if (!repo) {
         workspaceRef.current = null;
         setWorkspace(null);
@@ -1378,28 +1300,29 @@ function App() {
     setLoadState("loading");
     setValidationBusy(true);
     setMessage("Running OpenSpec validation...");
-    const requestId = ++validationGenerationRef.current;
     const repoPath = repo.path;
 
     try {
-      const result = await runValidationCommand(repoPath);
-      if (validationGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+      const result = await getProviderSession().validate(repoPath, workspaceRef.current, repoRef.current?.path);
+      if (result.kind === "stale") {
         return;
       }
 
-      applyValidationResult(result);
-      recordValidationOperationResult(repoPath, result);
-      rememberValidationSnapshot(repoPath, result);
+      if (result.kind === "unsupported") {
+        setMessage(result.message);
+        setLoadState("loaded");
+        return;
+      }
+
+      workspaceRef.current = result.workspace;
+      setWorkspace(result.workspace);
+      rememberValidationSnapshot(repoPath, result.validation);
       setLoadState("loaded");
       setMessage(
-        result.diagnostics[0]?.message ??
-          (result.state === "pass" ? "Validation checked clean." : "Validation found items that need attention."),
+        result.validation.diagnostics[0]?.message ??
+          (result.validation.state === "pass" ? "Validation checked clean." : "Validation found items that need attention."),
       );
     } catch (error) {
-      if (validationGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
-        return;
-      }
-
       setLoadState("error");
       recordOperationIssue(
         createOpenSpecOperationIssue({
@@ -1440,28 +1363,50 @@ function App() {
     const repoPath = repo.path;
 
     try {
-      const validation = await runValidationCommand(repoPath);
-      applyValidationResult(validation);
-      recordValidationOperationResult(repoPath, validation);
-      rememberValidationSnapshot(repoPath, validation);
-
-      if (!canArchiveAfterValidation(validation)) {
-        setLoadState("loaded");
-        setMessage(archiveValidationFailureMessage(validation));
+      const result = await getProviderSession().archiveChanges(repoPath, [changeName], workspaceRef.current, repoRef.current?.path);
+      if (result.kind === "stale") {
         return;
       }
 
-      setMessage("Archiving " + changeName + "...");
-      await archiveOneChange(repoPath, changeName);
-      await loadRepository(repoPath);
-      const archivedChange = await findArchivedChangeAfterArchive(repoPath, changeName);
-      if (!archivedChange) {
-        throw new Error("OpenSpec archive reported success, but the change is still active.");
+      if (result.kind === "unsupported") {
+        setLoadState("loaded");
+        setMessage(result.message);
+        return;
       }
+
+      if (result.kind === "validation-blocked") {
+        workspaceRef.current = result.workspace;
+        setWorkspace(result.workspace);
+        rememberValidationSnapshot(repoPath, result.validation);
+        setLoadState("loaded");
+        setMessage(result.message);
+        return;
+      }
+
+      if (result.kind === "partial") {
+        if (result.workspace) {
+          workspaceRef.current = result.workspace;
+          setWorkspace(result.workspace);
+        }
+        if (result.validation) {
+          rememberValidationSnapshot(repoPath, result.validation);
+        }
+        setPhase("archived");
+        setLoadState("loaded");
+        setMessage(
+          "Archived " + result.archivedCount + " of " + result.requestedCount + " changes before failure: " + result.message,
+        );
+        return;
+      }
+
+      workspaceRef.current = result.workspace;
+      setWorkspace(result.workspace);
+      rememberValidationSnapshot(repoPath, result.validation);
       setPhase("archived");
-      setSelectedChangeId(archivedChange);
+      setSelectedChangeId(result.lastArchivedChangeId ?? "");
       setDetailTab("archive-info");
       setMessage("Archived " + changeName + ".");
+      setLoadState("loaded");
     } catch (error) {
       setLoadState("loaded");
       setMessage(errorMessage(error));
@@ -1504,48 +1449,57 @@ function App() {
     setLoadState("loading");
     setMessage("Validating before archiving " + uniqueChangeNames.length + " changes...");
     const repoPath = repo.path;
-    let archivedCount = 0;
 
     try {
-      const validation = await runValidationCommand(repoPath);
-      applyValidationResult(validation);
-      recordValidationOperationResult(repoPath, validation);
-      rememberValidationSnapshot(repoPath, validation);
-
-      if (!canArchiveAfterValidation(validation)) {
-        setLoadState("loaded");
-        setMessage(archiveValidationFailureMessage(validation));
+      const result = await getProviderSession().archiveChanges(repoPath, uniqueChangeNames, workspaceRef.current, repoRef.current?.path);
+      if (result.kind === "stale") {
         return;
       }
 
-      setMessage("Archiving " + uniqueChangeNames.length + " changes...");
-      for (const changeName of uniqueChangeNames) {
-        await archiveOneChange(repoPath, changeName);
-        await loadRepository(repoPath);
-        const archivedChange = await findArchivedChangeAfterArchive(repoPath, changeName);
-        if (!archivedChange) {
-          throw new Error("OpenSpec archive reported success, but " + changeName + " is still active.");
-        }
-        archivedCount += 1;
+      if (result.kind === "unsupported") {
+        setLoadState("loaded");
+        setMessage(result.message);
+        return;
       }
-      await loadRepository(repoPath);
-      setPhase("archived");
-      setMessage("Archived " + uniqueChangeNames.length + " changes.");
-    } catch (error) {
-      if (archivedCount > 0) {
-        await loadRepository(repoPath);
+
+      if (result.kind === "validation-blocked") {
+        workspaceRef.current = result.workspace;
+        setWorkspace(result.workspace);
+        rememberValidationSnapshot(repoPath, result.validation);
+        setLoadState("loaded");
+        setMessage(result.message);
+        return;
+      }
+
+      if (result.kind === "partial") {
+        if (result.workspace) {
+          workspaceRef.current = result.workspace;
+          setWorkspace(result.workspace);
+        }
+        if (result.validation) {
+          rememberValidationSnapshot(repoPath, result.validation);
+        }
         setPhase("archived");
+        setLoadState("loaded");
         setMessage(
           "Archived " +
-            archivedCount +
+            result.archivedCount +
             " of " +
-            uniqueChangeNames.length +
+            result.requestedCount +
             " changes before failure: " +
-            errorMessage(error),
+            result.message,
         );
-      } else {
-        setMessage(errorMessage(error));
+        return;
       }
+
+      workspaceRef.current = result.workspace;
+      setWorkspace(result.workspace);
+      rememberValidationSnapshot(repoPath, result.validation);
+      setPhase("archived");
+      setMessage("Archived " + uniqueChangeNames.length + " changes.");
+      setLoadState("loaded");
+    } catch (error) {
+      setMessage(errorMessage(error));
       setLoadState("loaded");
     } finally {
       archiveInFlightRef.current = false;
@@ -1578,132 +1532,6 @@ function App() {
     }
   }
 
-  async function findArchivedChangeAfterArchive(repoPath: string, changeName: string): Promise<string | null> {
-    const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
-      repoPath,
-    });
-    const fileRecords = toVirtualFileRecords(fileDtos);
-    const activeNames = new Set(activeChangeNamesFromFileRecords(fileRecords));
-
-    if (activeNames.has(changeName)) {
-      return null;
-    }
-
-    const indexed = indexOpenSpecWorkspace({ files: fileRecords, changeStatuses: [] });
-    return indexed.archivedChanges.find((change) => change.archiveMetadata.originalName === changeName)?.name ?? null;
-  }
-
-  async function archiveOneChange(repoPath: string, changeName: string) {
-    let recordedCommandFailure = false;
-
-    try {
-      const result = await invoke<CommandResultDto>("archive_change", {
-        repoPath,
-        changeName,
-      });
-
-      if (!result.success) {
-        recordOperationIssue(
-          createOpenSpecOperationIssue({
-            kind: "archive",
-            title: "Archive failed",
-            fallbackMessage: "OpenSpec archive did not complete.",
-            repoPath,
-            target: changeName,
-            command: result,
-          }),
-        );
-        recordedCommandFailure = true;
-        throw new Error(result.stderr || result.stdout || "OpenSpec archive did not complete.");
-      }
-
-      clearOperationIssues(
-        (issue) => issue.kind === "archive" && issue.repoPath === repoPath && issue.target === changeName,
-      );
-    } catch (error) {
-      if (!recordedCommandFailure) {
-        recordOperationIssue(
-          createOpenSpecOperationIssue({
-            kind: "archive",
-            title: "Archive failed",
-            message: errorMessage(error),
-            fallbackMessage: "OpenSpec archive did not complete.",
-            repoPath,
-            target: changeName,
-          }),
-        );
-      }
-      throw error;
-    }
-  }
-
-  async function runValidationCommand(repoPath: string): Promise<ValidationResult> {
-    const command = await invoke<CommandResultDto>("run_openspec_command", {
-      repoPath,
-      args: ["validate", "--all", "--json"],
-    });
-    const rawJson = extractJsonPayload(command.stdout);
-
-    if (rawJson !== undefined) {
-      return parseValidationResult(rawJson, {
-        validatedAt: new Date(),
-        repoPath,
-      });
-    }
-
-    if (command.success) {
-      return parseValidationResult(command.stdout || command, {
-        validatedAt: new Date(),
-        repoPath,
-      });
-    }
-
-    return createValidationCommandFailureResult({
-      stdout: command.stdout,
-      stderr: command.stderr,
-      statusCode: command.status_code ?? command.statusCode ?? null,
-      validatedAt: new Date(),
-      raw: command,
-    });
-  }
-
-  function applyValidationResult(result: ValidationResult) {
-    const activeWorkspace = workspaceRef.current;
-    const records = Object.values(activeWorkspace?.filesByPath ?? {});
-    const changeStatuses = activeWorkspace?.changeStatuses ?? [];
-    const indexed = indexOpenSpecWorkspace({ files: records, changeStatuses });
-    const nextWorkspace = buildWorkspaceView(indexed, records, result, changeStatuses);
-
-    workspaceRef.current = nextWorkspace;
-    setWorkspace(nextWorkspace);
-  }
-
-  function recordValidationOperationResult(repoPath: string, result: ValidationResult) {
-    if (result.diagnostics.length === 0) {
-      clearOperationIssues((issue) => issue.kind === "validation" && issue.repoPath === repoPath);
-      return;
-    }
-
-    const diagnostic = result.diagnostics[0];
-    recordOperationIssue(
-      createOpenSpecOperationIssue({
-        kind: "validation",
-        title: "Validation failed",
-        message: diagnostic?.message,
-        fallbackMessage: "OpenSpec validation did not complete cleanly.",
-        repoPath,
-        target: "validate --all",
-        command: diagnostic
-          ? {
-              stdout: diagnostic.stdout,
-              stderr: diagnostic.stderr,
-              statusCode: diagnostic.statusCode,
-            }
-          : null,
-      }),
-    );
-  }
-
   function rememberValidationSnapshot(repoPath: string, result: ValidationResult) {
     const fileSignature = workspaceRef.current?.fileSignature;
 
@@ -1717,8 +1545,6 @@ function App() {
   }
 
   async function loadGitStatus(repoPath: string, options: { quiet?: boolean } = {}) {
-    const requestId = ++gitStatusGenerationRef.current;
-
     if (!isTauriRuntime()) {
       const nextStatus: OpenSpecGitStatus = {
         state: "unavailable",
@@ -1738,45 +1564,17 @@ function App() {
     }
 
     try {
-      const status = await invoke<OpenSpecGitStatusDto>("get_openspec_git_status", { repoPath });
-      if (gitStatusGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+      const status = await getProviderSession().gitStatus(repoPath, repoRef.current?.path);
+      if (status === "stale") {
         return;
       }
 
-      const dirtyCount = status.dirty_count ?? status.dirtyCount ?? status.entries.length;
-      let nextStatus: OpenSpecGitStatus;
-
-      if (!status.available) {
-        nextStatus = {
-          state: "unavailable",
-          dirtyCount: 0,
-          entries: [],
-          message: status.message ?? "Git status is unavailable for this repository.",
-        };
-        if (!options.quiet || !areGitStatusesEqual(gitStatusRef.current, nextStatus)) {
-          setGitStatus(nextStatus);
-        }
-        return;
-      }
-
-      nextStatus = {
-        state: dirtyCount > 0 ? "dirty" : "clean",
-        dirtyCount,
-        entries: status.entries,
-        message:
-          dirtyCount > 0
-            ? dirtyCount + " uncommitted OpenSpec " + (dirtyCount === 1 ? "path" : "paths")
-            : "No uncommitted OpenSpec paths",
-      };
+      const nextStatus: OpenSpecGitStatus = status;
 
       if (!options.quiet || !areGitStatusesEqual(gitStatusRef.current, nextStatus)) {
         setGitStatus(nextStatus);
       }
     } catch (error) {
-      if (gitStatusGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
-        return;
-      }
-
       const nextStatus: OpenSpecGitStatus = {
         state: "unavailable",
         dirtyCount: 0,
@@ -1810,156 +1608,32 @@ function App() {
     }
   }
 
-  async function loadChangeStatuses(
-    repoPath: string,
-    fileRecords: VirtualOpenSpecFileRecord[],
-    changeNames: string[],
-  ): Promise<VirtualOpenSpecChangeStatusRecord[]> {
-    const tasks = Array.from(new Set(changeNames)).map((changeName) => async () => {
-      const cacheId = statusCacheId(repoPath, changeName);
-      const freshnessKey = changeStatusFreshnessKey(fileRecords, changeName);
-      const cached = statusCacheRef.current.get(cacheId);
-
-      if (cached?.freshnessKey === freshnessKey) {
-        return cached.record;
-      }
-
-      let record: VirtualOpenSpecChangeStatusRecord;
-
-      try {
-        const command = await invoke<CommandResultDto>("run_openspec_command", {
-          repoPath,
-          args: ["status", "--change", changeName, "--json"],
-        });
-        const rawJson = extractJsonPayload(command.stdout);
-
-        if (!command.success || !rawJson) {
-          record = toVirtualChangeStatusRecord(
-            {
-              changeName,
-              error:
-                command.stderr ||
-                command.stdout ||
-                "OpenSpec status output was not recognized.",
-            },
-            changeName,
-          );
-          recordOperationIssue(
-            createOpenSpecOperationIssue({
-              kind: "status",
-              title: "Change status failed",
-              fallbackMessage: "OpenSpec change status output was not recognized.",
-              repoPath,
-              target: changeName,
-              command,
-            }),
-          );
-        } else {
-          record = toVirtualChangeStatusRecord(rawJson, changeName);
-          clearOperationIssues(
-            (issue) => issue.kind === "status" && issue.repoPath === repoPath && issue.target === changeName,
-          );
-        }
-      } catch (error) {
-        record = toVirtualChangeStatusRecord(
-          { changeName, error: errorMessage(error) },
-          changeName,
-        );
-        recordOperationIssue(
-          createOpenSpecOperationIssue({
-            kind: "status",
-            title: "Change status failed",
-            message: errorMessage(error),
-            fallbackMessage: "OpenSpec change status could not be loaded.",
-            repoPath,
-            target: changeName,
-          }),
-        );
-      }
-
-      statusCacheRef.current.set(cacheId, { freshnessKey, record });
-      pruneStatusCache(statusCacheRef.current);
-      return record;
-    });
-
-    return mapWithConcurrency(tasks, STATUS_COMMAND_CONCURRENCY);
-  }
-
   async function refreshRepositoryIfChanged(repoPath: string) {
-    if (backgroundRefreshInFlightRef.current.has(repoPath)) {
-      return;
-    }
-
-    const requestId = ++refreshGenerationRef.current;
-    backgroundRefreshInFlightRef.current.add(repoPath);
-
     try {
-      const metadataDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_metadata_records", {
+      const result = await getProviderSession().refreshRepositoryIfChanged(
         repoPath,
-      });
-      if (refreshGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
+        workspaceRef.current,
+        repoRef.current?.path,
+      );
+
+      if (result.kind === "stale") {
         return;
       }
 
-      const metadataRecords = toVirtualFileRecords(metadataDtos);
-      const nextSignature = buildOpenSpecFileSignature(metadataRecords);
-      const currentWorkspace = workspaceRef.current;
-
-      if (nextSignature.fingerprint === currentWorkspace?.fileSignature.fingerprint) {
+      if (result.kind === "unchanged") {
         void loadGitStatus(repoPath, { quiet: true });
         return;
       }
 
-      const fileDtos = await invoke<BridgeFileRecord[]>("list_openspec_file_records", {
-        repoPath,
-      });
-      if (refreshGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
-        return;
-      }
-
-      const fileRecords = toVirtualFileRecords(fileDtos);
-      const changeStatuses = await loadChangeStatuses(
-        repoPath,
-        fileRecords,
-        activeChangeNamesFromFileRecords(fileRecords),
-      );
-      if (refreshGenerationRef.current !== requestId || repoRef.current?.path !== repoPath) {
-        return;
-      }
-
-      const indexed = indexOpenSpecWorkspace({ files: fileRecords, changeStatuses });
-      const nextWorkspace = buildWorkspaceView(
-        indexed,
-        fileRecords,
-        validationForFileRecords(currentWorkspace?.validation ?? null, currentWorkspace?.fileSignature, nextSignature),
-        changeStatuses,
-        nextSignature,
-      );
-
-      workspaceRef.current = nextWorkspace;
-      setWorkspace(nextWorkspace);
-      keepSelectionInWorkspace(nextWorkspace);
-      clearOperationIssues(
-        (issue) => issue.kind === "repository-read" && issue.repoPath === repoPath,
-      );
+      workspaceRef.current = result.workspace;
+      setWorkspace(result.workspace);
+      keepSelectionInWorkspace(result.workspace);
       void loadGitStatus(repoPath, { quiet: true });
       setMessage("OpenSpec files changed. Local files refreshed.");
     } catch (error) {
-      if (refreshGenerationRef.current === requestId && repoRef.current?.path === repoPath) {
-        recordOperationIssue(
-          createOpenSpecOperationIssue({
-            kind: "repository-read",
-            title: "Repository refresh failed",
-            message: errorMessage(error),
-            fallbackMessage: "OpenSpec repository files could not be refreshed.",
-            repoPath,
-            target: "openspec",
-          }),
-        );
+      if (repoRef.current?.path === repoPath) {
         setMessage(errorMessage(error));
       }
-    } finally {
-      backgroundRefreshInFlightRef.current.delete(repoPath);
     }
   }
 
@@ -2047,6 +1721,7 @@ function App() {
         specSortDirection={specSortDirection}
         loadState={loadState}
         archiveBusy={archiveBusy}
+        providerCapabilities={workspace?.providerCapabilities ?? repo?.providerCapabilities}
         onViewChange={setView}
         onPhaseChange={setPhase}
         onChangesQueryChange={setChangesQuery}
@@ -2226,6 +1901,7 @@ function WorkspaceMain({
   loadState,
   archiveBusy,
   validationBusy,
+  providerCapabilities,
   onViewChange,
   onPhaseChange,
   onChangesQueryChange,
@@ -2257,6 +1933,7 @@ function WorkspaceMain({
   loadState: LoadState;
   archiveBusy: boolean;
   validationBusy: boolean;
+  providerCapabilities?: ProviderCapabilities;
   onViewChange: (view: BoardView) => void;
   onPhaseChange: (phase: ChangePhase) => void;
   onChangesQueryChange: (query: string) => void;
@@ -2352,7 +2029,12 @@ function WorkspaceMain({
           <button type="button" className="primary-outline" onClick={onReload} disabled={loadState === "loading"}>
             Refresh files
           </button>
-          <button type="button" className="primary-button" onClick={onValidate} disabled={loadState === "loading"}>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={onValidate}
+            disabled={loadState === "loading" || !(providerCapabilities?.validation ?? false)}
+          >
             Run validation
           </button>
         </div>
@@ -2368,6 +2050,7 @@ function WorkspaceMain({
           sortDirection={changeSortDirection}
           archiveBusy={archiveBusy}
           validationBusy={validationBusy}
+          archiveSupported={providerCapabilities?.archive ?? false}
           onPhaseChange={onPhaseChange}
           onQueryChange={onChangesQueryChange}
           onSelectChange={onSelectChange}
@@ -2402,6 +2085,7 @@ function ChangeBoard({
   sortDirection,
   archiveBusy,
   validationBusy,
+  archiveSupported,
   onPhaseChange,
   onQueryChange,
   onSelectChange,
@@ -2417,6 +2101,7 @@ function ChangeBoard({
   sortDirection: BoardTableSortDirection;
   archiveBusy: boolean;
   validationBusy: boolean;
+  archiveSupported: boolean;
   onPhaseChange: (phase: ChangePhase) => void;
   onQueryChange: (query: string) => void;
   onSelectChange: (changeId: string) => void;
@@ -2490,7 +2175,7 @@ function ChangeBoard({
       },
     ];
 
-    if (phase === "archive-ready") {
+    if (phase === "archive-ready" && archiveSupported) {
       nextColumns.push({
         id: "action",
         label: "Action",
@@ -2533,7 +2218,7 @@ function ChangeBoard({
           ))}
         </div>
         <div className="board-actions">
-          {phase === "archive-ready" && filteredChanges.length > 0 ? (
+          {phase === "archive-ready" && archiveSupported && filteredChanges.length > 0 ? (
             <button
               type="button"
               className="primary-button"
@@ -4469,17 +4154,6 @@ function isBlockingValidationIssue(issue: ValidationIssue): boolean {
   return issue.severity === "error";
 }
 
-function canArchiveAfterValidation(validation: ValidationResult): boolean {
-  return validation.state === "pass" && validation.diagnostics.length === 0;
-}
-
-function archiveValidationFailureMessage(validation: ValidationResult): string {
-  return (
-    validation.diagnostics[0]?.message ??
-    "Validation must pass before archiving. Review the validation tab for details."
-  );
-}
-
 function specHealthFromValidation(
   validation: ValidationResult | null,
   issues: ValidationIssue[],
@@ -4714,56 +4388,6 @@ function formatCapabilities(capabilities: string[]): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
-}
-
-function statusCacheId(repoPath: string, changeName: string): string {
-  return repoPath + "\0" + changeName;
-}
-
-function changeStatusFreshnessKey(
-  records: VirtualOpenSpecFileRecord[],
-  changeName: string,
-): string {
-  const prefix = "openspec/changes/" + changeName + "/";
-
-  return records
-    .filter((record) => record.kind !== "directory" && record.path.startsWith(prefix))
-    .map((record) => record.path + ":" + (record.modifiedTimeMs ?? 0) + ":" + (record.fileSize ?? 0))
-    .sort()
-    .join("|");
-}
-
-function pruneStatusCache(cache: Map<string, StatusCacheEntry>) {
-  while (cache.size > STATUS_CACHE_LIMIT) {
-    const firstKey = cache.keys().next().value;
-
-    if (firstKey === undefined) {
-      return;
-    }
-
-    cache.delete(firstKey);
-  }
-}
-
-async function mapWithConcurrency<T>(
-  tasks: Array<() => Promise<T>>,
-  concurrency: number,
-): Promise<T[]> {
-  const results: T[] = [];
-  let nextIndex = 0;
-
-  async function worker() {
-    while (nextIndex < tasks.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await tasks[index]();
-    }
-  }
-
-  const workerCount = Math.min(Math.max(1, concurrency), tasks.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-  return results;
 }
 
 function areGitStatusesEqual(left: OpenSpecGitStatus, right: OpenSpecGitStatus): boolean {
@@ -5061,28 +4685,6 @@ function absoluteArtifactPath(repoPath: string, artifactPath: string): string {
   }
 
   return repoPath.replace(/\/$/, "") + "/" + artifactPath;
-}
-
-function validationForFileRecords(
-  validation: ValidationResult | null,
-  previousSignature: OpenSpecFileSignature | undefined,
-  nextSignature: OpenSpecFileSignature,
-): ValidationResult | null {
-  if (!validation || !previousSignature) {
-    return validation;
-  }
-
-  if (previousSignature.fingerprint === nextSignature.fingerprint) {
-    return validation;
-  }
-
-  return markValidationStaleAfterFileChange(
-    validation,
-    nextSignature.latestPath ?? "openspec",
-    nextSignature.latestModifiedTimeMs
-      ? new Date(nextSignature.latestModifiedTimeMs)
-      : new Date(),
-  );
 }
 
 function recentRepoSwitcherRepos(
