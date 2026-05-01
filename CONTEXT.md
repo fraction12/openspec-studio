@@ -22,3 +22,21 @@ The frontend workflow owner for Studio Runner coordination. It owns Runner setti
 
 ### Native Bridge Module
 A Rust bridge Module behind the Tauri command seam. It keeps native behavior local by separating shared command/process utilities from local OpenSpec operations and Studio Runner operations while preserving the external command Interface.
+
+### Workbench Application Modules
+The set of frontend Modules that concentrate application policy currently owned by the workbench shell. They keep React focused on rendering and event wiring while repository flow, navigation, table interactions, artifact detail modeling, and runner log policy live behind smaller testable Interfaces.
+
+### Repository Opening Flow Module
+The workflow Module that derives repository-open, no-provider, browser-preview, refresh, validation, archive, Git-status-intent, persistence, and message transitions from Provider Session results without owning provider IO.
+
+### Workspace Navigation State Module
+The Module that derives selected change, selected spec, detail tab, board view, phase, query reset, and persisted-selection decisions from a Workspace View-Model and current navigation state.
+
+### Board Table Interaction Module
+The Module that owns reusable board table policy such as default sort, next sort, sorted rows, bounded row windows, selected-row inclusion, keyboard focus movement, resize clamping, and sort accessibility labels.
+
+### Artifact Detail View-Model
+The selected-change detail projection consumed by the inspector. It derives tab-specific artifact, task, archive, validation, status, issue, and empty-state data from Workspace View-Model records without owning React rendering.
+
+### Studio Runner Log Module
+The Module that owns Runner Log history policy for RunnerDispatchAttempt records, including attempt creation, stream merging, lifecycle/status log events, replacement/upsert/capping, persistence normalization, filtering, row identity, and display labels.
