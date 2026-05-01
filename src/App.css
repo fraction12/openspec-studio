@@ -2222,7 +2222,7 @@ button:disabled {
 }
 
 .runner-event-summary,
-.runner-subject-cell,
+.runner-subject-summary,
 .runner-message-cell {
   display: grid;
   gap: 4px;
@@ -2230,7 +2230,7 @@ button:disabled {
 }
 
 .runner-event-summary strong,
-.runner-subject-cell strong {
+.runner-subject-summary strong {
   overflow: hidden;
   color: var(--color-text-strong);
   font-size: var(--font-size-sm);
@@ -2239,7 +2239,7 @@ button:disabled {
   white-space: normal;
 }
 
-.runner-subject-cell span,
+.runner-subject-summary span,
 .runner-message-cell small {
   overflow: hidden;
   color: var(--color-muted);

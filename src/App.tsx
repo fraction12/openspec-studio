@@ -2468,8 +2468,10 @@ function RunnerLogTable({ history, streamStatus }: { history: RunnerDispatchAtte
                         <RunnerAttemptStatusPill attempt={attempt} />
                       </td>
                       <td className="runner-subject-cell">
-                        <strong title={runnerAttemptSubject(attempt)}>{runnerAttemptSubject(attempt)}</strong>
-                        {attempt.repoChangeKey ? <span>{attempt.repoChangeKey}</span> : null}
+                        <div className="runner-subject-summary">
+                          <strong title={runnerAttemptSubject(attempt)}>{runnerAttemptSubject(attempt)}</strong>
+                          {attempt.repoChangeKey ? <span>{attempt.repoChangeKey}</span> : null}
+                        </div>
                       </td>
                       <td className="runner-response-cell">
                         <RunnerAttemptMessageCell attempt={attempt} />
