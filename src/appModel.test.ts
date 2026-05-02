@@ -570,6 +570,18 @@ describe("Studio Runner dispatch model", () => {
     );
   });
 
+  it("explains that recovered runners need restart before dispatch when the session secret is gone", () => {
+    expect(deriveRunnerDispatchEligibility({
+      repoReady: true,
+      change: eligibleChange,
+      runnerSettings: { endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events" },
+      sessionSecretConfigured: false,
+      runnerStatus: { state: "online", label: "Restart runner", detail: "Recovered.", ownership: "recovered" },
+    }).reasons).toEqual([
+      "Restart Studio Runner to fix the session secret mismatch.",
+    ]);
+  });
+
   it("does not require design when build status is ready", () => {
     const noDesignReadyChange = {
       ...eligibleChange,

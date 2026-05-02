@@ -663,11 +663,12 @@ PY
                 process.child = None;
             }
             drop(store);
+            clear_runner_session_secret().expect("secret should clear before recovery check");
             check_runner_status(StudioRunnerSettings {
                 endpoint: response.endpoint.clone(),
                 repo_path: Some(path_to_string(&runner_repo)),
             })
-            .expect("detached managed runner should recover")
+            .expect("detached managed runner should recover without session secret")
         };
         assert!(recovered_status.reachable);
         assert!(recovered_status.managed);

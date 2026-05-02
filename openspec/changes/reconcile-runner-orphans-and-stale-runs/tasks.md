@@ -9,4 +9,6 @@
 - [x] 2.4 Add first-class local `stale` runner execution state and ensure selected-change Build with agent locks ignore terminalized stale rows.
 - [x] 2.5 Add Runner workspace and inspector copy for recovered runner, occupied port, and stale-run terminalization states.
 - [x] 2.6 Add tests for recovered listener detection, status-only custom runners, non-matching port refusal, stop/restart of matching orphan listeners, first-class stale rows, and conservative stale run unlock behavior.
+- [x] 2.7 Fix app-restart recovery so status checks inspect existing listeners even when the session secret is not configured.
+- [x] 2.8 Show recovered listeners after app restart as a yellow Restart runner status with secret-mismatch guidance and dispatch blocking copy.
 - [x] 3.1 Run TypeScript checks, relevant frontend tests, Rust bridge tests, build if affected, and OpenSpec validation.

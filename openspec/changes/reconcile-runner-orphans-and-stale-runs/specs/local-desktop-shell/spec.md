@@ -12,6 +12,15 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **AND** when it matches, Studio SHALL show the runner as recovered or already running instead of offline
 - **AND** Studio SHALL expose lifecycle controls appropriate to the recovered runner.
 
+#### Scenario: Existing local runner listener is recovered after app restart
+- **GIVEN** Studio previously started a local Studio Runner listener
+- **AND** the Studio app has been closed and reopened so the in-memory session secret is no longer configured
+- **WHEN** Studio checks Runner status for the configured localhost endpoint
+- **THEN** Studio SHALL still inspect the endpoint and local listener process
+- **AND** when the listener matches the expected Studio Runner for the active repository, Studio SHALL show a yellow "Restart runner" status instead of requiring Start runner first
+- **AND** Studio SHALL explain in the Runner inspector that the existing local Studio Runner must be restarted to fix the session secret mismatch
+- **AND** Studio SHALL keep Build with agent unavailable until the runner is restarted with the current app session secret.
+
 #### Scenario: Custom user-managed runner is status-only
 - **GIVEN** the configured Studio Runner endpoint reaches a compatible custom or user-managed runner
 - **WHEN** Studio checks Runner status or opens the Runner workspace

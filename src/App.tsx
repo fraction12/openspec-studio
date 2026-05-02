@@ -2764,7 +2764,7 @@ function RunnerInspector({
   streamStatus: "disconnected" | "connecting" | "connected" | "error";
   onReconnectStream: () => void;
 }) {
-  const statusNotice = runnerOwnershipNotice(status);
+  const statusNotice = runnerOwnershipNotice(status, sessionSecretConfigured);
   const statusMatchesCurrentEndpoint = !status.endpoint || status.endpoint === settings.endpoint.trim();
   const primaryDisabled =
     busy ||
@@ -2847,6 +2847,9 @@ function runnerHealth(status: RunnerStatus): Health {
   if (status.ownership === "occupied") {
     return "invalid";
   }
+  if (status.ownership === "recovered") {
+    return "stale";
+  }
   if (status.state === "online") {
     return "valid";
   }
@@ -2860,8 +2863,11 @@ function runnerStatusLabel(status: RunnerStatus): string {
   return status.label || (status.state === "online" ? "Online" : "Offline");
 }
 
-function runnerOwnershipNotice(status: RunnerStatus): string | null {
+function runnerOwnershipNotice(status: RunnerStatus, sessionSecretConfigured = true): string | null {
   if (status.ownership === "recovered") {
+    if (!sessionSecretConfigured) {
+      return "Studio found an existing local Studio Runner for this repository, restart the runner to fix secret mismatch.";
+    }
     return "Studio found an existing local Studio Runner for this repository.";
   }
   if (status.ownership === "custom") {

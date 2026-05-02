@@ -754,7 +754,9 @@ export function deriveRunnerDispatchEligibility({
     reasons.push("Configure Studio Runner endpoint.");
   }
 
-  if (!sessionSecretConfigured) {
+  if (!sessionSecretConfigured && runnerStatus.ownership === "recovered") {
+    reasons.push("Restart Studio Runner to fix the session secret mismatch.");
+  } else if (!sessionSecretConfigured) {
     reasons.push("Generate a Studio Runner session secret.");
   }
 

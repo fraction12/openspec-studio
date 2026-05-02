@@ -361,7 +361,7 @@ export class StudioRunnerSession {
     const settings = this.dependencies.getSettings();
     const requestId = options.requestId ?? ++this.statusGeneration;
 
-    if (!settings.endpoint.trim() || (!options.force && !this.dependencies.isSessionSecretConfigured())) {
+    if (!settings.endpoint.trim()) {
       const nextStatus = { ...unknownRunnerStatus };
       if (!options.quiet) {
         this.dependencies.setMessage(nextStatus.detail);
@@ -817,7 +817,7 @@ function normalizeRunnerOwnership(
 
 function runnerStatusOwnershipLabel(ownership: RunnerOwnershipState, reachable: boolean): string {
   if (ownership === "recovered") {
-    return "Recovered local runner";
+    return "Restart runner";
   }
   if (ownership === "custom") {
     return "Custom runner reachable";

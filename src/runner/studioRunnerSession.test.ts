@@ -142,7 +142,7 @@ describe("StudioRunnerSession", () => {
       }),
     ).toMatchObject({
       state: "online",
-      label: "Recovered local runner",
+      label: "Restart runner",
       managed: true,
       ownership: "recovered",
       runnerRepoPath: "/repo",
@@ -187,6 +187,35 @@ describe("StudioRunnerSession", () => {
       ownership: "occupied",
       canStop: false,
       canRestart: false,
+    });
+  });
+
+  it("checks runner status without a session secret so app restart can recover listeners", async () => {
+    const harness = createHarness({
+      secretConfigured: false,
+      invoke: async <T,>(command: string) => {
+        harness.commands.push(command);
+        return {
+          configured: true,
+          reachable: true,
+          status: "reachable",
+          message: "Recovered local Studio Runner.",
+          managed: true,
+          ownership: "recovered",
+          can_stop: true,
+          can_restart: true,
+        } as T;
+      },
+    });
+
+    await harness.session.checkStatus({ quiet: true });
+
+    expect(harness.commands).toEqual(["check_studio_runner_status"]);
+    expect(harness.status).toMatchObject({
+      state: "online",
+      label: "Restart runner",
+      ownership: "recovered",
+      canStop: true,
     });
   });
 

@@ -420,16 +420,6 @@ pub(super) fn clear_runner_session_secret() -> Result<StudioRunnerSessionSecretR
     Ok(StudioRunnerSessionSecretResponse { configured: false })
 }
 
-fn has_runner_session_secret() -> Result<bool, BridgeError> {
-    Ok(studio_runner_session_secret()
-        .lock()
-        .map_err(|_| BridgeError::RunnerRequest {
-            message: "Studio Runner session secret store is unavailable.".to_string(),
-        })?
-        .as_deref()
-        .is_some_and(|secret| !secret.trim().is_empty()))
-}
-
 fn get_runner_session_secret() -> Result<String, BridgeError> {
     studio_runner_session_secret()
         .lock()
@@ -451,7 +441,7 @@ pub(super) fn check_runner_status(
     let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
     let mut managed = managed_runner_snapshot()?;
 
-    if endpoint.is_empty() || !has_runner_session_secret()? {
+    if endpoint.is_empty() {
         let ownership = runner_status_ownership(managed.as_ref(), &endpoint, false)?;
         return Ok(StudioRunnerStatus {
             configured: false,
