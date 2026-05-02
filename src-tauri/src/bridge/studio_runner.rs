@@ -851,11 +851,21 @@ fn build_runner_dispatch_payload(
         }
     });
 
+    let mut execution = serde_json::Map::new();
     if let Some(model) = request.runner_model.as_deref() {
-        payload["data"]["runnerModel"] = serde_json::Value::String(model.trim().to_string());
+        execution.insert(
+            "model".to_string(),
+            serde_json::Value::String(model.trim().to_string()),
+        );
     }
     if let Some(effort) = request.runner_effort.as_deref() {
-        payload["data"]["runnerEffort"] = serde_json::Value::String(effort.to_string());
+        execution.insert(
+            "effort".to_string(),
+            serde_json::Value::String(effort.to_string()),
+        );
+    }
+    if !execution.is_empty() {
+        payload["data"]["execution"] = serde_json::Value::Object(execution);
     }
 
     Ok(payload)

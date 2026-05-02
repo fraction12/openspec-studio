@@ -564,8 +564,10 @@ HTTPServer(('127.0.0.1', port), Handler).serve_forever()
         assert_eq!(payload["type"], "build.requested");
         assert_eq!(payload["source"], "openspec-studio");
         assert_eq!(payload["data"]["change"], "add-runner");
-        assert_eq!(payload["data"]["runnerModel"], "gpt-custom");
-        assert_eq!(payload["data"]["runnerEffort"], "high");
+        assert_eq!(payload["data"]["execution"]["model"], "gpt-custom");
+        assert_eq!(payload["data"]["execution"]["effort"], "high");
+        assert!(payload["data"].get("runnerModel").is_none());
+        assert!(payload["data"].get("runnerEffort").is_none());
         assert!(payload["data"].get("proposal").is_none());
     }
 
