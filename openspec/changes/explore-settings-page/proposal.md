@@ -7,7 +7,7 @@ The settings change should give users control over those existing behaviors with
 ## What Changes
 
 - Add a dedicated app settings surface reachable from a global Settings entry pinned at the bottom of the left panel.
-- Group settings by scope: app-wide behavior, current repository continuity, local data/privacy, and implemented feature-specific integrations.
+- Group settings by scope: app-wide behavior, current repository continuity, local data/privacy, and Studio Runner defaults.
 - Surface controls for existing behavior:
   - auto-reopen of the last successful repository on launch;
   - automatic background refresh of the active repository;
@@ -16,7 +16,7 @@ The settings change should give users control over those existing behaviors with
   - validation snapshot and diagnostic cache clearing;
   - theme/density preferences only if the shell applies them immediately.
 - Keep Settings local-first: preferences and data management use app-local persistence and never modify OpenSpec project files.
-- Avoid dormant or speculative controls. Studio Runner now exists, so Settings should include real global Runner execution defaults while provider, graph, timeline, and guided-workflow settings remain hidden until those capabilities expose real configuration.
+- Avoid dormant or speculative controls. Studio Runner now exists, so Settings should include real global Runner execution defaults in an explicitly named Studio Runner settings section while provider, graph, timeline, and guided-workflow settings remain hidden until those capabilities expose real configuration.
 - Keep the Studio Runner endpoint on the Runner page for this pass; Settings owns durable execution defaults, not live connection/lifecycle controls.
 
 ## Capabilities

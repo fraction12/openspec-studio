@@ -29,8 +29,13 @@ The settings surface SHALL make app-wide controls, repository-history controls, 
 
 #### Scenario: Settings uses one page for the first implementation
 - **WHEN** Settings is open
-- **THEN** the app SHALL render app, repository, current-repository, validation/diagnostics, and implemented integration settings on one scrollable settings page
+- **THEN** the app SHALL render app, repository, current-repository, validation/diagnostics, and Studio Runner settings on one scrollable settings page
 - **AND** the app SHALL NOT require nested settings navigation for the first implementation.
+
+#### Scenario: Settings does not reserve an inspector panel
+- **WHEN** Settings is open
+- **THEN** Settings SHALL occupy the workbench content area beside the repository rail
+- **AND** the shell SHALL NOT render or reserve a right-side inspector column for Settings.
 
 #### Scenario: Settings opens without a repository
 - **WHEN** no repository is active
@@ -129,8 +134,9 @@ The settings surface SHALL expose durable global defaults for implemented Studio
 #### Scenario: Runner defaults are available
 - **GIVEN** Studio Runner behavior is implemented
 - **WHEN** the user opens Settings
-- **THEN** Settings SHALL include a Studio Runner integration section for global Runner defaults
+- **THEN** Settings SHALL include a Studio Runner settings section for global Runner defaults
 - **AND** the section SHALL allow users to choose default model and effort values for future Studio-managed runner work
+- **AND** the section copy SHALL make clear that these defaults apply globally across repositories to future Studio-managed dispatches
 - **AND** effort choices SHALL include Default, Low, Medium, and High
 - **AND** model choices SHALL include Default and an optional custom model id entry
 - **AND** Settings SHALL NOT ship a curated model alias list until Studio can discover supported model aliases reliably

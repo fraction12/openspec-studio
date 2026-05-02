@@ -1706,8 +1706,8 @@ function SettingsPage({
         </SettingsSection>
 
         <SettingsSection
-          title="Integrations"
-          description="Durable defaults for implemented integrations. Operational Runner controls stay in the Runner workspace."
+          title="Studio Runner Settings"
+          description="Global defaults for future Studio-managed runner dispatches across repositories. Operational Runner controls stay in the Runner workspace."
         >
           <div className="settings-field-row">
             <div>

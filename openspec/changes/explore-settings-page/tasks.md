@@ -33,3 +33,9 @@
 - [x] 4.4 Add interaction coverage for inline confirmation cancel/confirm flows and no-active-repository Settings states.
 - [x] 4.5 Add coverage that Runner endpoint settings remain operational Runner config while model/effort defaults apply only to future dispatch payloads.
 - [x] 4.6 Run `npm test`, `npm run check`, and `openspec validate explore-settings-page`.
+
+## 5. Settings Polish Follow-Up
+
+- [x] 5.1 Make Settings occupy the workbench area without reserving a right-side inspector column.
+- [x] 5.2 Rename the generic Integrations group to Studio Runner Settings and clarify that Runner defaults are global for future dispatches across repositories.
+- [x] 5.3 Run focused validation and review the resulting diff.

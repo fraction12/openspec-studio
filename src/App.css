@@ -451,6 +451,8 @@ button:disabled {
 }
 
 .settings-main {
+  grid-column: 2 / -1;
+  border-right: 0;
   background: var(--color-surface);
 }
 

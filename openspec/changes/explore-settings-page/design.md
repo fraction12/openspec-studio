@@ -68,7 +68,7 @@ The Settings surface should distinguish scopes clearly:
 - **Repositories**: recent repository list, remove one recent repo, clear all recents, clear last-repo restore target.
 - **Current Repository**: reset selected change/spec and table sort state for the active repo.
 - **Validation And Diagnostics**: show what local validation data may be stored and clear validation snapshots for the current repo or all repos.
-- **Integrations**: render only settings contributed by implemented capabilities. Studio Runner should expose durable global Runner execution defaults here; no endpoint editor and no placeholder cards for unavailable integrations.
+- **Studio Runner Settings**: render durable global Runner execution defaults for the implemented Studio Runner capability; no endpoint editor and no placeholder cards for unavailable integrations.
 
 When no repository is active, current-repository controls should be unavailable or omitted, while app-wide and all-repo data controls remain available.
 
@@ -191,7 +191,8 @@ Appearance:
 
 Studio Runner defaults:
 
-- show a Settings integration section for global Studio Runner defaults once Runner behavior is available;
+- show a clearly named Studio Runner settings section for global Studio Runner defaults once Runner behavior is available;
+- describe the defaults as global for future Studio-managed dispatches so users do not mistake them for current-repository-only settings;
 - initial controls are Model and Effort, with default values that mean “use Symphony/Codex configured default”;
 - Effort should offer `Default`, `Low`, `Medium`, and `High`;
 - Model should offer `Default` and a custom model id entry, not a curated model list, until Studio can discover supported model aliases reliably;
@@ -199,6 +200,11 @@ Studio Runner defaults:
 - historical Runner Log rows remain immutable;
 - the Runner workspace may show a compact summary/link to Settings, but Settings is the source of truth for durable defaults;
 - endpoint, session secret, start/stop/status, stream status, and dispatch history stay in the Runner workspace/inspector because they are operational state or connection configuration, not part of this first Settings pass.
+
+Settings page layout polish:
+
+- Settings should occupy the workbench content area beside the repository rail and should not reserve, render, or imply a right-side inspector panel while open.
+- Returning to the workbench should restore the normal workbench plus inspector layout.
 
 ## Coordination With Active Changes
 
