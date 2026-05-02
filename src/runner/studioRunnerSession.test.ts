@@ -89,6 +89,48 @@ describe("StudioRunnerSession", () => {
     expect(harness.messages[harness.messages.length - 1]).toBe("Studio Runner accepted add-runner as run_demo.");
   });
 
+  it("keeps endpoint settings operational while applying execution defaults to dispatch requests", async () => {
+    const dispatchArgs: Record<string, unknown>[] = [];
+    const validation = passingValidation();
+    const change = readyChange();
+    const harness = createHarness({
+      runnerExecutionDefaults: { runnerModel: "gpt-custom", runnerEffort: "high" },
+      workspace: workspaceWith(change, validation),
+      status: {
+        state: "online",
+        label: "Runner online",
+        detail: "Ready",
+      },
+      secretConfigured: true,
+      invoke: async <T,>(command: string, args?: Record<string, unknown>) => {
+        harness.commands.push(command);
+        dispatchArgs.push(args ?? {});
+        return {
+          event_id: "evt_demo",
+          status_code: 202,
+          accepted: true,
+          message: "Accepted",
+          response_body: "{\"run_id\":\"run_demo\"}",
+          run_id: "run_demo",
+        } as T;
+      },
+    });
+
+    await harness.session.dispatchSelectedChange({
+      repo: { path: "/repo", name: "repo", state: "ready" },
+      selectedChange: change,
+    });
+
+    expect(dispatchArgs[0]).toMatchObject({
+      settings: { endpoint: defaultRunnerSettings.endpoint },
+      request: {
+        runnerModel: "gpt-custom",
+        runnerEffort: "high",
+      },
+    });
+    expect(dispatchArgs[0]?.settings).not.toHaveProperty("runnerModel");
+  });
+
   it("normalizes status DTOs without leaking bridge status names", () => {
     expect(
       runnerStatusFromDto({
@@ -319,6 +361,7 @@ function createHarness(overrides: Partial<{
   status: RunnerStatus;
   secretConfigured: boolean;
   workspace: WorkspaceView | null;
+  runnerExecutionDefaults: { runnerModel?: string; runnerEffort?: "default" | "low" | "medium" | "high" };
 }> = {}) {
   const commands: string[] = [];
   const messages: string[] = [];
@@ -358,6 +401,7 @@ function createHarness(overrides: Partial<{
     updateSettings: (nextSettings) => {
       settings = nextSettings;
     },
+    getRunnerExecutionDefaults: () => overrides.runnerExecutionDefaults ?? {},
     getStatus: () => status,
     setStatus: (nextStatus) => {
       status = nextStatus;

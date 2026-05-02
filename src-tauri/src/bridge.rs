@@ -242,6 +242,10 @@ pub struct StudioRunnerDispatchRequest {
     pub git_ref: String,
     #[serde(rename = "requestedBy")]
     pub requested_by: String,
+    #[serde(rename = "runnerModel")]
+    pub runner_model: Option<String>,
+    #[serde(rename = "runnerEffort")]
+    pub runner_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -428,6 +432,8 @@ HTTPServer(('127.0.0.1', port), Handler).serve_forever()
             },
             git_ref: "local".to_string(),
             requested_by: "local-user".to_string(),
+            runner_model: None,
+            runner_effort: None,
         }
     }
 
@@ -524,12 +530,15 @@ HTTPServer(('127.0.0.1', port), Handler).serve_forever()
         let (endpoint, rx, handle) =
             mock_runner_response(202, r#"{"run_id":"run_demo"}"#.to_string());
         configure_runner_session_secret("secret".to_string()).expect("secret should configure");
+        let mut request = runner_request("evt_mock");
+        request.runner_model = Some("gpt-custom".to_string());
+        request.runner_effort = Some("high".to_string());
         let response = dispatch_runner_event(
             StudioRunnerSettings {
                 endpoint,
                 repo_path: None,
             },
-            runner_request("evt_mock"),
+            request,
         )
         .expect("dispatch should succeed");
 
@@ -555,6 +564,8 @@ HTTPServer(('127.0.0.1', port), Handler).serve_forever()
         assert_eq!(payload["type"], "build.requested");
         assert_eq!(payload["source"], "openspec-studio");
         assert_eq!(payload["data"]["change"], "add-runner");
+        assert_eq!(payload["data"]["runnerModel"], "gpt-custom");
+        assert_eq!(payload["data"]["runnerEffort"], "high");
         assert!(payload["data"].get("proposal").is_none());
     }
 

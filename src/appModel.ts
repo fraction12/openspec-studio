@@ -12,6 +12,13 @@ export interface RunnerSettings {
   endpoint: string;
 }
 
+export type RunnerEffortDefault = "default" | "low" | "medium" | "high";
+
+export interface RunnerExecutionDefaults {
+  runnerModel?: string;
+  runnerEffort?: RunnerEffortDefault;
+}
+
 export type RunnerStatusKind = "offline" | "checking" | "starting" | "online";
 export type RunnerOwnershipState = "offline" | "managed" | "recovered" | "custom" | "occupied";
 
@@ -147,6 +154,7 @@ export interface RunnerDispatchPayloadInput {
   change: { name: string; artifacts: { path: string; status: string }[]; taskProgress: { done: number; total: number } | null };
   validation: ValidationResult;
   gitStatus?: { entries?: string[] };
+  runnerExecutionDefaults?: RunnerExecutionDefaults;
 }
 
 export interface RunnerDispatchRequestInput {
@@ -162,6 +170,8 @@ export interface RunnerDispatchRequestInput {
   };
   gitRef: string;
   requestedBy: string;
+  runnerModel?: string;
+  runnerEffort?: Exclude<RunnerEffortDefault, "default">;
 }
 
 export interface BridgeFileRecord {
@@ -826,7 +836,11 @@ export function buildRunnerDispatchPayload({
   change,
   validation,
   gitStatus,
+  runnerExecutionDefaults,
 }: RunnerDispatchPayloadInput): RunnerDispatchRequestInput {
+  const runnerModel = runnerModelDefaultForDispatch(runnerExecutionDefaults);
+  const runnerEffort = runnerEffortDefaultForDispatch(runnerExecutionDefaults);
+
   return {
     eventId,
     repoPath: repo.path,
@@ -842,5 +856,23 @@ export function buildRunnerDispatchPayload({
       issueCount: validation.issues.length,
     },
     requestedBy: "local-user",
+    ...(runnerModel ? { runnerModel } : {}),
+    ...(runnerEffort ? { runnerEffort } : {}),
   };
+}
+
+export function runnerModelDefaultForDispatch(
+  defaults: RunnerExecutionDefaults | undefined,
+): string | undefined {
+  const model = defaults?.runnerModel?.trim();
+
+  return model && model !== "default" ? model : undefined;
+}
+
+export function runnerEffortDefaultForDispatch(
+  defaults: RunnerExecutionDefaults | undefined,
+): Exclude<RunnerEffortDefault, "default"> | undefined {
+  const effort = defaults?.runnerEffort;
+
+  return effort === "low" || effort === "medium" || effort === "high" ? effort : undefined;
 }
