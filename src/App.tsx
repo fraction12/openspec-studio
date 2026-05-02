@@ -343,9 +343,7 @@ function App() {
     setRunnerSettings(initialState.runnerSettings ?? defaultRunnerSettings);
 
     const autoRestoreLastRepo = initialState.globalPreferences.autoRestoreLastRepo !== false;
-    const lastRepoPath = autoRestoreLastRepo
-      ? initialState.lastRepoPath ?? initialState.recentRepos[0]?.path
-      : undefined;
+    const lastRepoPath = autoRestoreLastRepo ? initialState.lastRepoPath : undefined;
 
     if (lastRepoPath) {
       await loadRepository(lastRepoPath);

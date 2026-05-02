@@ -46,7 +46,6 @@ describe("local app persistence", () => {
     ).toEqual({
       version: 1,
       recentRepos: [{ path: "/repo/one", name: "one", lastOpenedAt: 0 }],
-      lastRepoPath: "/repo/one",
       globalPreferences: { theme: "dark" },
       repoStateByPath: {
         "/repo/one": { lastOpenedAt: 2, changeSort: "updated-asc" },
@@ -117,6 +116,33 @@ describe("local app persistence", () => {
     ]);
     expect(state.lastRepoPath).toBe("/repo/3");
     expect(state.repoStateByPath["/repo/3"]?.lastOpenedAt).toBe(99);
+  });
+
+  it("keeps recent repository history from becoming an implicit launch restore target", () => {
+    const normalized = normalizePersistedAppState({
+      version: 1,
+      recentRepos: ["/repo/one", "/repo/two"],
+      repoStateByPath: {},
+    });
+
+    expect(normalized.recentRepos.map((repo) => repo.path)).toEqual(["/repo/one", "/repo/two"]);
+    expect(normalized.lastRepoPath).toBeUndefined();
+  });
+
+  it("clears the launch restore target when forgetting that recent repository", () => {
+    let state = rememberPersistedRepo(
+      createDefaultPersistedAppState(),
+      { path: "/repo/one", name: "one" },
+      1,
+    );
+    state = rememberPersistedRepo(state, { path: "/repo/two", name: "two" }, 2);
+
+    expect(state.lastRepoPath).toBe("/repo/two");
+
+    state = forgetPersistedRecentRepository(state, "/repo/two");
+
+    expect(state.recentRepos.map((repo) => repo.path)).toEqual(["/repo/one"]);
+    expect(state.lastRepoPath).toBeUndefined();
   });
 
   it("persists selection and sort preferences per repository", () => {

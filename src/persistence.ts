@@ -108,7 +108,7 @@ export function normalizePersistedAppState(value: unknown): PersistedAppState {
   const lastRepoPath =
     typeof value.lastRepoPath === "string" && isPersistableLocalRepoPath(value.lastRepoPath)
       ? value.lastRepoPath
-      : recentRepos[0]?.path;
+      : undefined;
   const repoStateByPath = normalizeRepoStateByPath(value.repoStateByPath);
 
   return {
