@@ -805,6 +805,24 @@ fn validate_runner_dispatch_request(
                 .to_string(),
         });
     }
+    if request
+        .runner_model
+        .as_deref()
+        .is_some_and(|model| model.trim().is_empty() || model.contains('\0'))
+    {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner dispatch model default is invalid.".to_string(),
+        });
+    }
+    if request
+        .runner_effort
+        .as_deref()
+        .is_some_and(|effort| !matches!(effort, "low" | "medium" | "high"))
+    {
+        return Err(BridgeError::RunnerRequest {
+            message: "Studio Runner dispatch effort default is invalid.".to_string(),
+        });
+    }
 
     Ok(())
 }
@@ -812,7 +830,7 @@ fn validate_runner_dispatch_request(
 fn build_runner_dispatch_payload(
     request: &StudioRunnerDispatchRequest,
 ) -> Result<serde_json::Value, BridgeError> {
-    Ok(serde_json::json!({
+    let mut payload = serde_json::json!({
         "id": request.event_id,
         "type": "build.requested",
         "source": "openspec-studio",
@@ -831,7 +849,16 @@ fn build_runner_dispatch_payload(
             },
             "requestedBy": request.requested_by,
         }
-    }))
+    });
+
+    if let Some(model) = request.runner_model.as_deref() {
+        payload["data"]["runnerModel"] = serde_json::Value::String(model.trim().to_string());
+    }
+    if let Some(effort) = request.runner_effort.as_deref() {
+        payload["data"]["runnerEffort"] = serde_json::Value::String(effort.to_string());
+    }
+
+    Ok(payload)
 }
 
 pub(super) fn normalize_runner_endpoint(endpoint: &str) -> Result<String, BridgeError> {

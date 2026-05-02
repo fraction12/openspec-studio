@@ -1,4 +1,9 @@
-import type { OpenSpecFileSignature, RunnerDispatchAttempt, RunnerSettings } from "./appModel";
+import type {
+  OpenSpecFileSignature,
+  RunnerDispatchAttempt,
+  RunnerExecutionDefaults,
+  RunnerSettings,
+} from "./appModel";
 import { isPersistableLocalRepoPath } from "./appModel";
 import {
   normalizeRunnerDispatchAttempts,
@@ -25,6 +30,7 @@ export interface PersistedAppState {
   globalPreferences: PersistedGlobalPreferences;
   repoStateByPath: Record<string, PersistedRepoState>;
   runnerSettings?: RunnerSettings;
+  runnerExecutionDefaults: RunnerExecutionDefaults;
   runnerDispatchAttempts?: RunnerDispatchAttempt[];
 }
 
@@ -37,6 +43,8 @@ export interface PersistedRecentRepo {
 export interface PersistedGlobalPreferences {
   density?: "comfortable" | "compact";
   theme?: "system" | "light" | "dark";
+  autoRestoreLastRepo?: boolean;
+  autoRefreshRepository?: boolean;
 }
 
 export interface PersistedRepoState {
@@ -73,6 +81,7 @@ export function createDefaultPersistedAppState(): PersistedAppState {
     recentRepos: [],
     globalPreferences: {},
     repoStateByPath: {},
+    runnerExecutionDefaults: {},
     runnerDispatchAttempts: [],
   };
 }
@@ -109,8 +118,22 @@ export function normalizePersistedAppState(value: unknown): PersistedAppState {
     globalPreferences: normalizeGlobalPreferences(value.globalPreferences),
     repoStateByPath,
     runnerSettings: normalizeRunnerSettings(value.runnerSettings),
+    runnerExecutionDefaults: normalizeRunnerExecutionDefaults(value.runnerExecutionDefaults),
     runnerDispatchAttempts: normalizeRunnerDispatchAttempts(value.runnerDispatchAttempts),
   };
+}
+
+export function updatePersistedGlobalPreferences(
+  state: PersistedAppState,
+  preferences: Partial<PersistedGlobalPreferences>,
+): PersistedAppState {
+  return normalizePersistedAppState({
+    ...state,
+    globalPreferences: {
+      ...state.globalPreferences,
+      ...preferences,
+    },
+  });
 }
 
 export function rememberPersistedRepo(
@@ -190,6 +213,107 @@ export function updatePersistedRepoSort(
         ...sort,
       },
     },
+  });
+}
+
+export function forgetPersistedRecentRepository(
+  state: PersistedAppState,
+  repoPath: string,
+): PersistedAppState {
+  if (!isPersistableLocalRepoPath(repoPath)) {
+    return state;
+  }
+
+  return normalizePersistedAppState({
+    ...state,
+    recentRepos: state.recentRepos.filter((recent) => recent.path !== repoPath),
+    lastRepoPath: state.lastRepoPath === repoPath ? undefined : state.lastRepoPath,
+  });
+}
+
+export function clearPersistedRecentRepositories(state: PersistedAppState): PersistedAppState {
+  return normalizePersistedAppState({
+    ...state,
+    recentRepos: [],
+    lastRepoPath: undefined,
+  });
+}
+
+export function resetPersistedRepoContinuity(
+  state: PersistedAppState,
+  repoPath: string,
+): PersistedAppState {
+  if (!isPersistableLocalRepoPath(repoPath)) {
+    return state;
+  }
+
+  const current = state.repoStateByPath[repoPath];
+  if (!current) {
+    return state;
+  }
+
+  const remaining: PersistedRepoState = { ...current };
+  delete remaining.lastSelectedChange;
+  delete remaining.lastSelectedSpec;
+  delete remaining.changeSort;
+  delete remaining.specSort;
+
+  return normalizePersistedAppState({
+    ...state,
+    repoStateByPath: {
+      ...state.repoStateByPath,
+      [repoPath]: remaining,
+    },
+  });
+}
+
+export function clearPersistedValidationSnapshot(
+  state: PersistedAppState,
+  repoPath: string,
+): PersistedAppState {
+  if (!isPersistableLocalRepoPath(repoPath)) {
+    return state;
+  }
+
+  const current = state.repoStateByPath[repoPath];
+  if (!current) {
+    return state;
+  }
+
+  const remaining: PersistedRepoState = { ...current };
+  delete remaining.lastValidation;
+
+  return normalizePersistedAppState({
+    ...state,
+    repoStateByPath: {
+      ...state.repoStateByPath,
+      [repoPath]: remaining,
+    },
+  });
+}
+
+export function clearAllPersistedValidationSnapshots(state: PersistedAppState): PersistedAppState {
+  const repoStateByPath: Record<string, PersistedRepoState> = {};
+
+  for (const [repoPath, repoState] of Object.entries(state.repoStateByPath)) {
+    const remaining: PersistedRepoState = { ...repoState };
+    delete remaining.lastValidation;
+    repoStateByPath[repoPath] = remaining;
+  }
+
+  return normalizePersistedAppState({
+    ...state,
+    repoStateByPath,
+  });
+}
+
+export function updatePersistedRunnerExecutionDefaults(
+  state: PersistedAppState,
+  defaults: RunnerExecutionDefaults,
+): PersistedAppState {
+  return normalizePersistedAppState({
+    ...state,
+    runnerExecutionDefaults: defaults,
   });
 }
 
@@ -422,6 +546,30 @@ function normalizeRunnerSettings(value: unknown): RunnerSettings | undefined {
   return endpoint ? { endpoint } : undefined;
 }
 
+function normalizeRunnerExecutionDefaults(value: unknown): RunnerExecutionDefaults {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const defaults: RunnerExecutionDefaults = {};
+  const runnerModel = readNonEmptyString(value.runnerModel)?.trim();
+
+  if (runnerModel) {
+    defaults.runnerModel = runnerModel;
+  }
+
+  if (
+    value.runnerEffort === "default" ||
+    value.runnerEffort === "low" ||
+    value.runnerEffort === "medium" ||
+    value.runnerEffort === "high"
+  ) {
+    defaults.runnerEffort = value.runnerEffort;
+  }
+
+  return defaults;
+}
+
 function normalizeGlobalPreferences(value: unknown): PersistedGlobalPreferences {
   if (!isRecord(value)) {
     return {};
@@ -435,6 +583,14 @@ function normalizeGlobalPreferences(value: unknown): PersistedGlobalPreferences 
 
   if (value.theme === "system" || value.theme === "light" || value.theme === "dark") {
     preferences.theme = value.theme;
+  }
+
+  if (typeof value.autoRestoreLastRepo === "boolean") {
+    preferences.autoRestoreLastRepo = value.autoRestoreLastRepo;
+  }
+
+  if (typeof value.autoRefreshRepository === "boolean") {
+    preferences.autoRefreshRepository = value.autoRefreshRepository;
   }
 
   return preferences;

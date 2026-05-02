@@ -6,6 +6,7 @@ import {
   type RunnerDispatchAttempt,
   type RunnerOwnershipState,
   type RunnerDispatchRequestInput,
+  type RunnerExecutionDefaults,
   type RunnerSettings,
   type RunnerStatus,
 } from "../appModel";
@@ -153,6 +154,8 @@ export interface RunnerDispatchRequestDto {
   };
   gitRef: string;
   requestedBy: string;
+  runnerModel?: string;
+  runnerEffort?: "low" | "medium" | "high";
 }
 
 export interface RunnerRepository {
@@ -184,6 +187,7 @@ export interface StudioRunnerSessionDependencies {
   isTauriRuntime: () => boolean;
   getSettings: () => RunnerSettings;
   updateSettings: (settings: RunnerSettings) => void;
+  getRunnerExecutionDefaults: () => RunnerExecutionDefaults;
   getStatus: () => RunnerStatus;
   setStatus: (status: RunnerStatus) => void;
   getStreamStatus: () => RunnerStreamStatus;
@@ -504,6 +508,7 @@ export class StudioRunnerSession {
         change: latestChange,
         validation,
         gitStatus: this.dependencies.getGitStatus(),
+        runnerExecutionDefaults: this.dependencies.getRunnerExecutionDefaults(),
       });
       pendingAttempt = createRunnerDispatchAttempt({
         eventId,
@@ -867,6 +872,8 @@ export function toRunnerDispatchRequestDto(request: RunnerDispatchRequestInput):
     validation: request.validation,
     gitRef: request.gitRef,
     requestedBy: request.requestedBy,
+    ...(request.runnerModel ? { runnerModel: request.runnerModel } : {}),
+    ...(request.runnerEffort ? { runnerEffort: request.runnerEffort } : {}),
   };
 }
 

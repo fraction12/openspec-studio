@@ -2,13 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import type { OpenSpecFileSignature } from "./appModel";
 import {
+  clearAllPersistedValidationSnapshots,
+  clearPersistedRecentRepositories,
+  clearPersistedValidationSnapshot,
   createDefaultPersistedAppState,
   directionFromSortPreference,
+  forgetPersistedRecentRepository,
   normalizePersistedAppState,
   rememberPersistedRepo,
+  resetPersistedRepoContinuity,
   sortPreferenceFromDirection,
+  updatePersistedGlobalPreferences,
   updatePersistedRepoSelection,
   updatePersistedRepoSort,
+  updatePersistedRunnerExecutionDefaults,
   updatePersistedValidationSnapshot,
   validationFromPersistedSnapshot,
 } from "./persistence";
@@ -30,7 +37,7 @@ describe("local app persistence", () => {
         version: 1,
         recentRepos: ["browser-preview://openspec-studio", "/repo/one", "/repo/one"],
         lastRepoPath: "relative/path",
-        globalPreferences: { density: "tiny", theme: "dark" },
+      globalPreferences: { density: "tiny", theme: "dark" },
         repoStateByPath: {
           "relative/path": { lastOpenedAt: 1 },
           "/repo/one": { lastOpenedAt: 2, changeSort: "updated-asc" },
@@ -45,8 +52,47 @@ describe("local app persistence", () => {
         "/repo/one": { lastOpenedAt: 2, changeSort: "updated-asc" },
       },
       runnerSettings: undefined,
+      runnerExecutionDefaults: {},
       runnerDispatchAttempts: [],
     });
+  });
+
+  it("normalizes behavior preferences and global runner execution defaults", () => {
+    const normalized = normalizePersistedAppState({
+      version: 1,
+      recentRepos: [],
+      globalPreferences: {
+        autoRestoreLastRepo: false,
+        autoRefreshRepository: true,
+        density: "compact",
+      },
+      repoStateByPath: {},
+      runnerExecutionDefaults: {
+        runnerModel: " gpt-custom ",
+        runnerEffort: "medium",
+      },
+    });
+
+    expect(normalized.globalPreferences).toEqual({
+      autoRestoreLastRepo: false,
+      autoRefreshRepository: true,
+      density: "compact",
+    });
+    expect(normalized.runnerExecutionDefaults).toEqual({
+      runnerModel: "gpt-custom",
+      runnerEffort: "medium",
+    });
+
+    const invalidDefaults = normalizePersistedAppState({
+      version: 1,
+      recentRepos: [],
+      globalPreferences: { autoRestoreLastRepo: "nope" },
+      repoStateByPath: {},
+      runnerExecutionDefaults: { runnerModel: " ", runnerEffort: "extreme" },
+    });
+
+    expect(invalidDefaults.globalPreferences).toEqual({});
+    expect(invalidDefaults.runnerExecutionDefaults).toEqual({});
   });
 
   it("caps, dedupes, and records recent repositories", () => {
@@ -96,6 +142,55 @@ describe("local app persistence", () => {
       specSort: "updated-desc",
     });
     expect(directionFromSortPreference(state.repoStateByPath["/repo/current"]?.changeSort)).toBe("asc");
+  });
+
+  it("mutates app-local settings without carrying repository file mutations", () => {
+    const repoPath = "/repo/settings";
+    const repoFiles = {
+      "openspec/spec.md": "source of truth\n",
+    };
+    const repoFilesBefore = JSON.stringify(repoFiles);
+    let state = rememberPersistedRepo(
+      createDefaultPersistedAppState(),
+      { path: repoPath, name: "settings" },
+      1,
+    );
+    const validation = parseValidationResult(
+      { valid: true, items: [] },
+      { validatedAt: new Date("2026-04-28T12:00:00.000Z") },
+    );
+    state = updatePersistedRepoSelection(state, repoPath, {
+      changeId: "change-one",
+      specId: "spec-one",
+    });
+    state = updatePersistedRepoSort(state, repoPath, {
+      changeSort: "updated-asc",
+      specSort: "updated-desc",
+    });
+    state = updatePersistedValidationSnapshot(state, repoPath, validation, currentSignature);
+    state = updatePersistedGlobalPreferences(state, {
+      autoRefreshRepository: false,
+      autoRestoreLastRepo: false,
+    });
+    state = updatePersistedRunnerExecutionDefaults(state, {
+      runnerModel: "gpt-custom",
+      runnerEffort: "high",
+    });
+    state = resetPersistedRepoContinuity(state, repoPath);
+    state = clearPersistedValidationSnapshot(state, repoPath);
+    state = forgetPersistedRecentRepository(state, repoPath);
+    state = clearPersistedRecentRepositories(state);
+    state = clearAllPersistedValidationSnapshots(state);
+
+    expect(JSON.stringify(repoFiles)).toBe(repoFilesBefore);
+    expect(state.recentRepos).toEqual([]);
+    expect(state.lastRepoPath).toBeUndefined();
+    expect(state.repoStateByPath[repoPath]).toEqual({ lastOpenedAt: 1 });
+    expect(state.globalPreferences.autoRefreshRepository).toBe(false);
+    expect(state.runnerExecutionDefaults).toEqual({
+      runnerModel: "gpt-custom",
+      runnerEffort: "high",
+    });
   });
 
 

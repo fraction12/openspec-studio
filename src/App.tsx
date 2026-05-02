@@ -35,6 +35,7 @@ import {
 import {
   artifactHealth,
   buildWorkspaceView,
+  clearWorkspaceValidationState,
   formatTime,
   matchesChangeFilters,
   matchesSpecFilters,
@@ -83,18 +84,34 @@ import {
 } from "./validation/results";
 import {
   createDefaultPersistedAppState,
+  clearAllPersistedValidationSnapshots,
+  clearPersistedRecentRepositories,
+  clearPersistedValidationSnapshot,
   directionFromSortPreference,
+  forgetPersistedRecentRepository,
   loadPersistedAppState,
   normalizePersistedAppState,
   rememberPersistedRepo,
+  resetPersistedRepoContinuity,
   savePersistedAppState,
   sortPreferenceFromDirection,
+  updatePersistedGlobalPreferences,
   updatePersistedRepoSelection,
   updatePersistedRepoSort,
+  updatePersistedRunnerExecutionDefaults,
   updatePersistedValidationSnapshot,
   type PersistedAppState,
   type PersistedRecentRepo,
 } from "./persistence";
+import {
+  beginSettingsDestructiveAction,
+  cancelSettingsDestructiveAction,
+  confirmSettingsDestructiveAction,
+  deriveCurrentRepositorySettingsState,
+  forgetRecentRepositoryActionKey,
+  isSettingsActionAwaitingConfirmation,
+  type SettingsDestructiveActionKey,
+} from "./settingsModel";
 import { ProviderSession } from "./providers/providerSession";
 import { createBuiltInOpenSpecProvider } from "./providers/providerRegistry";
 import type { ProviderCapabilities } from "./providers/types";
@@ -152,6 +169,8 @@ const MAX_OPERATION_ISSUES = 6;
 const MARKDOWN_BLOCK_CACHE_LIMIT = 40;
 const ROW_RENDER_BATCH_SIZE = 250;
 
+type MainSurface = "workbench" | "settings";
+
 const phaseLabels: Record<ChangePhase, string> = {
   active: "Active",
   "archive-ready": "Archive ready",
@@ -169,6 +188,7 @@ function App() {
   const [phase, setPhase] = useState<ChangePhase>("active");
   const [changesQuery, setChangesQuery] = useState("");
   const [specsQuery, setSpecsQuery] = useState("");
+  const [mainSurface, setMainSurface] = useState<MainSurface>("workbench");
   const [selectedChangeId, setSelectedChangeId] = useState("");
   const [selectedSpecId, setSelectedSpecId] = useState("");
   const [detailTab, setDetailTab] = useState<DetailTab>("proposal");
@@ -263,6 +283,7 @@ function App() {
         isTauriRuntime,
         getSettings: () => runnerSettingsRef.current,
         updateSettings: updateRunnerSettings,
+        getRunnerExecutionDefaults: () => persistedAppStateRef.current.runnerExecutionDefaults,
         getStatus: () => runnerStatusRef.current,
         setStatus: (status) => {
           runnerStatusRef.current = status;
@@ -321,7 +342,10 @@ function App() {
     setPersistedAppState(initialState);
     setRunnerSettings(initialState.runnerSettings ?? defaultRunnerSettings);
 
-    const lastRepoPath = initialState.lastRepoPath ?? initialState.recentRepos[0]?.path;
+    const autoRestoreLastRepo = initialState.globalPreferences.autoRestoreLastRepo !== false;
+    const lastRepoPath = autoRestoreLastRepo
+      ? initialState.lastRepoPath ?? initialState.recentRepos[0]?.path
+      : undefined;
 
     if (lastRepoPath) {
       await loadRepository(lastRepoPath);
@@ -344,6 +368,7 @@ function App() {
 
     void savePersistedAppState(nextState).catch((error) => {
       console.warn("OpenSpec Studio persistence could not be saved.", error);
+      setMessage("Settings could not be saved: " + errorMessage(error));
     });
   }
 
@@ -357,6 +382,69 @@ function App() {
       ...current,
       runnerSettings: normalized,
     }));
+  }
+
+  function updateSettingsGlobalPreferences(
+    preferences: Partial<PersistedAppState["globalPreferences"]>,
+  ) {
+    updatePersistedState((current) => updatePersistedGlobalPreferences(current, preferences));
+    setMessage("Settings saved.");
+  }
+
+  function updateSettingsRunnerExecutionDefaults(
+    defaults: PersistedAppState["runnerExecutionDefaults"],
+  ) {
+    updatePersistedState((current) => updatePersistedRunnerExecutionDefaults(current, defaults));
+    setMessage("Runner defaults saved for future dispatches.");
+  }
+
+  function forgetSettingsRecentRepository(repoPath: string) {
+    updatePersistedState((current) => forgetPersistedRecentRepository(current, repoPath));
+    setMessage("Removed recent repository history.");
+  }
+
+  function clearSettingsRecentRepositories() {
+    updatePersistedState(clearPersistedRecentRepositories);
+    setMessage("Cleared recent repository history and launch restore target.");
+  }
+
+  function resetSettingsCurrentRepoContinuity() {
+    const repoPath = repoRef.current?.path;
+    if (!repoPath) {
+      setMessage("Open a valid repository before resetting current repository continuity.");
+      return;
+    }
+
+    updatePersistedState((current) => resetPersistedRepoContinuity(current, repoPath));
+    setMessage("Reset persisted selection and sort continuity for the current repository.");
+  }
+
+  function clearSettingsCurrentValidationSnapshot() {
+    const repoPath = repoRef.current?.path;
+    if (!repoPath) {
+      setMessage("Open a valid repository before clearing its validation cache.");
+      return;
+    }
+
+    updatePersistedState((current) => clearPersistedValidationSnapshot(current, repoPath));
+    clearCurrentWorkspaceValidation(repoPath);
+    setMessage("Cleared the current repository validation cache.");
+  }
+
+  function clearSettingsAllValidationSnapshots() {
+    updatePersistedState(clearAllPersistedValidationSnapshots);
+    clearCurrentWorkspaceValidation(repoRef.current?.path ?? null);
+    setMessage("Cleared all app-local validation caches.");
+  }
+
+  function clearCurrentWorkspaceValidation(repoPath: string | null) {
+    if (!repoPath || repoRef.current?.path !== repoPath || !workspaceRef.current) {
+      return;
+    }
+
+    const nextWorkspace = clearWorkspaceValidationState(workspaceRef.current);
+    workspaceRef.current = nextWorkspace;
+    setWorkspace(nextWorkspace);
   }
 
   function rememberRunnerAttempt(attempt: RunnerDispatchAttempt) {
@@ -472,7 +560,13 @@ function App() {
   }, [runnerSettings.endpoint, runnerSessionSecretConfigured]);
 
   useEffect(() => {
-    if (!repo || repo.state !== "ready" || !workspace || !isTauriRuntime()) {
+    if (
+      !repo ||
+      repo.state !== "ready" ||
+      !workspace ||
+      !isTauriRuntime() ||
+      persistedAppState.globalPreferences.autoRefreshRepository === false
+    ) {
       return;
     }
 
@@ -481,7 +575,12 @@ function App() {
     }, AUTO_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(timer);
-  }, [repo?.path, repo?.state, workspace?.fileSignature.fingerprint]);
+  }, [
+    persistedAppState.globalPreferences.autoRefreshRepository,
+    repo?.path,
+    repo?.state,
+    workspace?.fileSignature.fingerprint,
+  ]);
 
   const changes = workspace?.changes ?? [];
   const specs = workspace?.specs ?? [];
@@ -1130,61 +1229,79 @@ function App() {
         recentRepos={recentRepos}
         candidateError={candidateError}
         loadState={loadState}
+        settingsOpen={mainSurface === "settings"}
         onChooseFolder={() => void chooseRepositoryFolder()}
         onOpenRecent={(path) => void loadRepository(path)}
         onRetryCandidate={(path) => void loadRepository(path)}
         onReturnToActive={() => setCandidateError(null)}
+        onOpenSettings={() => setMainSurface("settings")}
       />
 
-      <WorkspaceMain
-        repo={repo}
-        workspace={workspace}
-        view={view}
-        phase={phase}
-        changesQuery={changesQuery}
-        specsQuery={specsQuery}
-        changesFilterQuery={deferredChangesQuery}
-        specsFilterQuery={deferredSpecsQuery}
-        selectedChange={selectedChange}
-        selectedSpec={selectedSpec}
-        runnerStatus={runnerStatus}
-        changeSortDirection={changeSortDirection}
-        specSortDirection={specSortDirection}
-        loadState={loadState}
-        archiveBusy={archiveBusy}
-        providerCapabilities={workspace?.providerCapabilities ?? repo?.providerCapabilities}
-        onViewChange={setView}
-        onPhaseChange={setPhase}
-        onChangesQueryChange={setChangesQuery}
-        onSpecsQueryChange={setSpecsQuery}
-        onSelectChange={(changeId) => {
-          setSelectedChangeId(changeId);
-          setDetailTab("proposal");
-        }}
-        onSelectSpec={setSelectedSpecId}
-        onChangeSortDirection={(direction) =>
-          updatePersistedState((current) =>
-            updatePersistedRepoSort(current, repo?.path ?? "", {
-              changeSort: sortPreferenceFromDirection(direction),
-            }),
-          )
-        }
-        onSpecSortDirection={(direction) =>
-          updatePersistedState((current) =>
-            updatePersistedRepoSort(current, repo?.path ?? "", {
-              specSort: sortPreferenceFromDirection(direction),
-            }),
-          )
-        }
-        onChooseFolder={() => void chooseRepositoryFolder()}
-        onArchiveChange={(changeName) => void archiveChange(changeName)}
-        onArchiveAll={(changeNames) => void archiveAllChanges(changeNames)}
-        onValidate={() => void runValidation()}
-        onReload={() => repo && void loadRepository(repo.path)}
-        runnerAllDispatchHistory={repoRunnerDispatchHistory}
-        runnerStreamStatus={runnerStreamStatus}
-        validationBusy={validationBusy}
-      />
+      {mainSurface === "settings" ? (
+        <SettingsPage
+          repo={repo}
+          workspace={workspace}
+          persistedAppState={persistedAppState}
+          onClose={() => setMainSurface("workbench")}
+          onGlobalPreferencesChange={updateSettingsGlobalPreferences}
+          onRunnerExecutionDefaultsChange={updateSettingsRunnerExecutionDefaults}
+          onForgetRecentRepository={forgetSettingsRecentRepository}
+          onClearRecentRepositories={clearSettingsRecentRepositories}
+          onResetCurrentRepoContinuity={resetSettingsCurrentRepoContinuity}
+          onClearCurrentValidation={clearSettingsCurrentValidationSnapshot}
+          onClearAllValidation={clearSettingsAllValidationSnapshots}
+        />
+      ) : (
+        <WorkspaceMain
+          repo={repo}
+          workspace={workspace}
+          view={view}
+          phase={phase}
+          changesQuery={changesQuery}
+          specsQuery={specsQuery}
+          changesFilterQuery={deferredChangesQuery}
+          specsFilterQuery={deferredSpecsQuery}
+          selectedChange={selectedChange}
+          selectedSpec={selectedSpec}
+          runnerStatus={runnerStatus}
+          changeSortDirection={changeSortDirection}
+          specSortDirection={specSortDirection}
+          loadState={loadState}
+          archiveBusy={archiveBusy}
+          providerCapabilities={workspace?.providerCapabilities ?? repo?.providerCapabilities}
+          onViewChange={setView}
+          onPhaseChange={setPhase}
+          onChangesQueryChange={setChangesQuery}
+          onSpecsQueryChange={setSpecsQuery}
+          onSelectChange={(changeId) => {
+            setSelectedChangeId(changeId);
+            setDetailTab("proposal");
+          }}
+          onSelectSpec={setSelectedSpecId}
+          onChangeSortDirection={(direction) =>
+            updatePersistedState((current) =>
+              updatePersistedRepoSort(current, repo?.path ?? "", {
+                changeSort: sortPreferenceFromDirection(direction),
+              }),
+            )
+          }
+          onSpecSortDirection={(direction) =>
+            updatePersistedState((current) =>
+              updatePersistedRepoSort(current, repo?.path ?? "", {
+                specSort: sortPreferenceFromDirection(direction),
+              }),
+            )
+          }
+          onChooseFolder={() => void chooseRepositoryFolder()}
+          onArchiveChange={(changeName) => void archiveChange(changeName)}
+          onArchiveAll={(changeNames) => void archiveAllChanges(changeNames)}
+          onValidate={() => void runValidation()}
+          onReload={() => repo && void loadRepository(repo.path)}
+          runnerAllDispatchHistory={repoRunnerDispatchHistory}
+          runnerStreamStatus={runnerStreamStatus}
+          validationBusy={validationBusy}
+        />
+      )}
 
       <Inspector
         repo={repo}
@@ -1244,19 +1361,23 @@ function Sidebar({
   recentRepos,
   candidateError,
   loadState,
+  settingsOpen,
   onChooseFolder,
   onOpenRecent,
   onRetryCandidate,
   onReturnToActive,
+  onOpenSettings,
 }: {
   repo: RepositoryView | null;
   recentRepos: PersistedRecentRepo[];
   candidateError: CandidateRepoError | null;
   loadState: LoadState;
+  settingsOpen: boolean;
   onChooseFolder: () => void;
   onOpenRecent: (path: string) => void;
   onRetryCandidate: (path: string) => void;
   onReturnToActive: () => void;
+  onOpenSettings: () => void;
 }) {
   const switcherRepos = recentRepoSwitcherRepos(repo, recentRepos);
 
@@ -1301,7 +1422,7 @@ function Sidebar({
         </div>
       </section>
 
-      <section className="rail-section">
+      <section className="rail-section rail-recent-section">
         <div className="rail-heading">Recent sources</div>
         {switcherRepos.length > 0 ? (
           <div className="recent-repos repo-switcher">
@@ -1324,7 +1445,444 @@ function Sidebar({
         )}
       </section>
 
+      <div className="rail-settings-slot">
+        <button
+          type="button"
+          className={settingsOpen ? "rail-settings-button is-selected" : "rail-settings-button"}
+          aria-current={settingsOpen ? "page" : undefined}
+          onClick={onOpenSettings}
+        >
+          <strong>Settings</strong>
+        </button>
+      </div>
     </aside>
+  );
+}
+
+function SettingsPage({
+  repo,
+  workspace,
+  persistedAppState,
+  onClose,
+  onGlobalPreferencesChange,
+  onRunnerExecutionDefaultsChange,
+  onForgetRecentRepository,
+  onClearRecentRepositories,
+  onResetCurrentRepoContinuity,
+  onClearCurrentValidation,
+  onClearAllValidation,
+}: {
+  repo: RepositoryView | null;
+  workspace: WorkspaceView | null;
+  persistedAppState: PersistedAppState;
+  onClose: () => void;
+  onGlobalPreferencesChange: (preferences: Partial<PersistedAppState["globalPreferences"]>) => void;
+  onRunnerExecutionDefaultsChange: (defaults: PersistedAppState["runnerExecutionDefaults"]) => void;
+  onForgetRecentRepository: (repoPath: string) => void;
+  onClearRecentRepositories: () => void;
+  onResetCurrentRepoContinuity: () => void;
+  onClearCurrentValidation: () => void;
+  onClearAllValidation: () => void;
+}) {
+  const [pendingAction, setPendingAction] = useState<SettingsDestructiveActionKey | null>(null);
+  const [feedback, setFeedback] = useState("");
+  const runnerDefaults = persistedAppState.runnerExecutionDefaults;
+  const storedRunnerModel =
+    runnerDefaults.runnerModel && runnerDefaults.runnerModel !== "default"
+      ? runnerDefaults.runnerModel
+      : "";
+  const [runnerModelMode, setRunnerModelMode] = useState(storedRunnerModel ? "custom" : "default");
+  const [customRunnerModel, setCustomRunnerModel] = useState(storedRunnerModel);
+  const repoReady = repo?.state === "ready";
+  const currentRepoState = repo?.path ? persistedAppState.repoStateByPath[repo.path] : undefined;
+  const currentRepoSettingsState = deriveCurrentRepositorySettingsState({
+    repoReady,
+    hasCurrentValidationSnapshot: Boolean(currentRepoState?.lastValidation || workspace?.validation),
+  });
+  const autoRestoreLastRepo = persistedAppState.globalPreferences.autoRestoreLastRepo !== false;
+  const autoRefreshRepository = persistedAppState.globalPreferences.autoRefreshRepository !== false;
+
+  useEffect(() => {
+    const nextStoredRunnerModel =
+      runnerDefaults.runnerModel && runnerDefaults.runnerModel !== "default"
+        ? runnerDefaults.runnerModel
+        : "";
+    setCustomRunnerModel(nextStoredRunnerModel);
+    setRunnerModelMode(nextStoredRunnerModel ? "custom" : "default");
+  }, [runnerDefaults.runnerModel]);
+
+  function updateFeedback(message: string) {
+    setFeedback(message);
+  }
+
+  function updateRunnerModelMode(mode: string) {
+    setRunnerModelMode(mode);
+    if (mode === "default") {
+      onRunnerExecutionDefaultsChange({
+        ...runnerDefaults,
+        runnerModel: "default",
+      });
+      updateFeedback("Runner model default saved.");
+      return;
+    }
+
+    if (customRunnerModel.trim()) {
+      onRunnerExecutionDefaultsChange({
+        ...runnerDefaults,
+        runnerModel: customRunnerModel.trim(),
+      });
+      updateFeedback("Runner custom model saved.");
+    } else {
+      updateFeedback("Enter a custom model id to send one with future runner dispatches.");
+    }
+  }
+
+  function updateCustomRunnerModel(value: string) {
+    setCustomRunnerModel(value);
+    onRunnerExecutionDefaultsChange({
+      ...runnerDefaults,
+      runnerModel: value.trim() || "default",
+    });
+    updateFeedback(value.trim() ? "Runner custom model saved." : "Runner model default saved.");
+  }
+
+  function updateRunnerEffort(value: string) {
+    if (value !== "default" && value !== "low" && value !== "medium" && value !== "high") {
+      return;
+    }
+
+    onRunnerExecutionDefaultsChange({
+      ...runnerDefaults,
+      runnerEffort: value,
+    });
+    updateFeedback("Runner effort default saved.");
+  }
+
+  return (
+    <main className="workspace-main settings-main" aria-label="Settings">
+      <header className="workspace-header settings-header">
+        <div className="workspace-title">
+          <h1>Settings</h1>
+          <p>Local app behavior and app-owned data for this Studio install.</p>
+        </div>
+        <button type="button" className="primary-outline" onClick={onClose}>
+          Return to workbench
+        </button>
+      </header>
+
+      <div className="settings-scroll">
+        {feedback ? (
+          <div className="settings-feedback" role="status" aria-live="polite">
+            {feedback}
+          </div>
+        ) : null}
+
+        <SettingsSection
+          title="App"
+          description="These preferences apply immediately and keep manual actions available."
+        >
+          <SettingsToggle
+            title="Reopen last repository on launch"
+            description="When enabled, Studio tries the last successful repository before showing the chooser."
+            checked={autoRestoreLastRepo}
+            onChange={(checked) => {
+              onGlobalPreferencesChange({ autoRestoreLastRepo: checked });
+              updateFeedback("Launch restore preference saved.");
+            }}
+          />
+          <SettingsToggle
+            title="Refresh active repository automatically"
+            description="When enabled, Studio refreshes the active repository in the background. Manual refresh stays available."
+            checked={autoRefreshRepository}
+            onChange={(checked) => {
+              onGlobalPreferencesChange({ autoRefreshRepository: checked });
+              updateFeedback("Automatic refresh preference saved.");
+            }}
+          />
+        </SettingsSection>
+
+        <SettingsSection
+          title="Repositories"
+          description="Recent repository history is local to Studio and does not touch project files."
+        >
+          <SettingsValueRow
+            title="Launch restore target"
+            description={persistedAppState.lastRepoPath ?? "No launch restore target is stored."}
+          />
+          {persistedAppState.recentRepos.length > 0 ? (
+            <div className="settings-repo-list" aria-label="Recent repositories">
+              {persistedAppState.recentRepos.map((recent) => (
+                <SettingsActionRow
+                  key={recent.path}
+                  title={recent.name}
+                  description={recent.path}
+                  actionLabel="Remove"
+                  confirmLabel="Confirm"
+                  actionKey={forgetRecentRepositoryActionKey(recent.path)}
+                  pendingAction={pendingAction}
+                  setPendingAction={setPendingAction}
+                  onConfirm={() => {
+                    onForgetRecentRepository(recent.path);
+                    updateFeedback("Removed " + recent.name + " from recent repositories.");
+                  }}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState compact title="No recent repositories" body="Repository history will appear after a folder is opened." />
+          )}
+          <SettingsActionRow
+            title="Clear recent repositories"
+            description="Remove recent repository history and the launch restore target from app-local state."
+            actionLabel="Clear history"
+            confirmLabel="Confirm"
+            actionKey="clear-recent-repositories"
+            pendingAction={pendingAction}
+            setPendingAction={setPendingAction}
+            disabled={persistedAppState.recentRepos.length === 0 && !persistedAppState.lastRepoPath}
+            disabledReason="No repository history is stored."
+            onConfirm={() => {
+              onClearRecentRepositories();
+              updateFeedback("Cleared recent repository history.");
+            }}
+          />
+        </SettingsSection>
+
+        <SettingsSection
+          title="Current Repository"
+          description="These controls affect persisted continuity for the active repository only."
+        >
+          <SettingsValueRow
+            title={repoReady && repo ? repo.name : "No active repository"}
+            description={repoReady && repo ? repo.path : "Open a valid repository to enable current-repository controls."}
+          />
+          <SettingsActionRow
+            title="Reset selection and sort continuity"
+            description="Clear stored selected change, selected spec, and table sort preferences for future restoration."
+            actionLabel="Reset continuity"
+            confirmLabel="Confirm"
+            actionKey="reset-current-repository-continuity"
+            pendingAction={pendingAction}
+            setPendingAction={setPendingAction}
+            disabled={!currentRepoSettingsState.continuityAvailable}
+            disabledReason={currentRepoSettingsState.inactiveReason ?? undefined}
+            onConfirm={() => {
+              onResetCurrentRepoContinuity();
+              updateFeedback("Reset current repository continuity.");
+            }}
+          />
+        </SettingsSection>
+
+        <SettingsSection
+          title="Validation And Diagnostics"
+          description="Cached validation data may include local paths, stdout, stderr, status codes, and parsed diagnostics. Clearing cache never edits OpenSpec files."
+        >
+          <SettingsActionRow
+            title="Clear current validation cache"
+            description="Remove the app-local validation snapshot for the active repository and make the current workspace untrusted until validation runs again."
+            actionLabel="Clear current"
+            confirmLabel="Confirm"
+            actionKey="clear-current-validation-cache"
+            pendingAction={pendingAction}
+            setPendingAction={setPendingAction}
+            disabled={!currentRepoSettingsState.currentValidationAvailable}
+            disabledReason={currentRepoSettingsState.currentValidationReason ?? undefined}
+            onConfirm={() => {
+              onClearCurrentValidation();
+              updateFeedback("Cleared current repository validation cache.");
+            }}
+          />
+          <SettingsActionRow
+            title="Clear all validation caches"
+            description="Remove app-local validation snapshots for every persisted repository."
+            actionLabel="Clear all"
+            confirmLabel="Confirm"
+            actionKey="clear-all-validation-caches"
+            pendingAction={pendingAction}
+            setPendingAction={setPendingAction}
+            onConfirm={() => {
+              onClearAllValidation();
+              updateFeedback("Cleared all validation caches.");
+            }}
+          />
+        </SettingsSection>
+
+        <SettingsSection
+          title="Integrations"
+          description="Durable defaults for implemented integrations. Operational Runner controls stay in the Runner workspace."
+        >
+          <div className="settings-field-row">
+            <div>
+              <strong>Studio Runner model</strong>
+              <p>Use the configured default or send a custom model id with future Studio-managed dispatches.</p>
+            </div>
+            <div className="settings-runner-model-control">
+              <label>
+                <span>Model source</span>
+                <select value={runnerModelMode} onChange={(event) => updateRunnerModelMode(event.target.value)}>
+                  <option value="default">Default</option>
+                  <option value="custom">Custom model id</option>
+                </select>
+              </label>
+              {runnerModelMode === "custom" ? (
+                <label>
+                  <span>Custom model id</span>
+                  <input
+                    value={customRunnerModel}
+                    placeholder="model id"
+                    onChange={(event) => updateCustomRunnerModel(event.target.value)}
+                  />
+                </label>
+              ) : null}
+            </div>
+          </div>
+          <div className="settings-field-row">
+            <div>
+              <strong>Studio Runner effort</strong>
+              <p>Default means the Runner uses the Symphony or Codex configured effort.</p>
+            </div>
+            <label className="settings-select-control">
+              <span>Effort</span>
+              <select
+                value={runnerDefaults.runnerEffort ?? "default"}
+                onChange={(event) => updateRunnerEffort(event.target.value)}
+              >
+                <option value="default">Default</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+          </div>
+        </SettingsSection>
+      </div>
+    </main>
+  );
+}
+
+function SettingsSection({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="settings-section">
+      <div className="settings-section-heading">
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+      <div className="settings-section-body">{children}</div>
+    </section>
+  );
+}
+
+function SettingsToggle({
+  title,
+  description,
+  checked,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="settings-toggle-row">
+      <span>
+        <strong>{title}</strong>
+        <p>{description}</p>
+      </span>
+      <input
+        type="checkbox"
+        role="switch"
+        checked={checked}
+        aria-checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+    </label>
+  );
+}
+
+function SettingsValueRow({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="settings-value-row">
+      <strong>{title}</strong>
+      <p>{description}</p>
+    </div>
+  );
+}
+
+function SettingsActionRow({
+  title,
+  description,
+  actionLabel,
+  confirmLabel,
+  actionKey,
+  pendingAction,
+  setPendingAction,
+  disabled = false,
+  disabledReason,
+  onConfirm,
+}: {
+  title: string;
+  description: string;
+  actionLabel: string;
+  confirmLabel: string;
+  actionKey: SettingsDestructiveActionKey;
+  pendingAction: SettingsDestructiveActionKey | null;
+  setPendingAction: (action: SettingsDestructiveActionKey | null) => void;
+  disabled?: boolean;
+  disabledReason?: string;
+  onConfirm: () => void;
+}) {
+  const awaitingConfirmation = isSettingsActionAwaitingConfirmation(pendingAction, actionKey);
+
+  return (
+    <div className={awaitingConfirmation ? "settings-action-row is-confirming" : "settings-action-row"}>
+      <div>
+        <strong>{title}</strong>
+        <p>{disabled && disabledReason ? disabledReason : description}</p>
+      </div>
+      {awaitingConfirmation ? (
+        <div className="settings-confirm-actions">
+          <button
+            type="button"
+            className="primary-button"
+            autoFocus
+            onClick={() => {
+              const result = confirmSettingsDestructiveAction(pendingAction, actionKey);
+              setPendingAction(result.pendingAction);
+              if (result.confirmed) {
+                onConfirm();
+              }
+            }}
+          >
+            {confirmLabel}
+          </button>
+          <button
+            type="button"
+            className="primary-outline"
+            onClick={() => setPendingAction(cancelSettingsDestructiveAction(pendingAction, actionKey))}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="primary-outline"
+          disabled={disabled}
+          onClick={() => setPendingAction(beginSettingsDestructiveAction(actionKey))}
+        >
+          {actionLabel}
+        </button>
+      )}
+    </div>
   );
 }
 

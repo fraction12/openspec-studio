@@ -15,6 +15,8 @@ import {
   isPersistableLocalRepoPath,
   normalizeRecentRepoPaths,
   recentRepoSwitcherPaths,
+  runnerEffortDefaultForDispatch,
+  runnerModelDefaultForDispatch,
   sameOpenSpecOperationScope,
   toVirtualChangeStatusRecord,
   toVirtualFileRecords,
@@ -609,6 +611,29 @@ describe("Studio Runner dispatch model", () => {
     expect(payload.changeName).toBe("add-runner");
     expect(payload.repoPath).toBe("/repo/openspec-studio");
     expect(payload).not.toHaveProperty("proposal");
+  });
+
+  it("adds only non-default runner execution defaults to future dispatch payloads", () => {
+    expect(runnerModelDefaultForDispatch({ runnerModel: "default" })).toBeUndefined();
+    expect(runnerModelDefaultForDispatch({ runnerModel: " gpt-custom " })).toBe("gpt-custom");
+    expect(runnerEffortDefaultForDispatch({ runnerEffort: "default" })).toBeUndefined();
+    expect(runnerEffortDefaultForDispatch({ runnerEffort: "low" })).toBe("low");
+
+    expect(
+      buildRunnerDispatchPayload({
+        eventId: "evt_demo",
+        repo: { name: "openspec-studio", path: "/repo/openspec-studio" },
+        change: { name: "add-runner", ...eligibleChange },
+        validation: passingValidation,
+        runnerExecutionDefaults: {
+          runnerModel: "gpt-custom",
+          runnerEffort: "high",
+        },
+      }),
+    ).toMatchObject({
+      runnerModel: "gpt-custom",
+      runnerEffort: "high",
+    });
   });
 
   it("blocks dispatch when tasks are already complete", () => {

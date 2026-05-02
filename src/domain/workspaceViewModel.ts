@@ -160,6 +160,45 @@ export function buildWorkspaceView(
   };
 }
 
+export function clearWorkspaceValidationState(workspace: WorkspaceView): WorkspaceView {
+  return {
+    ...workspace,
+    validation: null,
+    changes: workspace.changes.map(clearChangeValidationState),
+    specs: workspace.specs.map((spec) => ({
+      ...spec,
+      health: "stale",
+      validationIssues: [],
+    })),
+  };
+}
+
+function clearChangeValidationState(change: ChangeRecord): ChangeRecord {
+  if (change.phase === "archived") {
+    return {
+      ...change,
+      validationIssues: [],
+    };
+  }
+
+  const health =
+    change.health === "blocked" || change.health === "missing" ? change.health : "stale";
+  const buildStatus = deriveChangeBuildStatus({
+    phase: change.phase,
+    taskProgress: change.taskProgress,
+    validation: null,
+    validationIssueCount: 0,
+  });
+
+  return {
+    ...change,
+    health,
+    statusLabel: healthLabels[health],
+    buildStatus,
+    validationIssues: [],
+  };
+}
+
 function activeChangeToView(
   change: IndexedActiveChange,
   filesByPath: Record<string, VirtualOpenSpecFileRecord>,
