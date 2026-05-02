@@ -1,5 +1,5 @@
-use super::*;
 use super::shared::*;
+use super::*;
 
 pub fn validate_repository(
     repo_path: impl AsRef<Path>,

@@ -98,6 +98,9 @@ describe("StudioRunnerSession", () => {
         message: "healthy",
         managed: true,
         pid: 42,
+        ownership: "managed",
+        can_stop: true,
+        can_restart: true,
       }),
     ).toMatchObject({
       state: "online",
@@ -105,6 +108,9 @@ describe("StudioRunnerSession", () => {
       detail: "healthy",
       managed: true,
       pid: 42,
+      ownership: "managed",
+      canStop: true,
+      canRestart: true,
     });
 
     expect(
@@ -118,6 +124,119 @@ describe("StudioRunnerSession", () => {
       state: "offline",
       label: "Runner offline",
     });
+  });
+
+  it("normalizes recovered, custom, and occupied runner ownership states", () => {
+    expect(
+      runnerStatusFromDto({
+        configured: true,
+        reachable: true,
+        status: "reachable",
+        message: "Recovered local Studio Runner.",
+        managed: true,
+        pid: 42,
+        ownership: "recovered",
+        runner_repo_path: "/repo",
+        can_stop: true,
+        can_restart: true,
+      }),
+    ).toMatchObject({
+      state: "online",
+      label: "Recovered local runner",
+      managed: true,
+      ownership: "recovered",
+      runnerRepoPath: "/repo",
+      canStop: true,
+      canRestart: true,
+    });
+
+    expect(
+      runnerStatusFromDto({
+        configured: true,
+        reachable: true,
+        status: "reachable",
+        message: "Custom runner reachable.",
+        managed: false,
+        ownership: "custom",
+        can_stop: false,
+        can_restart: false,
+      }),
+    ).toMatchObject({
+      state: "online",
+      label: "Custom runner reachable",
+      managed: false,
+      ownership: "custom",
+      canStop: false,
+      canRestart: false,
+    });
+
+    expect(
+      runnerStatusFromDto({
+        configured: true,
+        reachable: false,
+        status: "unavailable",
+        message: "Port occupied by another process.",
+        managed: false,
+        ownership: "occupied",
+        can_stop: false,
+        can_restart: false,
+      }),
+    ).toMatchObject({
+      state: "offline",
+      label: "Port occupied",
+      ownership: "occupied",
+      canStop: false,
+      canRestart: false,
+    });
+  });
+
+  it("reconciles stale rows only when status proves the runner is offline", async () => {
+    const harness = createHarness({
+      secretConfigured: true,
+      invoke: async <T,>(command: string) => {
+        harness.commands.push(command);
+        return {
+          configured: true,
+          reachable: false,
+          status: "unavailable",
+          message: "connection refused",
+          managed: false,
+          ownership: "offline",
+        } as T;
+      },
+    });
+
+    await harness.session.checkStatus({ force: true });
+
+    expect(harness.reconciliations).toEqual([
+      {
+        repoPath: "/repo",
+        endpoint: "http://127.0.0.1:4000/api/v1/studio-runner/events",
+        reason: "runner-offline",
+        message: "Run marked stale after runner went offline.",
+      },
+    ]);
+  });
+
+  it("does not reconcile stale rows for occupied or custom runner status", async () => {
+    const harness = createHarness({
+      secretConfigured: true,
+      invoke: async <T,>(command: string) => {
+        harness.commands.push(command);
+        return {
+          configured: true,
+          reachable: false,
+          status: "unavailable",
+          message: "port occupied",
+          managed: false,
+          ownership: "occupied",
+        } as T;
+      },
+    });
+
+    await harness.session.checkStatus({ force: true });
+
+    expect(harness.reconciliations).toEqual([]);
   });
 
   it("preserves current Symphony stream metadata fields from DTOs", () => {
@@ -175,6 +294,7 @@ function createHarness(overrides: Partial<{
   const commands: string[] = [];
   const messages: string[] = [];
   const attempts: RunnerDispatchAttempt[] = [];
+  const reconciliations: unknown[] = [];
   const issues: unknown[] = [];
   let settings = overrides.settings ?? defaultRunnerSettings;
   let status = overrides.status ?? unknownRunnerStatus;
@@ -185,6 +305,7 @@ function createHarness(overrides: Partial<{
     commands,
     messages,
     attempts,
+    reconciliations,
     issues,
     get settings() {
       return settings;
@@ -212,6 +333,8 @@ function createHarness(overrides: Partial<{
     setStatus: (nextStatus) => {
       status = nextStatus;
     },
+    getStreamStatus: () => "disconnected",
+    getCurrentRepoPath: () => "/repo",
     isSessionSecretConfigured: () => secretConfigured,
     setSessionSecretConfigured: (configured) => {
       secretConfigured = configured;
@@ -241,6 +364,9 @@ function createHarness(overrides: Partial<{
       attempts.splice(0, attempts.length, attempt, ...attempts.filter((item) => item.eventId !== eventId));
     },
     mergeRunnerStreamEvent: () => undefined,
+    reconcileRunnerAttempts: (evidence) => {
+      reconciliations.push(evidence);
+    },
     recordOperationIssue: (issue) => {
       issues.push(issue);
     },

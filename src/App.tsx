@@ -113,7 +113,9 @@ import {
   runnerAttemptStatusLabel,
   runnerAttemptSubject,
   runnerDispatchHistoryForRepo,
+  staleRunnerAttemptsForEvidence,
   type RunnerStreamEventInput,
+  type RunnerStaleEvidence,
   upsertRunnerDispatchAttempt as upsertRunnerLogAttempt,
 } from "./runner/studioRunnerLog";
 import {
@@ -197,6 +199,7 @@ function App() {
   const selectedSpecIdRef = useRef(selectedSpecId);
   const runnerSettingsRef = useRef<RunnerSettings>(runnerSettings);
   const runnerStatusRef = useRef<RunnerStatus>(runnerStatus);
+  const runnerStreamStatusRef = useRef<RunnerStreamStatus>(runnerStreamStatus);
   const repoPathRef = useRef<string | null>(repo?.path ?? null);
   const deferredChangesQuery = useDeferredValue(changesQuery);
   const deferredSpecsQuery = useDeferredValue(specsQuery);
@@ -212,6 +215,7 @@ function App() {
   selectedSpecIdRef.current = selectedSpecId;
   runnerSettingsRef.current = runnerSettings;
   runnerStatusRef.current = runnerStatus;
+  runnerStreamStatusRef.current = runnerStreamStatus;
   repoPathRef.current = repo?.path ?? null;
   runnerSessionSecretConfiguredRef.current = runnerSessionSecretConfigured;
   chooseRepositoryFolderRef.current = chooseRepositoryFolder;
@@ -264,6 +268,8 @@ function App() {
           runnerStatusRef.current = status;
           setRunnerStatus(status);
         },
+        getStreamStatus: () => runnerStreamStatusRef.current,
+        getCurrentRepoPath: () => repoPathRef.current,
         isSessionSecretConfigured: () => runnerSessionSecretConfiguredRef.current,
         setSessionSecretConfigured: (configured) => {
           runnerSessionSecretConfiguredRef.current = configured;
@@ -286,6 +292,7 @@ function App() {
         rememberRunnerAttempt,
         replaceRunnerAttempt,
         mergeRunnerStreamEvent: rememberRunnerStreamEvent,
+        reconcileRunnerAttempts,
         recordOperationIssue,
         clearRunnerDispatchIssues: (repoPath, changeName) =>
           clearOperationIssues(
@@ -370,6 +377,13 @@ function App() {
     updatePersistedState((current) => ({
       ...current,
       runnerDispatchAttempts: mergeRunnerStreamEvent(current.runnerDispatchAttempts, event, repoPathRef.current),
+    }));
+  }
+
+  function reconcileRunnerAttempts(evidence: RunnerStaleEvidence) {
+    updatePersistedState((current) => ({
+      ...current,
+      runnerDispatchAttempts: staleRunnerAttemptsForEvidence(current.runnerDispatchAttempts, evidence),
     }));
   }
 
@@ -2750,6 +2764,17 @@ function RunnerInspector({
   streamStatus: "disconnected" | "connecting" | "connected" | "error";
   onReconnectStream: () => void;
 }) {
+  const statusNotice = runnerOwnershipNotice(status);
+  const statusMatchesCurrentEndpoint = !status.endpoint || status.endpoint === settings.endpoint.trim();
+  const primaryDisabled =
+    busy ||
+    (statusMatchesCurrentEndpoint && (status.ownership === "custom" || status.ownership === "occupied"));
+  const primaryLabel =
+    status.state === "starting"
+      ? "Starting..."
+      : status.state === "online" && status.canRestart
+        ? "Restart runner"
+        : "Start runner";
   return (
     <aside className="inspector artifact-inspector runner-inspector" aria-label="Studio Runner inspector">
       <div className="inspector-header">
@@ -2759,15 +2784,16 @@ function RunnerInspector({
       <div className="inspector-body artifact-inspector-body">
         <section className="inspector-section">
           <h3>Status</h3>
-          <p>{status.detail}</p>
+          <p role="status">{status.detail}</p>
+          {statusNotice ? <p className="muted-copy">{statusNotice}</p> : null}
           <div className="section-actions">
-            <button type="button" className="primary-button" onClick={onStartRunner} disabled={busy}>
-              {status.state === "online" ? "Restart runner" : status.state === "starting" ? "Starting..." : "Start runner"}
+            <button type="button" className="primary-button" onClick={onStartRunner} disabled={primaryDisabled}>
+              {primaryLabel}
             </button>
             <button type="button" className="primary-outline" onClick={onCheckStatus} disabled={busy}>
               Check status
             </button>
-            {status.managed ? (
+            {status.canStop ? (
               <button type="button" className="link-button" onClick={onStopRunner} disabled={busy}>
                 Stop runner
               </button>
@@ -2818,6 +2844,9 @@ function RunnerInspector({
 }
 
 function runnerHealth(status: RunnerStatus): Health {
+  if (status.ownership === "occupied") {
+    return "invalid";
+  }
   if (status.state === "online") {
     return "valid";
   }
@@ -2828,7 +2857,20 @@ function runnerHealth(status: RunnerStatus): Health {
 }
 
 function runnerStatusLabel(status: RunnerStatus): string {
-  return status.state === "online" ? "Online" : "Offline";
+  return status.label || (status.state === "online" ? "Online" : "Offline");
+}
+
+function runnerOwnershipNotice(status: RunnerStatus): string | null {
+  if (status.ownership === "recovered") {
+    return "Studio found an existing local Studio Runner for this repository.";
+  }
+  if (status.ownership === "custom") {
+    return "This compatible runner is user-managed; Studio will not stop or restart it.";
+  }
+  if (status.ownership === "occupied") {
+    return "Another process owns the configured port. Stop it outside Studio or choose another endpoint.";
+  }
+  return null;
 }
 
 function formatRunnerDateTime(value: string): string {

@@ -47,6 +47,15 @@ export interface RunnerStreamEventInput {
   executionLogEntries?: unknown;
 }
 
+export interface RunnerStaleEvidence {
+  repoPath: string;
+  changeName?: string | null;
+  endpoint?: string | null;
+  reason: "runner-offline" | "runner-stopped" | "runner-restarted" | "stream-reconciled" | "workspace-missing";
+  message: string;
+  recordedAt?: string;
+}
+
 export function createRunnerDispatchAttempt(input: {
   eventId: string;
   repoPath: string;
@@ -272,6 +281,35 @@ export function runnerChangeIsBuilding(
   const latestStatus = runnerAttemptStateLabel(latestRun);
 
   return latestStatus === "accepted" || latestStatus === "running";
+}
+
+export function staleRunnerAttemptsForEvidence(
+  attempts: RunnerDispatchAttempt[] | undefined,
+  evidence: RunnerStaleEvidence,
+): RunnerDispatchAttempt[] {
+  if (!evidence.repoPath) {
+    return sortRunnerDispatchAttempts(attempts ?? []);
+  }
+
+  const recordedAt = evidence.recordedAt || new Date().toISOString();
+  return capRunnerDispatchAttempts(
+    (attempts ?? []).map((attempt) => {
+      if (!runnerAttemptMatchesStaleEvidence(attempt, evidence)) {
+        return attempt;
+      }
+
+      return normalizeRunnerAttemptForStorage({
+        ...attempt,
+        status: "accepted",
+        message: truncateRunnerText(evidence.message).value,
+        updatedAt: recordedAt,
+        rowState: "stale",
+        executionStatus: "stale",
+        eventName: attempt.eventName || "runner.stale",
+        executionLogUnavailableReason: attempt.executionLogUnavailableReason ?? "disconnected",
+      });
+    }),
+  );
 }
 
 export function latestRunnerAttempt(
@@ -579,6 +617,7 @@ function changeNameFromRepoChangeKey(value: string | null | undefined): string |
 
 function normalizeRunnerExecutionStatus(status: string | null | undefined, eventName: string | null | undefined): RunnerExecutionStatus {
   const value = (status || eventName || "").toLowerCase();
+  if (value.includes("stale")) return "stale";
   if (value.includes("completed")) return "completed";
   if (value.includes("blocked")) return "blocked";
   if (value.includes("conflict")) return "conflict";
@@ -590,7 +629,7 @@ function normalizeRunnerExecutionStatus(status: string | null | undefined, event
 
 function deliveryStatusFromExecution(status: RunnerExecutionStatus): RunnerDispatchAttempt["status"] {
   if (status === "failed" || status === "blocked" || status === "conflict") return "failed";
-  if (status === "running" || status === "accepted" || status === "completed") return "accepted";
+  if (status === "running" || status === "accepted" || status === "completed" || status === "stale") return "accepted";
   return "pending";
 }
 
@@ -992,9 +1031,31 @@ function normalizePersistedExecutionStatus(value: unknown): RunnerExecutionStatu
     value === "blocked" ||
     value === "failed" ||
     value === "conflict" ||
+    value === "stale" ||
     value === "unknown"
     ? value
     : null;
+}
+
+function runnerAttemptMatchesStaleEvidence(
+  attempt: RunnerDispatchAttempt,
+  evidence: RunnerStaleEvidence,
+): boolean {
+  if (runnerAttemptRowKind(attempt) !== "run") {
+    return false;
+  }
+  if (attempt.repoPath !== evidence.repoPath) {
+    return false;
+  }
+  if (evidence.changeName && attempt.changeName !== evidence.changeName) {
+    return false;
+  }
+  if (evidence.endpoint && attempt.endpoint && attempt.endpoint !== evidence.endpoint) {
+    return false;
+  }
+
+  const state = runnerAttemptStateLabel(attempt);
+  return state === "accepted" || state === "running";
 }
 
 function normalizeExecutionLogLevel(value: unknown): RunnerExecutionLogLevel {

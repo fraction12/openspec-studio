@@ -20,6 +20,7 @@ import {
   runnerAttemptSubject,
   runnerDispatchHistoryForChange,
   runnerDispatchHistoryForRepo,
+  staleRunnerAttemptsForEvidence,
   upsertRunnerDispatchAttempt,
 } from "./studioRunnerLog";
 import type { RunnerDispatchAttempt } from "../appModel";
@@ -299,7 +300,7 @@ describe("Studio Runner Log Module", () => {
   });
 
   it("does not treat failed, blocked, or conflict run states as selected-change building", () => {
-    for (const executionStatus of ["failed", "blocked", "conflict"] as const) {
+    for (const executionStatus of ["failed", "blocked", "conflict", "stale"] as const) {
       expect(
         runnerChangeIsBuilding([
           attempt({
@@ -339,6 +340,61 @@ describe("Studio Runner Log Module", () => {
     ];
 
     expect(runnerChangeIsBuilding(attempts, "/repo", "demo")).toBe(false);
+  });
+
+  it("terminalizes only matching active run rows as stale when evidence proves no run is active", () => {
+    const attempts = [
+      attempt({
+        eventId: "evt_running",
+        repoPath: "/repo",
+        changeName: "demo",
+        executionStatus: "running",
+        updatedAt: "2026-04-29T12:00:00Z",
+      }),
+      attempt({
+        eventId: "evt_accepted",
+        repoPath: "/repo",
+        changeName: "other",
+        executionStatus: "accepted",
+        updatedAt: "2026-04-29T12:01:00Z",
+      }),
+      attempt({
+        eventId: "evt_completed",
+        repoPath: "/repo",
+        changeName: "done",
+        executionStatus: "completed",
+        updatedAt: "2026-04-29T12:02:00Z",
+      }),
+      attempt({
+        eventId: "evt_other_repo",
+        repoPath: "/other",
+        changeName: "demo",
+        executionStatus: "running",
+        updatedAt: "2026-04-29T12:03:00Z",
+      }),
+    ];
+
+    const reconciled = staleRunnerAttemptsForEvidence(attempts, {
+      repoPath: "/repo",
+      reason: "runner-offline",
+      message: "Run marked stale after runner went offline.",
+      recordedAt: "2026-04-29T12:04:00Z",
+    });
+
+    expect(reconciled.find((item) => item.eventId === "evt_running")).toMatchObject({
+      executionStatus: "stale",
+      rowState: "stale",
+      status: "accepted",
+      message: "Run marked stale after runner went offline.",
+      updatedAt: "2026-04-29T12:04:00Z",
+    });
+    expect(reconciled.find((item) => item.eventId === "evt_accepted")).toMatchObject({
+      executionStatus: "stale",
+      rowState: "stale",
+    });
+    expect(reconciled.find((item) => item.eventId === "evt_completed")?.executionStatus).toBe("completed");
+    expect(reconciled.find((item) => item.eventId === "evt_other_repo")?.executionStatus).toBe("running");
+    expect(runnerChangeIsBuilding(reconciled, "/repo", "demo")).toBe(false);
   });
 
   it("derives row identity and display labels", () => {

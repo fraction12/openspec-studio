@@ -13,6 +13,7 @@ export interface RunnerSettings {
 }
 
 export type RunnerStatusKind = "offline" | "checking" | "starting" | "online";
+export type RunnerOwnershipState = "offline" | "managed" | "recovered" | "custom" | "occupied";
 
 export interface RunnerStatus {
   state: RunnerStatusKind;
@@ -22,11 +23,16 @@ export interface RunnerStatus {
   statusCode?: number | null;
   managed?: boolean;
   pid?: number | null;
+  ownership?: RunnerOwnershipState;
+  runnerEndpoint?: string | null;
+  runnerRepoPath?: string | null;
+  canStop?: boolean;
+  canRestart?: boolean;
 }
 
 export type RunnerLogSource = "dispatch" | "stream" | "lifecycle" | "status" | "diagnostic";
 export type RunnerLogRowKind = "run" | "lifecycle" | "stream" | "diagnostic";
-export type RunnerExecutionStatus = "accepted" | "running" | "completed" | "blocked" | "failed" | "conflict" | "unknown";
+export type RunnerExecutionStatus = "accepted" | "running" | "completed" | "blocked" | "failed" | "conflict" | "stale" | "unknown";
 export type RunnerExecutionLogLevel = "debug" | "info" | "warning" | "error";
 export type RunnerExecutionLogSource =
   | "runner"

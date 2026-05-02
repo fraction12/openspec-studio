@@ -117,6 +117,7 @@ struct StudioRunnerProcess {
     endpoint: String,
     port: u16,
     repo_path: PathBuf,
+    recovered: bool,
 }
 
 #[derive(Debug)]
@@ -208,6 +209,9 @@ pub struct StudioRunnerStatus {
     pub response_body: Option<String>,
     pub managed: bool,
     pub pid: Option<u32>,
+    pub ownership: String,
+    pub can_stop: bool,
+    pub can_restart: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -249,23 +253,23 @@ pub struct StudioRunnerDispatchValidation {
     pub issue_count: usize,
 }
 
-pub(crate) mod shared;
 pub(crate) mod openspec;
+pub(crate) mod shared;
 pub(crate) mod studio_runner;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::openspec::*;
     use super::shared::*;
     use super::studio_runner::*;
+    use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::{
         fs,
         path::PathBuf,
-        process,
-        sync::mpsc,
+        process::{self, Child, Command, Stdio},
+        sync::{mpsc, Mutex, OnceLock},
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -300,11 +304,54 @@ mod tests {
         }
     }
 
+    fn runner_lifecycle_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn lock_runner_bridge_state_for_test() -> std::sync::MutexGuard<'static, ()> {
+        runner_lifecycle_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[cfg(unix)]
     fn write_executable(path: &Path, contents: &str) {
         fs::write(path, contents).expect("script should be written");
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .expect("script should be executable");
+    }
+
+    #[cfg(unix)]
+    fn spawn_custom_health_server(port: u16) -> Child {
+        Command::new("python3")
+            .arg("-u")
+            .arg("-c")
+            .arg(
+                r#"
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import sys
+port = int(sys.argv[1])
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/v1/studio-runner/health':
+            self.send_response(200)
+            self.send_header('content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    def log_message(self, *args):
+        pass
+HTTPServer(('127.0.0.1', port), Handler).serve_forever()
+"#,
+            )
+            .arg(port.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("custom health server should start")
     }
 
     #[test]
@@ -472,6 +519,7 @@ mod tests {
 
     #[test]
     fn builds_runner_payload_in_bridge_and_dispatches_signed_request() {
+        let _guard = lock_runner_bridge_state_for_test();
         clear_runner_session_secret().expect("secret should start clear");
         let (endpoint, rx, handle) =
             mock_runner_response(202, r#"{"run_id":"run_demo"}"#.to_string());
@@ -521,6 +569,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn starts_and_stops_managed_studio_runner_process() {
+        let _guard = lock_runner_bridge_state_for_test();
         reset_studio_runner_process_for_test();
         clear_runner_session_secret().expect("secret should start clear");
         configure_runner_session_secret("secret".to_string()).expect("secret should configure");
@@ -541,7 +590,7 @@ while [ "$#" -gt 0 ]; do
   fi
   shift
 done
-python3 -u - "$port" "$PWD/WORKFLOW.md" <<'PY'
+exec python3 -u - "$port" "$PWD/WORKFLOW.md" <<'PY'
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import sys
 port = int(sys.argv[1])
@@ -622,6 +671,9 @@ PY
         };
         assert!(recovered_status.reachable);
         assert!(recovered_status.managed);
+        assert_eq!(recovered_status.ownership, "recovered");
+        assert!(recovered_status.can_stop);
+        assert!(recovered_status.can_restart);
         assert_eq!(recovered_status.pid, response.pid);
         assert_eq!(
             recovered_status.runner_repo_path.as_deref(),
@@ -646,8 +698,55 @@ PY
         cleanup(runner_repo);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn reports_custom_runner_as_status_only_and_refuses_replacement() {
+        let _guard = lock_runner_bridge_state_for_test();
+        reset_studio_runner_process_for_test();
+        clear_runner_session_secret().expect("secret should start clear");
+        configure_runner_session_secret("secret".to_string()).expect("secret should configure");
+        let runner_repo = temp_repo("custom-runner-status", false);
+        fs::write(runner_repo.join("WORKFLOW.md"), "# Workflow\n")
+            .expect("workflow should be written");
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+        let port = listener
+            .local_addr()
+            .expect("local addr should exist")
+            .port();
+        drop(listener);
+        let endpoint = format!("http://127.0.0.1:{port}/api/v1/studio-runner/events");
+        let mut child = spawn_custom_health_server(port);
+        wait_for_runner_health(&endpoint, DEFAULT_RUNNER_STARTUP_TIMEOUT)
+            .expect("custom runner health should become reachable");
+
+        let status = check_runner_status(StudioRunnerSettings {
+            endpoint: endpoint.clone(),
+            repo_path: Some(path_to_string(&runner_repo)),
+        })
+        .expect("custom runner status should be available");
+        assert!(status.reachable);
+        assert!(!status.managed);
+        assert_eq!(status.ownership, "custom");
+        assert!(!status.can_stop);
+        assert!(!status.can_restart);
+
+        let restart = start_runner_process(StudioRunnerLifecycleRequest {
+            repo_path: path_to_string(&runner_repo),
+            endpoint: Some(endpoint),
+            restart: true,
+        });
+        assert!(matches!(restart, Err(BridgeError::RunnerRequest { .. })));
+
+        terminate_runner_process(child.id(), Some(&mut child));
+        reset_studio_runner_process_for_test();
+        cleanup(runner_repo);
+    }
+
     #[test]
     fn runner_dispatch_requires_session_secret() {
+        let _guard = lock_runner_bridge_state_for_test();
         clear_runner_session_secret().expect("secret should clear");
         let result = dispatch_runner_event(
             StudioRunnerSettings {
@@ -662,6 +761,7 @@ PY
 
     #[test]
     fn runner_dispatch_reports_non_accepted_status() {
+        let _guard = lock_runner_bridge_state_for_test();
         clear_runner_session_secret().expect("secret should start clear");
         let (endpoint, _rx, handle) =
             mock_runner_response(409, r#"{"error":"duplicate"}"#.to_string());
@@ -686,6 +786,7 @@ PY
 
     #[test]
     fn runner_dispatch_rejects_oversized_response() {
+        let _guard = lock_runner_bridge_state_for_test();
         clear_runner_session_secret().expect("secret should start clear");
         let (endpoint, _rx, handle) =
             mock_runner_response(202, "x".repeat(DEFAULT_MAX_RUNNER_RESPONSE_BYTES + 1));

@@ -1,0 +1,12 @@
+- [x] 1.1 Document the orphaned listener and stale build-lock failure modes.
+- [x] 1.2 Define runner listener ownership states and recovery semantics.
+- [x] 1.3 Define stale run reconciliation policy for persisted accepted/running rows.
+- [x] 1.4 Define safety rules for stopping/restarting only matching Studio Runner listeners.
+- [x] 1.5 Lock ProdSquad decisions: conservative auto-unlock, status-only custom runners, first-class `stale`, and no required active-run endpoint for MVP.
+- [x] 2.1 Extend runner status normalization to expose managed, recovered, custom/user-managed, occupied/non-matching, and offline states.
+- [x] 2.2 Update bridge lifecycle operations so Stop/Restart can terminate a matching recovered/orphaned Studio Runner listener, while refusing non-matching and custom/user-managed listeners.
+- [x] 2.3 Reconcile persisted accepted/running Runner Log rows against health, stream, guarded process, and explicit stop/restart evidence; terminalize only proven-stale rows.
+- [x] 2.4 Add first-class local `stale` runner execution state and ensure selected-change Build with agent locks ignore terminalized stale rows.
+- [x] 2.5 Add Runner workspace and inspector copy for recovered runner, occupied port, and stale-run terminalization states.
+- [x] 2.6 Add tests for recovered listener detection, status-only custom runners, non-matching port refusal, stop/restart of matching orphan listeners, first-class stale rows, and conservative stale run unlock behavior.
+- [x] 3.1 Run TypeScript checks, relevant frontend tests, Rust bridge tests, build if affected, and OpenSpec validation.

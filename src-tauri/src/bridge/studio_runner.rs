@@ -1,5 +1,5 @@
-use super::*;
 use super::shared::*;
+use super::*;
 
 #[tauri::command]
 pub async fn start_studio_runner_event_stream(
@@ -326,7 +326,8 @@ pub(super) fn parse_runner_stream_event(
         commit_sha: read_json_string(object, "commitSha")
             .or_else(|| read_json_string(object, "commit_sha")),
         pr_url: read_json_string(object, "prUrl").or_else(|| read_json_string(object, "pr_url")),
-        pr_state: read_json_string(object, "prState").or_else(|| read_json_string(object, "pr_state")),
+        pr_state: read_json_string(object, "prState")
+            .or_else(|| read_json_string(object, "pr_state")),
         pr_merged_at: read_json_string(object, "prMergedAt")
             .or_else(|| read_json_string(object, "pr_merged_at")),
         pr_closed_at: read_json_string(object, "prClosedAt")
@@ -348,10 +349,7 @@ pub(super) fn parse_runner_stream_event(
     })
 }
 
-fn read_json_bool(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<bool> {
+fn read_json_bool(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<bool> {
     object.get(key)?.as_bool()
 }
 
@@ -409,7 +407,8 @@ pub(super) fn configure_runner_session_secret(
     Ok(StudioRunnerSessionSecretResponse { configured: true })
 }
 
-pub(super) fn clear_runner_session_secret() -> Result<StudioRunnerSessionSecretResponse, BridgeError> {
+pub(super) fn clear_runner_session_secret() -> Result<StudioRunnerSessionSecretResponse, BridgeError>
+{
     let mut current =
         studio_runner_session_secret()
             .lock()
@@ -445,12 +444,15 @@ fn get_runner_session_secret() -> Result<String, BridgeError> {
         })
 }
 
-pub(super) fn check_runner_status(settings: StudioRunnerSettings) -> Result<StudioRunnerStatus, BridgeError> {
+pub(super) fn check_runner_status(
+    settings: StudioRunnerSettings,
+) -> Result<StudioRunnerStatus, BridgeError> {
     reap_finished_runner_process()?;
     let endpoint = normalize_runner_endpoint(&settings.endpoint)?;
     let mut managed = managed_runner_snapshot()?;
 
     if endpoint.is_empty() || !has_runner_session_secret()? {
+        let ownership = runner_status_ownership(managed.as_ref(), &endpoint, false)?;
         return Ok(StudioRunnerStatus {
             configured: false,
             reachable: false,
@@ -465,17 +467,22 @@ pub(super) fn check_runner_status(settings: StudioRunnerSettings) -> Result<Stud
             status_code: None,
             message: "Studio Runner endpoint and session secret are required.".to_string(),
             response_body: None,
-            managed: if endpoint.is_empty() {
-                managed.is_some()
-            } else {
-                runner_managed_for_endpoint(managed.as_ref(), &endpoint)
-            },
-            pid: if endpoint.is_empty() {
-                managed.as_ref().map(|process| process.pid)
-            } else {
-                runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint)
-            },
+            managed: runner_status_is_studio_owned(&ownership),
+            pid: runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint).or_else(|| {
+                if endpoint.is_empty() {
+                    managed.as_ref().map(|process| process.pid)
+                } else {
+                    None
+                }
+            }),
+            can_stop: runner_status_can_stop(&ownership),
+            can_restart: runner_status_can_restart(&ownership),
+            ownership,
         });
+    }
+
+    if !runner_managed_for_endpoint(managed.as_ref(), &endpoint) {
+        managed = recover_managed_runner_from_endpoint(&endpoint, settings.repo_path.as_deref())?;
     }
 
     let health_endpoint = runner_health_endpoint(&endpoint);
@@ -491,10 +498,7 @@ pub(super) fn check_runner_status(settings: StudioRunnerSettings) -> Result<Stud
             let status_code = response.status().as_u16();
             let success = response.status().is_success();
             let body = read_bounded_runner_response(response)?;
-            if success && !runner_managed_for_endpoint(managed.as_ref(), &endpoint) {
-                managed =
-                    recover_managed_runner_from_endpoint(&endpoint, settings.repo_path.as_deref())?;
-            }
+            let ownership = runner_status_ownership(managed.as_ref(), &endpoint, success)?;
             Ok(StudioRunnerStatus {
                 configured: true,
                 reachable: success,
@@ -509,23 +513,32 @@ pub(super) fn check_runner_status(settings: StudioRunnerSettings) -> Result<Stud
                     format!("Studio Runner health check returned HTTP {}", status_code)
                 },
                 response_body: body,
-                managed: runner_managed_for_endpoint(managed.as_ref(), &endpoint),
+                managed: runner_status_is_studio_owned(&ownership),
                 pid: runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint),
+                can_stop: runner_status_can_stop(&ownership),
+                can_restart: runner_status_can_restart(&ownership),
+                ownership,
             })
         }
-        Err(error) => Ok(StudioRunnerStatus {
-            configured: true,
-            reachable: false,
-            status: "unavailable".to_string(),
-            endpoint: Some(endpoint.clone()),
-            runner_endpoint: runner_snapshot_endpoint(managed.as_ref()),
-            runner_repo_path: runner_snapshot_repo_path(managed.as_ref()),
-            status_code: None,
-            message: error.to_string(),
-            response_body: None,
-            managed: runner_managed_for_endpoint(managed.as_ref(), &endpoint),
-            pid: runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint),
-        }),
+        Err(error) => {
+            let ownership = runner_status_ownership(managed.as_ref(), &endpoint, false)?;
+            Ok(StudioRunnerStatus {
+                configured: true,
+                reachable: false,
+                status: "unavailable".to_string(),
+                endpoint: Some(endpoint.clone()),
+                runner_endpoint: runner_snapshot_endpoint(managed.as_ref()),
+                runner_repo_path: runner_snapshot_repo_path(managed.as_ref()),
+                status_code: None,
+                message: error.to_string(),
+                response_body: None,
+                managed: runner_status_is_studio_owned(&ownership),
+                pid: runner_managed_pid_for_endpoint(managed.as_ref(), &endpoint),
+                can_stop: runner_status_can_stop(&ownership),
+                can_restart: runner_status_can_restart(&ownership),
+                ownership,
+            })
+        }
     }
 }
 
@@ -670,6 +683,7 @@ pub(super) fn start_runner_process(
         endpoint: endpoint.clone(),
         port,
         repo_path: repo_path.clone(),
+        recovered: false,
     };
 
     match wait_for_runner_health(&endpoint, DEFAULT_RUNNER_STARTUP_TIMEOUT) {
@@ -920,7 +934,7 @@ fn validate_runner_event_id(event_id: &str) -> Result<(), BridgeError> {
     }
 }
 
-fn wait_for_runner_health(endpoint: &str, timeout: Duration) -> Result<(), BridgeError> {
+pub(super) fn wait_for_runner_health(endpoint: &str, timeout: Duration) -> Result<(), BridgeError> {
     let deadline = Instant::now() + timeout;
     let health_endpoint = runner_health_endpoint(endpoint);
     let client = reqwest::blocking::Client::builder()
@@ -963,6 +977,9 @@ fn reap_finished_runner_process() -> Result<(), BridgeError> {
                 process.child = None;
             }
         }
+        if process.child.is_none() && runner_listener_pid(process.port) != Some(process.pid) {
+            *store = None;
+        }
     }
     Ok(())
 }
@@ -977,6 +994,7 @@ fn managed_runner_snapshot() -> Result<Option<StudioRunnerProcessSnapshot>, Brid
         pid: process.pid,
         endpoint: process.endpoint.clone(),
         repo_path: process.repo_path.clone(),
+        recovered: process.recovered || process.child.is_none(),
     }))
 }
 
@@ -985,6 +1003,7 @@ struct StudioRunnerProcessSnapshot {
     pid: u32,
     endpoint: String,
     repo_path: PathBuf,
+    recovered: bool,
 }
 
 fn runner_managed_for_endpoint(
@@ -1039,6 +1058,7 @@ fn recover_managed_runner_from_endpoint(
                 pid: existing.pid,
                 endpoint: existing.endpoint.clone(),
                 repo_path: existing.repo_path.clone(),
+                recovered: existing.recovered || existing.child.is_none(),
             }));
         }
     }
@@ -1049,13 +1069,55 @@ fn recover_managed_runner_from_endpoint(
         endpoint: endpoint.to_string(),
         port,
         repo_path: recovered_repo_path.clone(),
+        recovered: true,
     });
 
     Ok(Some(StudioRunnerProcessSnapshot {
         pid,
         endpoint: endpoint.to_string(),
         repo_path: recovered_repo_path,
+        recovered: true,
     }))
+}
+
+fn runner_status_ownership(
+    snapshot: Option<&StudioRunnerProcessSnapshot>,
+    endpoint: &str,
+    reachable: bool,
+) -> Result<String, BridgeError> {
+    if let Some(process) =
+        snapshot.filter(|process| endpoint.is_empty() || process.endpoint == endpoint)
+    {
+        return Ok(if process.recovered {
+            "recovered"
+        } else {
+            "managed"
+        }
+        .to_string());
+    }
+
+    if endpoint.is_empty() {
+        return Ok("offline".to_string());
+    }
+
+    let port = runner_endpoint_port(endpoint)?;
+    if runner_listener_pid(port).is_some() {
+        return Ok(if reachable { "custom" } else { "occupied" }.to_string());
+    }
+
+    Ok("offline".to_string())
+}
+
+fn runner_status_is_studio_owned(ownership: &str) -> bool {
+    matches!(ownership, "managed" | "recovered")
+}
+
+fn runner_status_can_stop(ownership: &str) -> bool {
+    runner_status_is_studio_owned(ownership)
+}
+
+fn runner_status_can_restart(ownership: &str) -> bool {
+    runner_status_is_studio_owned(ownership)
 }
 
 fn terminate_matching_runner_listener(
@@ -1215,11 +1277,13 @@ fn read_bounded_runner_response(
 }
 
 fn extract_run_id(body: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(body).ok().and_then(|value| {
-        value
-            .get("run_id")
-            .or_else(|| value.get("runId"))
-            .and_then(|run_id| run_id.as_str())
-            .map(ToString::to_string)
-    })
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("run_id")
+                .or_else(|| value.get("runId"))
+                .and_then(|run_id| run_id.as_str())
+                .map(ToString::to_string)
+        })
 }

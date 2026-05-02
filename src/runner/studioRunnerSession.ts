@@ -4,6 +4,7 @@ import {
   deriveRunnerDispatchEligibility,
   type OpenSpecOperationIssue,
   type RunnerDispatchAttempt,
+  type RunnerOwnershipState,
   type RunnerDispatchRequestInput,
   type RunnerSettings,
   type RunnerStatus,
@@ -13,6 +14,7 @@ import type { ValidationResult } from "../validation/results";
 import {
   createRunnerDispatchAttempt,
   createRunnerLifecycleLogEvent,
+  type RunnerStaleEvidence,
   type RunnerStreamEventInput,
 } from "./studioRunnerLog";
 
@@ -44,6 +46,13 @@ export interface RunnerStatusDto {
   responseBody?: string | null;
   managed?: boolean;
   pid?: number | null;
+  ownership?: RunnerOwnershipState | null;
+  listener_ownership?: RunnerOwnershipState | null;
+  listenerOwnership?: RunnerOwnershipState | null;
+  can_stop?: boolean | null;
+  canStop?: boolean | null;
+  can_restart?: boolean | null;
+  canRestart?: boolean | null;
 }
 
 export interface RunnerLifecycleResponseDto {
@@ -177,6 +186,8 @@ export interface StudioRunnerSessionDependencies {
   updateSettings: (settings: RunnerSettings) => void;
   getStatus: () => RunnerStatus;
   setStatus: (status: RunnerStatus) => void;
+  getStreamStatus: () => RunnerStreamStatus;
+  getCurrentRepoPath: () => string | null;
   isSessionSecretConfigured: () => boolean;
   setSessionSecretConfigured: (configured: boolean) => void;
   setDispatchBusy: (busy: boolean) => void;
@@ -192,6 +203,7 @@ export interface StudioRunnerSessionDependencies {
   rememberRunnerAttempt: (attempt: RunnerDispatchAttempt) => void;
   replaceRunnerAttempt: (eventId: string, attempt: RunnerDispatchAttempt) => void;
   mergeRunnerStreamEvent: (event: RunnerStreamEventInput) => void;
+  reconcileRunnerAttempts: (evidence: RunnerStaleEvidence) => void;
   recordOperationIssue: (issue: OpenSpecOperationIssue) => void;
   clearRunnerDispatchIssues: (repoPath: string, changeName: string) => void;
   errorMessage: (error: unknown) => string;
@@ -335,6 +347,7 @@ export class StudioRunnerSession {
           message: dto.message,
           status: "unknown",
         }));
+        this.reconcileStaleRuns(repo.path, "runner-stopped", "Run marked stale after runner stopped.");
       }
       this.setStatus(unknownRunnerStatus);
     } catch (error) {
@@ -391,6 +404,7 @@ export class StudioRunnerSession {
       }
       const nextStatus = runnerStatusFromDto(dto, this.dependencies.getStatus());
       this.setStatus(nextStatus);
+      this.reconcileAfterStatus(nextStatus);
       if (!options.quiet) {
         this.dependencies.setMessage(nextStatus.detail);
       }
@@ -506,6 +520,7 @@ export class StudioRunnerSession {
         source: "dispatch",
         rowKind: "run",
         eventName: "build.requested",
+        endpoint: this.dependencies.getSettings().endpoint,
       });
       this.dependencies.setMessage("Sending signed build.requested to Studio Runner...");
 
@@ -532,6 +547,7 @@ export class StudioRunnerSession {
         rowKind: "run",
         eventName: response.accepted ? "runner.accepted" : "runner.dispatch.failed",
         executionStatus: response.accepted ? "accepted" : "failed",
+        endpoint: this.dependencies.getSettings().endpoint,
       });
       this.dependencies.clearRunnerDispatchIssues(repoPath, changeName);
       this.dependencies.setMessage(
@@ -552,6 +568,7 @@ export class StudioRunnerSession {
           rowKind: "run",
           eventName: "runner.dispatch.failed",
           executionStatus: "failed",
+          endpoint: this.dependencies.getSettings().endpoint,
         });
       }
       this.dependencies.recordOperationIssue(
@@ -654,6 +671,32 @@ export class StudioRunnerSession {
   private setStatus(status: RunnerStatus) {
     this.dependencies.setStatus(status);
   }
+
+  private reconcileAfterStatus(status: RunnerStatus): void {
+    const repoPath = this.dependencies.getCurrentRepoPath();
+    if (!repoPath || this.dependencies.getStreamStatus() === "connected") {
+      return;
+    }
+    if (
+      status.state === "offline" &&
+      status.ownership === "offline"
+    ) {
+      this.reconcileStaleRuns(repoPath, "runner-offline", "Run marked stale after runner went offline.");
+    }
+  }
+
+  private reconcileStaleRuns(
+    repoPath: string,
+    reason: RunnerStaleEvidence["reason"],
+    message: string,
+  ): void {
+    this.dependencies.reconcileRunnerAttempts({
+      repoPath,
+      endpoint: this.dependencies.getSettings().endpoint,
+      reason,
+      message,
+    });
+  }
 }
 
 export function runnerStreamEventFromDto(dto: RunnerStreamEventDto): RunnerStreamEventInput {
@@ -696,9 +739,14 @@ export function runnerStreamEventFromDto(dto: RunnerStreamEventDto): RunnerStrea
 
 export function runnerStatusFromDto(dto: RunnerStatusDto, previousStatus?: RunnerStatus): RunnerStatus {
   const endpoint = dto.endpoint ?? dto.runnerEndpoint ?? dto.runner_endpoint ?? previousStatus?.endpoint;
+  const runnerEndpoint = dto.runnerEndpoint ?? dto.runner_endpoint ?? null;
+  const runnerRepoPath = dto.runnerRepoPath ?? dto.runner_repo_path ?? null;
   const statusCode = dto.status_code ?? dto.statusCode ?? null;
   const managed = Boolean(dto.managed);
   const pid = dto.pid ?? null;
+  const ownership = normalizeRunnerOwnership(dto.ownership ?? dto.listenerOwnership ?? dto.listener_ownership, managed, dto.reachable);
+  const canStop = Boolean(dto.canStop ?? dto.can_stop ?? (managed && ownership !== "custom" && ownership !== "occupied"));
+  const canRestart = Boolean(dto.canRestart ?? dto.can_restart ?? (managed && ownership !== "custom" && ownership !== "occupied"));
 
   if (!dto.configured) {
     if (previousStatus?.managed && endpoint && previousStatus.endpoint === endpoint) {
@@ -707,32 +755,80 @@ export function runnerStatusFromDto(dto: RunnerStatusDto, previousStatus?: Runne
         endpoint,
         managed: previousStatus.managed,
         pid: previousStatus.pid ?? null,
+        ownership: previousStatus.ownership ?? "managed",
+        runnerEndpoint: previousStatus.runnerEndpoint ?? runnerEndpoint,
+        runnerRepoPath: previousStatus.runnerRepoPath ?? runnerRepoPath,
+        canStop: previousStatus.canStop ?? canStop,
+        canRestart: previousStatus.canRestart ?? canRestart,
       };
     }
-    return { ...unknownRunnerStatus, endpoint };
+    return { ...unknownRunnerStatus, endpoint, ownership: "offline", runnerEndpoint, runnerRepoPath, canStop: false, canRestart: false };
   }
 
   if (dto.reachable) {
     return {
       state: "online",
-      label: "Runner online",
+      label: runnerStatusOwnershipLabel(ownership, true),
       detail: dto.message || "Studio Runner responded to health check.",
       statusCode,
       endpoint,
+      runnerEndpoint,
+      runnerRepoPath,
       managed,
       pid,
+      ownership,
+      canStop,
+      canRestart,
     };
   }
 
   return {
     state: "offline",
-    label: "Runner offline",
+    label: runnerStatusOwnershipLabel(ownership, false),
     detail: dto.message || "Studio Runner did not respond successfully.",
     statusCode,
     endpoint,
+    runnerEndpoint,
+    runnerRepoPath,
     managed,
     pid,
+    ownership,
+    canStop,
+    canRestart,
   };
+}
+
+function normalizeRunnerOwnership(
+  value: RunnerOwnershipState | string | null | undefined,
+  managed: boolean,
+  reachable: boolean,
+): RunnerOwnershipState {
+  if (value === "offline" || value === "managed" || value === "recovered" || value === "custom" || value === "occupied") {
+    return value;
+  }
+  if (managed) {
+    return "managed";
+  }
+  if (reachable) {
+    return "custom";
+  }
+  return "offline";
+}
+
+function runnerStatusOwnershipLabel(ownership: RunnerOwnershipState, reachable: boolean): string {
+  if (ownership === "recovered") {
+    return "Recovered local runner";
+  }
+  if (ownership === "custom") {
+    return "Custom runner reachable";
+  }
+  if (ownership === "occupied") {
+    return "Port occupied";
+  }
+  if (ownership === "managed" && reachable) {
+    return "Runner online";
+  }
+  return reachable ? "Runner online" : "Runner offline";
 }
 
 export function runnerRepoPath(): string {
