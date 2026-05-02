@@ -34,9 +34,33 @@ Out of scope:
 - graph, timeline, guided workflow, or future adapter controls before those features exist;
 - editing OpenSpec project files from Settings.
 
+## Product Research Notes
+
+The selected direction follows common settings patterns from desktop and application guidelines:
+
+- Microsoft app settings guidance recommends placing Settings at the bottom of a navigation pane, keeping settings simple, grouping related settings, using immediate application for setting changes, and avoiding commands that belong in the common workflow: https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings
+- Material Design settings guidance describes settings as infrequently accessed user preferences, recommends placing Settings below other navigation items, prioritizing important settings, and keeping labels brief and status-oriented: https://m1.material.io/patterns/settings.html
+- WAI-ARIA switch guidance treats switches as binary on/off controls with stable labels, keyboard interaction, and explicit checked state semantics: https://www.w3.org/WAI/ARIA/apg/patterns/switch/
+
+Product implications for Studio:
+
+- Settings belongs at the bottom of the repository rail, not among repository-specific board controls.
+- Settings should be compact and scoped; the page should not become a future-feature inventory.
+- Binary preferences such as auto-restore and auto-refresh should apply immediately and expose stable accessible labels.
+- Operational commands that are part of the Runner workflow should remain on the Runner surface, while durable execution defaults can live in Settings.
+
+## Selected Product Decisions
+
+- Use a single scrollable Settings page in the main workbench area, grouped by scope.
+- Use inline two-step confirmation for destructive local-data actions: the first click arms the row, then the user chooses `Confirm` or `Cancel`.
+- Keep current in-memory repository selection stable when resetting persisted current-repository continuity; the reset affects future restoration/reload behavior.
+- Split Studio Runner configuration into operational connection settings and durable execution defaults. The existing endpoint setting remains in the Runner workspace. Settings owns model and effort defaults for future Studio-managed dispatches.
+
 ## Navigation Model
 
 Use a dedicated Settings surface rather than hiding controls inside unrelated boards. The shell should expose a single Settings entry pinned to the bottom of the left panel, separated from repository picking and recent repository content. Opening Settings should replace the main workbench content area while preserving the active repository/workspace in memory and letting users return without losing selection or filter state.
+
+The first implementation should be a single scrollable page, not nested settings navigation. If the page later grows beyond the scoped groups in this change, a settings sub-navigation can be reconsidered as a follow-up.
 
 The Settings surface should distinguish scopes clearly:
 
@@ -48,9 +72,45 @@ The Settings surface should distinguish scopes clearly:
 
 When no repository is active, current-repository controls should be unavailable or omitted, while app-wide and all-repo data controls remain available.
 
+## UX States And Interaction Model
+
+Default state:
+
+- Show the Settings title, scoped groups, current values, and immediate controls.
+- Toggle changes apply immediately and do not require a Save button.
+- Select controls show `Default` when Studio should defer to Symphony/Codex configured defaults.
+
+No active repository:
+
+- App-wide controls, recent repository management, all-repository validation cache clearing, and Runner execution defaults remain available.
+- Current-repository continuity reset and current-repository validation cache clearing are disabled or omitted with concise inactive-state copy.
+
+Destructive local-data actions:
+
+- `Clear recent repositories`, `Reset current repository continuity`, `Clear current validation cache`, and `Clear all validation caches` use inline confirmation.
+- First activation changes that action row into a confirmation state with `Confirm` and `Cancel`.
+- Confirming performs the action, then returns the row to its default state with success feedback in the settings surface or status band.
+- Canceling returns the row to its default state without mutation.
+
+Success state:
+
+- Preference changes reflect immediately in the visible control value.
+- Data-clearing actions show concise success copy that names the app-local data cleared.
+
+Error or partial failure state:
+
+- If persistence save fails, the UI should surface a recoverable error and avoid implying the change is durable.
+- If an all-repository clearing action partially fails, report that app-local clearing could not be completed and leave repository files untouched.
+
+Accessibility:
+
+- Binary controls should use native checkbox inputs or `role="switch"` with stable labels and `aria-checked`.
+- Confirmation controls must be keyboard reachable and keep focus in the affected action row.
+- Destructive action labels should name the object being cleared rather than relying on color alone.
+
 ## Persistence Model
 
-Keep the existing Tauri Store-backed JSON state. Extend it conservatively for behavior toggles:
+Keep the existing Tauri Store-backed JSON state. Extend it conservatively for behavior toggles and Runner execution defaults without overloading the existing endpoint setting:
 
 ```ts
 type PersistedGlobalPreferences = {
@@ -58,8 +118,15 @@ type PersistedGlobalPreferences = {
   theme?: "system" | "light" | "dark"
   autoRestoreLastRepo?: boolean
   autoRefreshRepository?: boolean
+}
+
+type PersistedRunnerExecutionDefaults = {
   runnerModel?: "default" | string
   runnerEffort?: "default" | "low" | "medium" | "high"
+}
+
+type RunnerSettings = {
+  endpoint: string
 }
 ```
 
@@ -68,7 +135,8 @@ Defaults should preserve current behavior:
 - `autoRestoreLastRepo` defaults to `true`;
 - `autoRefreshRepository` defaults to `true`;
 - absent `theme` and `density` keep the current visual default;
-- absent or `default` Runner model/effort values preserve Symphony/Codex configured defaults.
+- absent or `default` Runner model/effort values preserve Symphony/Codex configured defaults;
+- existing `runnerSettings.endpoint` remains operational connection configuration owned by the Runner workspace, not the Settings page.
 
 Add focused persistence helpers instead of mutating the state shape ad hoc from React:
 
@@ -125,7 +193,9 @@ Studio Runner defaults:
 
 - show a Settings integration section for global Studio Runner defaults once Runner behavior is available;
 - initial controls are Model and Effort, with default values that mean “use Symphony/Codex configured default”;
-- changed defaults apply only to future Studio-managed dispatches;
+- Effort should offer `Default`, `Low`, `Medium`, and `High`;
+- Model should offer `Default` and a custom model id entry, not a curated model list, until Studio can discover supported model aliases reliably;
+- changed defaults apply only to future Studio-managed dispatches, and this change should extend Studio-managed dispatch requests with optional model and effort defaults;
 - historical Runner Log rows remain immutable;
 - the Runner workspace may show a compact summary/link to Settings, but Settings is the source of truth for durable defaults;
 - endpoint, session secret, start/stop/status, stream status, and dispatch history stay in the Runner workspace/inspector because they are operational state or connection configuration, not part of this first Settings pass.
@@ -142,3 +212,11 @@ Studio Runner defaults:
 - Clearing data accidentally disrupting active inspection: keep destructive data actions explicit and scoped.
 - Privacy expectations: clearly distinguish local app cache from OpenSpec project files and avoid implying that clearing cache removes repository content.
 - Dead appearance controls: hide visual preferences unless the app applies them.
+
+## Alternatives Considered
+
+- Modal confirmations for local-data clearing: rejected for v1 because inline confirmation keeps destructive actions explicit without interrupting the settings review flow.
+- Immediate destructive actions with undo: rejected because it requires extra temporary state and recovery semantics for a local-data management surface.
+- Nested Settings navigation: rejected until Settings grows beyond the scoped groups in this change.
+- Curated Runner model aliases: rejected for v1 because aliases can age quickly and Studio does not yet have model discovery from Symphony/Codex.
+- Putting endpoint editing in Settings: rejected because endpoint, session secret, lifecycle, status, stream, and dispatch history are operational Runner workflow controls.

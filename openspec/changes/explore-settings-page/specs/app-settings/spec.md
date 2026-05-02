@@ -27,10 +27,35 @@ The settings surface SHALL make app-wide controls, repository-history controls, 
 - **AND** Settings SHALL replace the main workbench content area rather than opening in the selected-change or selected-spec inspector
 - **AND** returning to the workbench preserves the current board, selection, filters, and inspector state unless the user chose a reset action.
 
+#### Scenario: Settings uses one page for the first implementation
+- **WHEN** Settings is open
+- **THEN** the app SHALL render app, repository, current-repository, validation/diagnostics, and implemented integration settings on one scrollable settings page
+- **AND** the app SHALL NOT require nested settings navigation for the first implementation.
+
 #### Scenario: Settings opens without a repository
 - **WHEN** no repository is active
 - **THEN** app-wide and all-repository data controls remain available
 - **AND** current-repository controls are hidden or disabled with clear inactive state.
+
+### Requirement: Destructive local data actions require inline confirmation
+The settings surface SHALL require inline confirmation before clearing app-local data or resetting app-local continuity state.
+
+#### Scenario: User starts a destructive settings action
+- **WHEN** the user activates a destructive local-data action
+- **THEN** the affected action row SHALL enter a confirmation state with Confirm and Cancel actions
+- **AND** the app SHALL NOT perform the mutation until the user confirms.
+
+#### Scenario: User cancels a destructive settings action
+- **WHEN** a destructive settings action is awaiting confirmation
+- **AND** the user cancels it
+- **THEN** the affected action row SHALL return to its default state
+- **AND** the app SHALL leave persisted state unchanged.
+
+#### Scenario: User confirms a destructive settings action
+- **WHEN** a destructive settings action is awaiting confirmation
+- **AND** the user confirms it
+- **THEN** the app SHALL perform only the scoped app-local mutation
+- **AND** the app SHALL show concise success or failure feedback.
 
 ### Requirement: Launch restore is user-controllable
 The application SHALL allow users to control whether Studio automatically reopens the last successful repository on launch.
@@ -76,6 +101,7 @@ The settings surface SHALL allow users to reset app-local UI continuity for the 
 #### Scenario: User resets current repository UI state
 - **WHEN** a repository is active and the user resets its UI continuity state
 - **THEN** Studio SHALL clear persisted selected change, selected spec, change table sort, and spec table sort for that repository
+- **AND** Studio SHALL keep the current in-memory workspace selection stable until the user reloads, switches repository, or navigates explicitly
 - **AND** Studio SHALL continue deriving the repository workbench from current OpenSpec files.
 
 ### Requirement: Validation and diagnostic cache is manageable
@@ -105,6 +131,9 @@ The settings surface SHALL expose durable global defaults for implemented Studio
 - **WHEN** the user opens Settings
 - **THEN** Settings SHALL include a Studio Runner integration section for global Runner defaults
 - **AND** the section SHALL allow users to choose default model and effort values for future Studio-managed runner work
+- **AND** effort choices SHALL include Default, Low, Medium, and High
+- **AND** model choices SHALL include Default and an optional custom model id entry
+- **AND** Settings SHALL NOT ship a curated model alias list until Studio can discover supported model aliases reliably
 - **AND** the section SHALL NOT include the Runner endpoint editor in the first implementation
 - **AND** default selections SHALL preserve Symphony/Codex configured defaults rather than forcing explicit values.
 
@@ -113,6 +142,12 @@ The settings surface SHALL expose durable global defaults for implemented Studio
 - **WHEN** Studio Runner work is dispatched later
 - **THEN** Studio SHALL apply the changed defaults only to future dispatches
 - **AND** already-running dispatches and historical Runner Log rows SHALL remain immutable records of the settings requested or applied at launch time.
+
+#### Scenario: Runner defaults are sent with future Studio dispatches
+- **GIVEN** the user has configured Runner model or effort defaults
+- **WHEN** Studio dispatches future Runner work
+- **THEN** the Studio-managed dispatch request SHALL include the selected non-default model or effort values
+- **AND** default values SHALL omit or encode defaults so the Runner can use its configured defaults.
 
 #### Scenario: Operational Runner state stays out of Settings
 - **WHEN** the user opens Settings

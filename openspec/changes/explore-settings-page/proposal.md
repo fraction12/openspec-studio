@@ -46,7 +46,11 @@ The settings change should give users control over those existing behaviors with
 - Clearing validation snapshots should support both current repository and all repositories.
 - Theme/density controls stay hidden in the first implementation unless the shell applies them immediately.
 - Runner endpoint stays on the Runner page for now.
+- Runner execution defaults are real v1 settings: Settings should expose effort defaults as `Default`, `Low`, `Medium`, and `High`, and model defaults as `Default` plus an optional custom model id instead of a curated model list.
+- Destructive local-data actions should use inline two-step confirmation on the affected row instead of modal dialogs or undo stacks.
+- Settings should ship as a single scrollable page grouped by scope, not as nested settings navigation.
+- Resetting current-repository continuity should clear persisted selection and sort state while keeping the current in-memory workspace stable until reload or explicit navigation.
 
 ## Open Questions
 
-- Which curated model aliases should ship as the initial global Runner default options before Studio can discover them from Symphony/Codex?
+- None for this pass. Curated model discovery can be revisited when Studio Runner or Codex exposes a reliable model catalog.
