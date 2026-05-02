@@ -41,8 +41,8 @@ async function main() {
   const { indexOpenSpecWorkspace, close } = await loadProductionIndexer();
 
   let indexed;
-  let productionIndexMs = 0;
-  let derivedModelMs = 0;
+  let productionIndexMs;
+  let derivedModelMs;
   let derivedCounts;
 
   try {
@@ -91,7 +91,7 @@ async function validateDirectory(path, label) {
   let metadata;
   try {
     metadata = await stat(path);
-  } catch (error) {
+  } catch {
     throw new Error(label + " does not exist: " + path);
   }
 

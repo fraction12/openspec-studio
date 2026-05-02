@@ -194,7 +194,7 @@ export class ProviderSession<TWorkspace extends ProviderWorkspaceLike> {
     const requestId = ++this.validationGeneration;
     let validation: ValidationResult | null = null;
     let archivedCount = 0;
-    let latestWorkspace: TWorkspace | null = null;
+    let latestWorkspace: TWorkspace | null;
     let lastArchivedChangeId: string | null = null;
 
     try {
