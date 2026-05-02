@@ -450,8 +450,9 @@ button:disabled {
   line-height: var(--line-height-sm);
 }
 
-.settings-main {
+.workspace-main.settings-main {
   grid-column: 2 / -1;
+  grid-row: 1;
   border-right: 0;
   background: var(--color-surface);
 }

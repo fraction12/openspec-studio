@@ -1301,32 +1301,34 @@ function App() {
         />
       )}
 
-      <Inspector
-        repo={repo}
-        workspace={workspace}
-        view={view}
-        selectedChange={selectedChange}
-        selectedSpec={selectedSpec}
-        runnerStatus={runnerStatus}
-        runnerDispatchEligibility={selectedChangeRunnerEligibility}
-        runnerSettings={runnerSettings}
-        runnerSessionSecretConfigured={runnerSessionSecretConfigured}
-        runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
-        selectedChangeBuilding={selectedChangeBuilding}
-        runnerStreamStatus={runnerStreamStatus}
-        artifactDetailModel={selectedChangeDetailModel}
-        onDetailTabChange={setDetailTab}
-        onOpenArtifact={(artifact) => void openArtifact(artifact)}
-        onValidate={() => void runValidation()}
-        onRunnerSettingsChange={updateRunnerSettings}
-        onConfigureRunnerSessionSecret={() => void getRunnerSession().configureSessionSecret(repo)}
-        onClearRunnerSessionSecret={() => void getRunnerSession().clearSessionSecret()}
-        onCheckRunnerStatus={() => void getRunnerSession().checkStatus()}
-        onStartRunner={() => void getRunnerSession().startRunner(repo)}
-        onStopRunner={() => void getRunnerSession().stopRunner(repo)}
-        onReconnectRunnerStream={() => void getRunnerSession().startStream(repo)}
-        onDispatchRunner={() => void getRunnerSession().dispatchSelectedChange({ repo, selectedChange })}
-      />
+      {mainSurface === "workbench" ? (
+        <Inspector
+          repo={repo}
+          workspace={workspace}
+          view={view}
+          selectedChange={selectedChange}
+          selectedSpec={selectedSpec}
+          runnerStatus={runnerStatus}
+          runnerDispatchEligibility={selectedChangeRunnerEligibility}
+          runnerSettings={runnerSettings}
+          runnerSessionSecretConfigured={runnerSessionSecretConfigured}
+          runnerDispatchBusy={runnerDispatchBusy || runnerLifecycleBusy}
+          selectedChangeBuilding={selectedChangeBuilding}
+          runnerStreamStatus={runnerStreamStatus}
+          artifactDetailModel={selectedChangeDetailModel}
+          onDetailTabChange={setDetailTab}
+          onOpenArtifact={(artifact) => void openArtifact(artifact)}
+          onValidate={() => void runValidation()}
+          onRunnerSettingsChange={updateRunnerSettings}
+          onConfigureRunnerSessionSecret={() => void getRunnerSession().configureSessionSecret(repo)}
+          onClearRunnerSessionSecret={() => void getRunnerSession().clearSessionSecret()}
+          onCheckRunnerStatus={() => void getRunnerSession().checkStatus()}
+          onStartRunner={() => void getRunnerSession().startRunner(repo)}
+          onStopRunner={() => void getRunnerSession().stopRunner(repo)}
+          onReconnectRunnerStream={() => void getRunnerSession().startStream(repo)}
+          onDispatchRunner={() => void getRunnerSession().dispatchSelectedChange({ repo, selectedChange })}
+        />
+      ) : null}
 
       <StatusBand
         repo={repo}
