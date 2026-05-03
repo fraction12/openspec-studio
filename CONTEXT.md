@@ -38,5 +38,8 @@ The Module that owns reusable board table policy such as default sort, next sort
 ### Artifact Detail View-Model
 The selected-change detail projection consumed by the inspector. It derives tab-specific artifact, task, archive, validation, status, issue, and empty-state data from Workspace View-Model records without owning React rendering.
 
+### Markdown Preview Model
+The Module that owns lightweight Markdown preview parsing and bounded parse-result caching for artifact previews. It keeps Markdown block derivation testable outside the React app shell while leaving rendering in the inspector UI.
+
 ### Studio Runner Log Module
 The Module that owns Runner Log history policy for RunnerDispatchAttempt records, including attempt creation, stream merging, lifecycle/status log events, replacement/upsert/capping, persistence normalization, filtering, row identity, and display labels.
