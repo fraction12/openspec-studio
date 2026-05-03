@@ -57,6 +57,11 @@ import {
   type ArtifactDetail,
   type ArtifactDetailViewModel,
 } from "./domain/artifactDetailViewModel";
+import {
+  deriveArchiveOperationErrorTransition,
+  deriveArchiveOperationTransition,
+  type ArchiveOperationTransition,
+} from "./domain/archiveOperationFlow";
 import { parseMarkdownPreviewBlocksCached } from "./domain/markdownPreviewModel";
 import {
   deriveBrowserPreviewRepositoryTransition,
@@ -901,52 +906,12 @@ function App() {
 
     try {
       const result = await getProviderSession().archiveChanges(repoPath, [changeName], workspaceRef.current, repoRef.current?.path);
-      if (result.kind === "stale") {
-        return;
-      }
-
-      if (result.kind === "unsupported") {
-        setLoadState("loaded");
-        setMessage(result.message);
-        return;
-      }
-
-      if (result.kind === "validation-blocked") {
-        workspaceRef.current = result.workspace;
-        setWorkspace(result.workspace);
-        rememberValidationSnapshot(repoPath, result.validation);
-        setLoadState("loaded");
-        setMessage(result.message);
-        return;
-      }
-
-      if (result.kind === "partial") {
-        if (result.workspace) {
-          workspaceRef.current = result.workspace;
-          setWorkspace(result.workspace);
-        }
-        if (result.validation) {
-          rememberValidationSnapshot(repoPath, result.validation);
-        }
-        setPhase("archived");
-        setLoadState("loaded");
-        setMessage(
-          "Archived " + result.archivedCount + " of " + result.requestedCount + " changes before failure: " + result.message,
-        );
-        return;
-      }
-
-      workspaceRef.current = result.workspace;
-      setWorkspace(result.workspace);
-      rememberValidationSnapshot(repoPath, result.validation);
-      setPhase("archived");
-      setSelectedChangeId(result.lastArchivedChangeId ?? "");
-      setDetailTab("archive-info");
-      setMessage("Archived " + changeName + ".");
-      setLoadState("loaded");
+      applyArchiveOperationTransition(
+        deriveArchiveOperationTransition(result, { kind: "single", changeName }),
+        repoPath,
+      );
     } catch (error) {
-      setLoadState("loaded");
-      setMessage(errorMessage(error));
+      applyArchiveOperationTransition(deriveArchiveOperationErrorTransition(errorMessage(error)), repoPath);
     } finally {
       archiveInFlightRef.current = false;
       setArchiveBusy(false);
@@ -989,58 +954,37 @@ function App() {
 
     try {
       const result = await getProviderSession().archiveChanges(repoPath, uniqueChangeNames, workspaceRef.current, repoRef.current?.path);
-      if (result.kind === "stale") {
-        return;
-      }
-
-      if (result.kind === "unsupported") {
-        setLoadState("loaded");
-        setMessage(result.message);
-        return;
-      }
-
-      if (result.kind === "validation-blocked") {
-        workspaceRef.current = result.workspace;
-        setWorkspace(result.workspace);
-        rememberValidationSnapshot(repoPath, result.validation);
-        setLoadState("loaded");
-        setMessage(result.message);
-        return;
-      }
-
-      if (result.kind === "partial") {
-        if (result.workspace) {
-          workspaceRef.current = result.workspace;
-          setWorkspace(result.workspace);
-        }
-        if (result.validation) {
-          rememberValidationSnapshot(repoPath, result.validation);
-        }
-        setPhase("archived");
-        setLoadState("loaded");
-        setMessage(
-          "Archived " +
-            result.archivedCount +
-            " of " +
-            result.requestedCount +
-            " changes before failure: " +
-            result.message,
-        );
-        return;
-      }
-
-      workspaceRef.current = result.workspace;
-      setWorkspace(result.workspace);
-      rememberValidationSnapshot(repoPath, result.validation);
-      setPhase("archived");
-      setMessage("Archived " + uniqueChangeNames.length + " changes.");
-      setLoadState("loaded");
+      applyArchiveOperationTransition(deriveArchiveOperationTransition(result, { kind: "batch" }), repoPath);
     } catch (error) {
-      setMessage(errorMessage(error));
-      setLoadState("loaded");
+      applyArchiveOperationTransition(deriveArchiveOperationErrorTransition(errorMessage(error)), repoPath);
     } finally {
       archiveInFlightRef.current = false;
       setArchiveBusy(false);
+    }
+  }
+
+  function applyArchiveOperationTransition(transition: ArchiveOperationTransition, repoPath: string) {
+    if (transition.kind === "stale") {
+      return;
+    }
+
+    for (const effect of transition.effects) {
+      if (effect.kind === "replace-workspace") {
+        workspaceRef.current = effect.workspace;
+        setWorkspace(effect.workspace);
+      } else if (effect.kind === "remember-validation") {
+        rememberValidationSnapshot(repoPath, effect.validation);
+      } else if (effect.kind === "set-phase") {
+        setPhase(effect.phase);
+      } else if (effect.kind === "select-change") {
+        setSelectedChangeId(effect.changeId);
+      } else if (effect.kind === "set-detail-tab") {
+        setDetailTab(effect.tab);
+      } else if (effect.kind === "set-load-state") {
+        setLoadState(effect.loadState);
+      } else {
+        setMessage(effect.message);
+      }
     }
   }
 

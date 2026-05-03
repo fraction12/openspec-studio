@@ -1,6 +1,6 @@
 # studio-runner-session Specification Delta
 
-## MODIFIED Requirements
+## ADDED Requirements
 ### Requirement: Runner session state
 Studio SHALL normalize local Studio Runner lifecycle, dispatch, event stream, setup, and run metadata into a bounded session model.
 

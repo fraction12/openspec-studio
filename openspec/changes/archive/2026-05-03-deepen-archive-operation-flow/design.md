@@ -1,6 +1,6 @@
 ## Overview
 
-This is an architecture recommendation for a future implementation pass, not a code change for the current refactor. The goal is to create an Archive Operation Flow Module that converts provider archive results into pure app-shell transition intents. `ProviderSession` would keep owning archive IO and postcondition checks; `App.tsx` would keep performing effects such as persistence writes and state updates.
+The goal is to create an Archive Operation Flow Module that converts provider archive results into ordered app-shell transition effects. `ProviderSession` keeps owning archive IO and postcondition checks; `App.tsx` keeps performing effects such as persistence writes and state updates.
 
 ## Observed Architectural Friction
 
@@ -8,7 +8,7 @@ This is an architecture recommendation for a future implementation pass, not a c
 
 ## Proposed Direction
 
-Add `src/domain/archiveOperationFlow.ts` with a small pure interface that accepts provider archive result data plus current workspace/navigation context and returns an archive transition intent. The app shell should apply the intent while keeping side effects local to the shell.
+Add `src/domain/archiveOperationFlow.ts` with a small pure interface that accepts provider archive result data plus archive mode context and returns an ordered archive transition effect plan. The app shell applies the effects while keeping side effects local to the shell. Ordered effects are intentional: validation snapshots must be persisted after workspace replacement so persistence sees the updated workspace fingerprint.
 
 Sketch:
 
@@ -16,15 +16,15 @@ Sketch:
 ProviderSession archive operation
   -> ProviderSessionArchiveResult
   -> Archive Operation Flow Module
-  -> ArchiveOperationTransition intent
-  -> App.tsx applies state/persistence/message effects
+  -> ArchiveOperationTransition ordered effects
+  -> App.tsx applies state/persistence/message effects in order
 ```
 
 ## Deepening Rationale
 
 - **Module**: Archive Operation Flow Module.
-- **Interface**: provider archive result plus current app context in, transition intent out.
-- **Implementation**: result branching, partial-result interpretation, message selection, issue intent derivation, workspace update intent, and selection retention rules.
+- **Interface**: provider archive result plus archive mode in, ordered transition effects out.
+- **Implementation**: result branching, aggregate partial-result interpretation, message selection, workspace update ordering, validation persistence ordering, and selection retention rules.
 - **Depth**: callers learn one transition interface instead of every archive result branch.
 - **Seam**: `src/domain/archiveOperationFlow.ts`.
 - **Adapter**: none for the first pass; provider archive results already vary through the existing Spec Provider seam.
@@ -36,15 +36,14 @@ Deletion test: deleting the module would push the same archive-result policy bac
 ## Risks
 
 - Archive is a mutating workflow, so this should not be mixed with unrelated archive/spec reconciliation work.
-- Partial archive handling is user-visible and needs fixture coverage before shell rewiring.
+- Partial archive handling is user-visible and remains aggregate-only because provider results do not expose per-change partial detail today.
 - Validation snapshot persistence and selected-change retention are easy to subtly change if the transition intent is too broad or too effectful.
 - The module should avoid owning provider IO; otherwise it would weaken the existing Provider Session seam.
 
 ## Open Decisions
 
-- Whether this module should live in `src/domain/archiveOperationFlow.ts` or be folded into `src/domain/repositoryOpeningFlow.ts`.
-- The exact transition intent shape for batch partial archive results.
-- Whether current archive copy should be frozen verbatim in tests before extraction or only asserted by behavior category.
+- Whether future provider archive results should include structured partial detail such as archived change IDs or failed change name.
+- Whether current archive copy should be frozen verbatim in broader App-level tests or kept at the module interface.
 
 ## Validation Plan
 

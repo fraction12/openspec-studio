@@ -4,10 +4,10 @@ Archive result handling has deep provider-side behavior, but the app shell still
 
 ## What Changes
 
-- Introduce a future Archive Operation Flow Module that derives UI transitions from provider archive results without owning provider IO.
+- Introduce an Archive Operation Flow Module that derives ordered UI transition effects from provider archive results without owning provider IO.
 - Move duplicated archive-result branching out of `App.tsx` while preserving the current archive workflow and provider contracts.
 - Add focused tests at the archive transition interface before rewiring the React shell.
-- Do not implement this in the current architecture pass; this change records the recommendation for human review because it touches archive workflows and should be sequenced carefully around existing OpenSpec archive work.
+- Keep partial archive behavior aggregate-only unless provider archive results are extended in a separate reviewed change.
 
 ## Capabilities
 
