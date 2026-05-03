@@ -23,6 +23,7 @@ You also need Rust/Cargo, Tauri platform prerequisites, and the OpenSpec CLI on 
 Run the focused checks for your change, and prefer the full set before opening a PR:
 
 ```bash
+npm run lint
 npm test
 npm run check
 npm run build
@@ -30,6 +31,8 @@ cd src-tauri && cargo check
 cd src-tauri && cargo test
 openspec validate --all
 ```
+
+`npm run lint` enforces hard Module Seam import restrictions for the named source Modules in `CONTEXT.md`. It also reports `complexity` warnings above 16 and `max-depth` warnings above 4. Those warnings are accepted as non-blocking architecture follow-up for existing code: review whether a deeper Module would improve locality and leverage, but do not split code solely to satisfy the metric.
 
 ## Pull Requests
 
