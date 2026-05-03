@@ -16,35 +16,33 @@ const reactUiRestriction = {
   message: "React UI imports belong in app shell or rendering modules, not behind this Module Seam.",
 };
 
+const relativeImportPrefix = "(?:\\./|(?:\\.\\./)+)";
+
+const relativeModuleRegex = (moduleNames) => `${relativeImportPrefix}(?:${moduleNames.join("|")})(?:\\..*)?$`;
+
+const relativePathRegex = (pathNames) => `${relativeImportPrefix}(?:${pathNames.join("|")})(?:/.*|\\..*)?$`;
+
 const appShellRestriction = {
-  group: ["../App", "../App.*", "../main", "../main.*", "./App", "./App.*", "./main", "./main.*"],
+  regex: relativeModuleRegex(["App", "main"]),
   message: "App shell implementation must not be imported behind this Module Seam.",
 };
 
 const settingsStateRestriction = {
-  group: ["../settingsModel", "../settingsModel.*", "./settingsModel", "./settingsModel.*"],
+  regex: relativeModuleRegex(["settingsModel"]),
   message: "Settings UI state must stay outside provider and runner Modules.",
 };
 
 const providerImplementationRestriction = {
-  group: [
-    "../providers/openspecProvider",
-    "../providers/openspecProvider.*",
-    "../providers/providerRegistry",
-    "../providers/providerRegistry.*",
-    "../providers/providerSession",
-    "../providers/providerSession.*",
-  ],
+  regex: relativePathRegex([
+    "providers/openspecProvider",
+    "providers/providerRegistry",
+    "providers/providerSession",
+  ]),
   message: "Provider implementation must stay behind the Provider Session seam.",
 };
 
 const runnerImplementationRestriction = {
-  group: [
-    "../runner/studioRunnerLog",
-    "../runner/studioRunnerLog.*",
-    "../runner/studioRunnerSession",
-    "../runner/studioRunnerSession.*",
-  ],
+  regex: relativePathRegex(["runner/studioRunnerLog", "runner/studioRunnerSession"]),
   message: "Runner implementation must stay behind the Studio Runner Module seam.",
 };
 
