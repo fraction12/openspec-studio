@@ -48,3 +48,21 @@ Add regression tests for:
 ## Risks
 - Postcondition checks can be too strict if OpenSpec changes archive layout. Keep the check based on the app's indexed active/archived change model rather than hardcoding only one path shape where possible.
 - Some future write operations may need partial-success semantics. Those should define explicit postconditions instead of falling back to exit-code trust.
+
+## Mutating bridge operation audit
+
+Current repository-file mutations:
+
+- `archive_change`: mutates `openspec/changes` and root specs through `openspec archive <change> --yes`. This change gives it an explicit command/postcondition result, zero-exit no-op detection, app re-index verification, active-change removal checks, archived-record existence checks, and durable operation issues with command output and missing evidence.
+
+Current non-mutating or non-repository-file operations:
+
+- `run_openspec_command`: restricted to `validate --all --json` and `status --change <name> --json`; these are read-only diagnostic commands and should keep command-result handling rather than archive-style mutation postconditions.
+- `list_openspec_file_records`, `list_openspec_file_metadata_records`, `read_openspec_artifact_file`, `validate_repo`, and `get_openspec_git_status`: read repository state and should continue surfacing read/validation issues instead of mutation success.
+- Studio Runner lifecycle, event stream, health, and dispatch bridge operations affect runner process/session state or send localhost HTTP requests. They are operational actions, not direct repository-file mutations by Studio; their next contract should remain status/response based unless Studio starts applying repository writes directly through them.
+- App-local persistence helpers such as recent-repo, validation-snapshot, and settings updates mutate local app state rather than OpenSpec repository files. If destructive local-data controls are bridged later, they should define app-state postconditions separately from repository mutation postconditions.
+
+Next operations that require explicit postconditions:
+
+- Any future guided propose/apply/edit command that creates or modifies OpenSpec artifacts should verify the expected files exist with expected indexed records before reporting success.
+- Any future spec promotion, archive cleanup, or generated-artifact write should verify both the target file mutation and the rebuilt indexed workspace state.

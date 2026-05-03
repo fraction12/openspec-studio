@@ -47,9 +47,9 @@ pub fn execute_local_command(
 pub fn execute_archive_command(
     repo_path: impl AsRef<Path>,
     change_name: String,
-) -> Result<CommandResult, BridgeError> {
+) -> Result<MutatingOperationResult, BridgeError> {
     let (canonical_repo, _) = require_openspec_repo(repo_path.as_ref())?;
-    let args = vec!["archive".to_string(), change_name, "--yes".to_string()];
+    let args = vec!["archive".to_string(), change_name.clone(), "--yes".to_string()];
     let output = run_command_with_fallbacks(
         &canonical_repo,
         "openspec",
@@ -58,24 +58,80 @@ pub fn execute_archive_command(
     )?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let archived = archive_command_changed_files(&stdout, &stderr);
-
-    Ok(CommandResult {
+    let command = MutatingCommandOutcome {
         stdout,
         stderr,
         status_code: output.status_code,
-        success: output.success && archived,
+        success: output.success,
+    };
+    let postcondition = archive_command_postcondition(&command);
+
+    Ok(MutatingOperationResult {
+        operation_kind: "archive-change".to_string(),
+        target: change_name,
+        success: command.success && postcondition.verified,
+        command,
+        postcondition,
     })
 }
 
+#[cfg(test)]
 pub(super) fn archive_command_changed_files(stdout: &str, stderr: &str) -> bool {
+    archive_noop_evidence(stdout, stderr).is_empty()
+}
+
+pub(super) fn archive_command_postcondition(
+    command: &MutatingCommandOutcome,
+) -> MutatingPostconditionOutcome {
+    if !command.success {
+        return MutatingPostconditionOutcome {
+            status: "not-verified".to_string(),
+            verified: false,
+            missing_evidence: Vec::new(),
+            message: Some("OpenSpec archive command did not complete.".to_string()),
+        };
+    }
+
+    let missing_evidence = archive_noop_evidence(&command.stdout, &command.stderr);
+
+    if missing_evidence.is_empty() {
+        return MutatingPostconditionOutcome {
+            status: "succeeded".to_string(),
+            verified: true,
+            missing_evidence,
+            message: None,
+        };
+    }
+
+    MutatingPostconditionOutcome {
+        status: "no-op".to_string(),
+        verified: false,
+        missing_evidence,
+        message: Some(
+            "OpenSpec archive exited successfully, but its output reported that no files changed."
+                .to_string(),
+        ),
+    }
+}
+
+fn archive_noop_evidence(stdout: &str, stderr: &str) -> Vec<String> {
     let combined = format!(
         "{stdout}
 {stderr}"
     );
-    !(combined.contains("Aborted. No files were changed.")
-        || combined.contains("failed for header")
-        || combined.contains("No files were changed"))
+    let mut evidence = Vec::new();
+
+    if combined.contains("Aborted. No files were changed.") {
+        evidence.push("archive output included 'Aborted. No files were changed.'".to_string());
+    } else if combined.contains("No files were changed") {
+        evidence.push("archive output included 'No files were changed'".to_string());
+    }
+
+    if combined.contains("failed for header") {
+        evidence.push("archive output included 'failed for header'".to_string());
+    }
+
+    evidence
 }
 
 pub fn read_openspec_artifact(
@@ -237,7 +293,7 @@ pub async fn run_openspec_command(
 pub async fn archive_change(
     repo_path: String,
     change_name: String,
-) -> Result<CommandResult, BridgeErrorDto> {
+) -> Result<MutatingOperationResult, BridgeErrorDto> {
     validate_archive_change_name(&change_name).map_err(BridgeErrorDto::from)?;
     run_bridge_task(move || execute_archive_command(repo_path, change_name)).await
 }

@@ -69,6 +69,31 @@ pub struct CommandResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutatingCommandOutcome {
+    pub stdout: String,
+    pub stderr: String,
+    pub status_code: Option<i32>,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutatingPostconditionOutcome {
+    pub status: String,
+    pub verified: bool,
+    pub missing_evidence: Vec<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutatingOperationResult {
+    pub operation_kind: String,
+    pub target: String,
+    pub command: MutatingCommandOutcome,
+    pub postcondition: MutatingPostconditionOutcome,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactFile {
     pub path: String,
     pub relative_path: String,
@@ -1087,6 +1112,27 @@ PY
 Aborted. No files were changed.",
             ""
         ));
+    }
+
+    #[test]
+    fn archive_command_postcondition_reports_zero_exit_noop_output() {
+        let command = MutatingCommandOutcome {
+            stdout: "change MODIFIED failed for header\nAborted. No files were changed.".to_string(),
+            stderr: String::new(),
+            status_code: Some(0),
+            success: true,
+        };
+
+        let postcondition = archive_command_postcondition(&command);
+
+        assert_eq!(postcondition.status, "no-op");
+        assert!(!postcondition.verified);
+        assert!(postcondition
+            .missing_evidence
+            .contains(&"archive output included 'Aborted. No files were changed.'".to_string()));
+        assert!(postcondition
+            .missing_evidence
+            .contains(&"archive output included 'failed for header'".to_string()));
     }
 
     #[test]

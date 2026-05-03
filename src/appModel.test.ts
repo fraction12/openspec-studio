@@ -53,6 +53,34 @@ describe("OpenSpec operation issues", () => {
     });
   });
 
+  it("keeps missing postcondition evidence with operation issues", () => {
+    expect(
+      createOpenSpecOperationIssue({
+        kind: "archive",
+        title: "Archive postcondition failed",
+        message: "Archive state was not verified.",
+        fallbackMessage: "OpenSpec archive state could not be verified.",
+        repoPath: "/repo",
+        target: "fix-demo",
+        occurredAt: "2026-04-28T12:00:00.000Z",
+        command: {
+          stdout: "Archived fix-demo",
+          statusCode: 0,
+          success: true,
+        },
+        missingEvidence: ["active change still exists at openspec/changes/fix-demo"],
+      }),
+    ).toMatchObject({
+      id: "archive|/repo|fix-demo|2026-04-28T12:00:00.000Z|Archive state was not verified.",
+      kind: "archive",
+      title: "Archive postcondition failed",
+      message: "Archive state was not verified.",
+      statusCode: 0,
+      stdout: "Archived fix-demo",
+      missingEvidence: ["active change still exists at openspec/changes/fix-demo"],
+    });
+  });
+
   it("compares issues by operation scope for replacement", () => {
     const first = createOpenSpecOperationIssue({
       kind: "status",

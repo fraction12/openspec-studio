@@ -2083,6 +2083,16 @@ button:disabled {
   white-space: nowrap;
 }
 
+.operation-issue-evidence {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding-left: var(--space-12);
+  color: #4c1d1d;
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-md);
+}
+
 .operation-output {
   border-top: 1px solid #efd3d3;
   padding-top: var(--space-8);
