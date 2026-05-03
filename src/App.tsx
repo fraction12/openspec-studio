@@ -3997,6 +3997,7 @@ function OperationIssueCallout({
   onDismissIssue?: (issueId: string) => void;
 }) {
   const hasRawOutput = Boolean(issue.stdout || issue.stderr);
+  const hasMissingEvidence = Boolean(issue.missingEvidence?.length);
 
   return (
     <article className="operation-issue-callout">
@@ -4017,6 +4018,13 @@ function OperationIssueCallout({
         {issue.target ? <code>{issue.target}</code> : null}
         {issue.statusCode !== undefined && issue.statusCode !== null ? <span>exit {issue.statusCode}</span> : null}
       </div>
+      {hasMissingEvidence ? (
+        <ul className="operation-issue-evidence">
+          {issue.missingEvidence?.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
       {hasRawOutput ? (
         <details className="operation-output">
           <summary>OpenSpec output</summary>

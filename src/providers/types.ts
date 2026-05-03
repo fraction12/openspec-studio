@@ -1,4 +1,5 @@
 import type {
+  MutatingOperationResult,
   OpenSpecFileSignature,
   OpenSpecOperationIssue,
 } from "../appModel";
@@ -74,6 +75,8 @@ export interface ProviderIssueReporter {
   record(issue: OpenSpecOperationIssue): void;
   clear(predicate: (issue: OpenSpecOperationIssue) => boolean): void;
 }
+
+export type ProviderArchiveOperationResult = MutatingOperationResult;
 
 export interface ProviderWorkspaceBuilder<TWorkspace extends ProviderWorkspaceLike> {
   (input: {

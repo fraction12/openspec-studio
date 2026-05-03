@@ -1,5 +1,6 @@
 import {
   createOpenSpecOperationIssue,
+  type MutatingOperationResult,
   type OpenSpecFileSignature,
 } from "../appModel";
 import { indexOpenSpecWorkspace } from "../domain/openspecIndex";
@@ -26,7 +27,7 @@ import type {
 
 type ProviderSessionProvider = Pick<
   OpenSpecProvider,
-  "archive" | "descriptor" | "detect" | "findArchivedChangeAfterArchive" | "gitStatus" | "index" | "metadataSignature" | "readArtifact" | "validate"
+  "archive" | "descriptor" | "detect" | "gitStatus" | "index" | "metadataSignature" | "readArtifact" | "validate"
 >;
 
 interface ProviderSessionDependencies<TWorkspace extends ProviderWorkspaceLike> {
@@ -192,9 +193,11 @@ export class ProviderSession<TWorkspace extends ProviderWorkspaceLike> {
     }
 
     const requestId = ++this.validationGeneration;
+    this.refreshGeneration += 1;
     let validation: ValidationResult | null = null;
     let archivedCount = 0;
     let latestWorkspace: TWorkspace | null;
+    let latestWorkspaceData: ProviderWorkspaceData | null = null;
     let lastArchivedChangeId: string | null = null;
 
     try {
@@ -216,15 +219,25 @@ export class ProviderSession<TWorkspace extends ProviderWorkspaceLike> {
       }
 
       for (const changeName of changeNames) {
-        await this.dependencies.provider.archive(repoPath, changeName);
-        lastArchivedChangeId = await this.dependencies.provider.findArchivedChangeAfterArchive(repoPath, changeName);
-        if (!lastArchivedChangeId) {
-          throw new Error("OpenSpec archive reported success, but " + changeName + " is still active.");
+        const operationResult = await this.dependencies.provider.archive(repoPath, changeName);
+        const workspaceData = await this.dependencies.provider.index(repoPath);
+        if (this.validationGeneration !== requestId || currentRepoPath !== repoPath) {
+          return { kind: "stale" };
         }
+
+        const postcondition = verifyArchivePostcondition(workspaceData, changeName);
+        if (!postcondition.verified) {
+          this.recordArchivePostconditionFailure(repoPath, changeName, operationResult, postcondition.missingEvidence);
+          throw new Error(
+            "OpenSpec archive reported success, but Studio could not verify archived state for " + changeName + ".",
+          );
+        }
+        lastArchivedChangeId = postcondition.archivedChangeId;
         archivedCount += 1;
+        latestWorkspaceData = workspaceData;
       }
 
-      const workspaceData = await this.dependencies.provider.index(repoPath);
+      const workspaceData = latestWorkspaceData ?? await this.dependencies.provider.index(repoPath);
       if (this.validationGeneration !== requestId || currentRepoPath !== repoPath) {
         return { kind: "stale" };
       }
@@ -233,6 +246,7 @@ export class ProviderSession<TWorkspace extends ProviderWorkspaceLike> {
         workspaceData,
         validationForFileRecords(validation, currentWorkspace?.fileSignature, workspaceData.fileSignature),
       );
+      this.refreshGeneration += 1;
 
       return {
         kind: "archived",
@@ -255,6 +269,7 @@ export class ProviderSession<TWorkspace extends ProviderWorkspaceLike> {
         } catch {
           latestWorkspace = null;
         }
+        this.refreshGeneration += 1;
 
         return {
           kind: "partial",
@@ -403,6 +418,68 @@ export class ProviderSession<TWorkspace extends ProviderWorkspaceLike> {
       }),
     );
   }
+
+  private recordArchivePostconditionFailure(
+    repoPath: string,
+    changeName: string,
+    operationResult: MutatingOperationResult,
+    missingEvidence: string[],
+  ) {
+    this.dependencies.issues.record(
+      createOpenSpecOperationIssue({
+        kind: "archive",
+        title: "Archive postcondition failed",
+        message: "OpenSpec archive command completed, but Studio could not verify the archive mutation.",
+        fallbackMessage: "OpenSpec archive state could not be verified.",
+        repoPath,
+        target: changeName,
+        command: {
+          stdout: operationResult.command.stdout,
+          stderr: operationResult.command.stderr,
+          statusCode: operationResult.command.statusCode,
+          success: operationResult.command.success,
+        },
+        missingEvidence,
+      }),
+    );
+  }
+}
+
+function verifyArchivePostcondition(
+  workspaceData: ProviderWorkspaceData,
+  changeName: string,
+): { verified: true; archivedChangeId: string; missingEvidence: [] } | {
+  verified: false;
+  archivedChangeId: null;
+  missingEvidence: string[];
+} {
+  const activeChange = workspaceData.indexed.activeChanges.find((change) => change.name === changeName);
+  const archivedChange = workspaceData.indexed.archivedChanges.find(
+    (change) => change.archiveMetadata.originalName === changeName,
+  );
+  const missingEvidence: string[] = [];
+
+  if (activeChange) {
+    missingEvidence.push("active change still exists at " + activeChange.path);
+  }
+
+  if (!archivedChange) {
+    missingEvidence.push("no archived change with original name " + changeName + " was found after re-index");
+  }
+
+  if (missingEvidence.length > 0 || !archivedChange) {
+    return {
+      verified: false,
+      archivedChangeId: null,
+      missingEvidence,
+    };
+  }
+
+  return {
+    verified: true,
+    archivedChangeId: archivedChange.name,
+    missingEvidence: [],
+  };
 }
 
 function validationForFileRecords(

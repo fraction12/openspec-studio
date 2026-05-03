@@ -223,6 +223,7 @@ export interface OpenSpecOperationIssue {
   statusCode?: number | null;
   stdout?: string;
   stderr?: string;
+  missingEvidence?: string[];
 }
 
 export interface CommandLikeResult {
@@ -233,6 +234,34 @@ export interface CommandLikeResult {
   success?: boolean;
 }
 
+export type MutatingOperationPostconditionStatus =
+  | "not-verified"
+  | "succeeded"
+  | "postcondition-failed"
+  | "no-op";
+
+export interface MutatingOperationCommandOutcome {
+  stdout: string;
+  stderr: string;
+  statusCode: number | null;
+  success: boolean;
+}
+
+export interface MutatingOperationPostconditionOutcome {
+  status: MutatingOperationPostconditionStatus;
+  verified: boolean;
+  missingEvidence: string[];
+  message?: string;
+}
+
+export interface MutatingOperationResult {
+  operationKind: "archive-change";
+  target: string;
+  command: MutatingOperationCommandOutcome;
+  postcondition: MutatingOperationPostconditionOutcome;
+  success: boolean;
+}
+
 export interface OpenSpecOperationIssueInput {
   kind: OpenSpecOperationKind;
   title: string;
@@ -241,6 +270,7 @@ export interface OpenSpecOperationIssueInput {
   repoPath?: string;
   target?: string;
   command?: CommandLikeResult | null;
+  missingEvidence?: string[];
   occurredAt?: Date | string;
 }
 
@@ -544,16 +574,18 @@ export function createOpenSpecOperationIssue({
   repoPath,
   target,
   command,
+  missingEvidence,
   occurredAt = new Date(),
 }: OpenSpecOperationIssueInput): OpenSpecOperationIssue {
   const stdout = normalizeOptionalText(command?.stdout);
   const stderr = normalizeOptionalText(command?.stderr);
   const statusCode = command?.status_code ?? command?.statusCode ?? null;
+  const normalizedMissingEvidence = normalizeOptionalTextArray(missingEvidence);
   const resolvedMessage = normalizeOptionalText(message) ?? stderr ?? stdout ?? fallbackMessage;
   const timestamp = typeof occurredAt === "string" ? occurredAt : occurredAt.toISOString();
   const idParts = [kind, repoPath, target, timestamp, resolvedMessage].filter(Boolean);
 
-  return {
+  const issue: OpenSpecOperationIssue = {
     id: idParts.join("|"),
     kind,
     title,
@@ -565,6 +597,12 @@ export function createOpenSpecOperationIssue({
     stdout,
     stderr,
   };
+
+  if (normalizedMissingEvidence) {
+    issue.missingEvidence = normalizedMissingEvidence;
+  }
+
+  return issue;
 }
 
 export function sameOpenSpecOperationScope(
@@ -714,6 +752,18 @@ function readString(value: unknown): string | undefined {
 
 function normalizeOptionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function normalizeOptionalTextArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const normalized = value
+    .map((item) => normalizeOptionalText(item))
+    .filter((item): item is string => Boolean(item));
+
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function readBoolean(value: unknown): boolean | undefined {

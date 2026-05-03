@@ -7,6 +7,8 @@ import {
   toVirtualFileRecords,
   type BridgeFileRecord,
   type CommandLikeResult,
+  type MutatingOperationPostconditionStatus,
+  type MutatingOperationResult,
 } from "../appModel";
 import {
   indexOpenSpecWorkspace,
@@ -25,6 +27,7 @@ import type {
   ProviderDetection,
   ProviderGitStatus,
   ProviderIssueReporter,
+  ProviderArchiveOperationResult,
   ProviderWorkspaceData,
 } from "./types";
 
@@ -42,6 +45,25 @@ interface CommandResultDto extends CommandLikeResult {
   stdout: string;
   stderr: string;
   success: boolean;
+}
+
+interface MutatingOperationResultDto {
+  operation_kind?: string;
+  operationKind?: string;
+  target?: string;
+  command?: CommandResultDto;
+  postcondition?: {
+    status?: string;
+    verified?: boolean;
+    missing_evidence?: string[];
+    missingEvidence?: string[];
+    message?: string | null;
+  };
+  stdout?: string;
+  stderr?: string;
+  status_code?: number | null;
+  statusCode?: number | null;
+  success?: boolean;
 }
 
 interface OpenSpecGitStatusDto {
@@ -167,16 +189,17 @@ export class OpenSpecProvider {
     });
   }
 
-  async archive(repoPath: string, changeName: string): Promise<void> {
-    let recordedCommandFailure = false;
+  async archive(repoPath: string, changeName: string): Promise<ProviderArchiveOperationResult> {
+    let recordedArchiveIssue = false;
 
     try {
-      const result = await this.dependencies.invoke<CommandResultDto>("archive_change", {
+      const resultDto = await this.dependencies.invoke<MutatingOperationResultDto>("archive_change", {
         repoPath,
         changeName,
       });
+      const result = normalizeMutatingOperationResult(resultDto, changeName);
 
-      if (!result.success) {
+      if (!result.command.success) {
         this.dependencies.issues.record(
           createOpenSpecOperationIssue({
             kind: "archive",
@@ -184,18 +207,39 @@ export class OpenSpecProvider {
             fallbackMessage: "OpenSpec archive did not complete.",
             repoPath,
             target: changeName,
-            command: result,
+            command: toCommandLikeResult(result.command),
           }),
         );
-        recordedCommandFailure = true;
-        throw new Error(result.stderr || result.stdout || "OpenSpec archive did not complete.");
+        recordedArchiveIssue = true;
+        throw new Error(result.command.stderr || result.command.stdout || "OpenSpec archive did not complete.");
+      }
+
+      if (!result.postcondition.verified) {
+        const message =
+          result.postcondition.message ??
+          "OpenSpec archive command completed, but Studio could not verify the archive mutation.";
+        this.dependencies.issues.record(
+          createOpenSpecOperationIssue({
+            kind: "archive",
+            title: "Archive postcondition failed",
+            message,
+            fallbackMessage: "OpenSpec archive state could not be verified.",
+            repoPath,
+            target: changeName,
+            command: toCommandLikeResult(result.command),
+            missingEvidence: result.postcondition.missingEvidence,
+          }),
+        );
+        recordedArchiveIssue = true;
+        throw new Error(message);
       }
 
       this.dependencies.issues.clear(
         (issue) => issue.kind === "archive" && issue.repoPath === repoPath && issue.target === changeName,
       );
+      return result;
     } catch (error) {
-      if (!recordedCommandFailure) {
+      if (!recordedArchiveIssue) {
         this.dependencies.issues.record(
           createOpenSpecOperationIssue({
             kind: "archive",
@@ -374,6 +418,70 @@ async function mapWithConcurrency<T>(
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   return results;
+}
+
+function normalizeMutatingOperationResult(
+  result: MutatingOperationResultDto,
+  fallbackTarget: string,
+): MutatingOperationResult {
+  const commandDto = result.command ?? {
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    status_code: result.status_code ?? result.statusCode ?? null,
+    success: Boolean(result.success),
+  };
+  const command = {
+    stdout: commandDto.stdout ?? "",
+    stderr: commandDto.stderr ?? "",
+    statusCode: commandDto.status_code ?? commandDto.statusCode ?? null,
+    success: Boolean(commandDto.success),
+  };
+  const missingEvidence = [
+    ...(result.postcondition?.missing_evidence ?? []),
+    ...(result.postcondition?.missingEvidence ?? []),
+  ].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  const postconditionStatus = normalizePostconditionStatus(result.postcondition?.status);
+  const verified =
+    typeof result.postcondition?.verified === "boolean"
+      ? result.postcondition.verified
+      : Boolean(result.success && command.success);
+  return {
+    operationKind: "archive-change",
+    target: typeof result.target === "string" && result.target.length > 0 ? result.target : fallbackTarget,
+    command,
+    postcondition: {
+      status: postconditionStatus,
+      verified,
+      missingEvidence,
+      message:
+        typeof result.postcondition?.message === "string" && result.postcondition.message.trim().length > 0
+          ? result.postcondition.message.trim()
+          : undefined,
+    },
+    success: Boolean(result.success && command.success && verified),
+  };
+}
+
+function normalizePostconditionStatus(value: string | undefined): MutatingOperationPostconditionStatus {
+  if (
+    value === "not-verified" ||
+    value === "succeeded" ||
+    value === "postcondition-failed" ||
+    value === "no-op"
+  ) {
+    return value;
+  }
+
+  return "not-verified";
+}
+
+function toCommandLikeResult(command: MutatingOperationResult["command"]): CommandLikeResult {
+  return {
+    stdout: command.stdout,
+    stderr: command.stderr,
+    statusCode: command.statusCode,
+    success: command.success,
+  };
 }
 
 function errorMessage(error: unknown): string {
