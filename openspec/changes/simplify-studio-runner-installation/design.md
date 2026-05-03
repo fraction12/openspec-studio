@@ -1,7 +1,21 @@
-# Design: Studio Runner managed setup
+# Design: One-install Studio Runner setup
+
+## Intent brief
+
+**Proposed solution:** Make Studio Runner work after installing OpenSpec Studio, without requiring users to manually clone and build Symphony.
+
+**User/job:** A developer or product-builder wants to open an OpenSpec repo and ask an agent to implement a change locally.
+
+**Current situation:** The execution path requires understanding and operating a separate Symphony repo/binary plus Codex/GitHub auth and local runner details.
+
+**Pain/opportunity:** The lab setup creates friction, support burden, stale-binary failures, and confusion about what product the user is actually using.
+
+**Desired outcome:** The normal user experiences Studio Runner as part of OpenSpec Studio: one app, one setup flow, one clear Runner surface.
+
+**Success signal:** A new user can install Studio, open a repo, complete setup, and dispatch a change without cloning Symphony or reading runner-internal docs.
 
 ## Product boundary
-Studio Runner should be the product surface. Symphony is an implementation detail.
+Studio Runner is the product. Symphony is the engine.
 
 A new user should not need to know:
 
@@ -13,128 +27,177 @@ A new user should not need to know:
 - where worktrees are created;
 - how Codex app-server is launched.
 
-The normal flow should be:
+Those details can exist in expandable technical details and developer docs, but not as the primary setup path.
 
-1. Install/open OpenSpec Studio.
-2. Open an OpenSpec repository.
-3. Open the Runner tab.
-4. Click **Set up Studio Runner** or **Enable Studio Runner**.
-5. Studio verifies prerequisites and starts the managed runner.
-6. Select an eligible change and click **Build with agent**.
+## Recommended direction
+Choose **managed sidecar with advanced custom override**.
 
-## Setup modes
+### Why this is the right v1
+- It preserves the local-first trust model.
+- It avoids a cloud service and account system.
+- It makes the install story product-grade without forcing a full rewrite of Symphony.
+- It keeps developer velocity: custom runner mode still supports local Symphony hacking.
+- It gives Studio one place to handle version compatibility, stale binaries, auth checks, and recovery.
 
-### Managed mode
-Managed mode is the default user path.
+### Alternatives rejected
 
-Studio owns:
+#### Require users to clone Symphony
+Rejected. This is the current lab setup and fails the product promise.
 
-- locating the bundled/downloaded Studio Runner binary;
-- checking runner version and compatibility;
-- starting/stopping the runner;
-- providing the session signing secret;
-- checking `/health` and event stream reachability;
-- surfacing diagnostics in plain product language.
+#### Merge all Symphony code into Studio immediately
+Rejected for v1. It is likely too disruptive and risks destabilizing the already-working runner/orchestrator path.
 
-The runner may still be the Symphony binary internally, but labels should say **Studio Runner**.
+#### Ship a cloud runner
+Rejected. It changes the trust/security model, adds backend operations, and conflicts with the local-first positioning.
 
-### Advanced custom runner mode
-Advanced users/developers may provide a custom local runner binary/path or endpoint.
+#### Hide everything but keep manual docs
+Rejected. Better docs help, but they do not remove the two-repo setup burden.
 
-This mode is useful for:
+## Target user journey
 
-- working from a local Symphony checkout;
-- testing unreleased runner changes;
-- debugging runner internals.
+### First-run / not set up
+1. User opens Runner workspace.
+2. Studio explains: “Studio Runner lets agents implement OpenSpec changes locally and open PRs.”
+3. Primary action: **Set up Studio Runner**.
+4. Secondary action: **Use custom runner**.
 
-When custom mode is active, Studio should make that explicit and warn that compatibility is user-managed. It should still run the same health/version/auth/repo diagnostics when possible.
+### Setup check
+Studio runs a checklist:
 
-## Setup checklist
-The setup flow should show readiness as a checklist with action-oriented rows.
+- managed runner sidecar present or installable;
+- runner protocol compatible with Studio;
+- localhost endpoint available;
+- runner health supports signed dispatch;
+- event stream available or clearly unavailable;
+- Codex installed/authenticated/usable;
+- GitHub CLI installed/authenticated/authorized;
+- selected repo has OpenSpec files;
+- selected change exists and validates;
+- repo has GitHub-capable remote;
+- base branch fetches;
+- workspace root can be created safely.
 
-Required checks before dispatch:
+### Ready/running
+- If checks pass, Studio starts the sidecar or confirms it is ready.
+- The Runner workspace shows status, stream state, session secret state, and Runner Log.
+- Change inspector enables **Build with agent** only when setup and change eligibility pass.
 
-- Studio Runner binary is present or installable.
-- Runner version is compatible with this Studio version.
-- Runner endpoint is localhost-only and reachable after start.
-- Runner health reports signed dispatch support.
-- Runner event stream is reachable or clearly unavailable.
-- Codex is installed and authenticated in a usable mode.
-- GitHub CLI is installed and authenticated.
-- The selected repository is a Git repository with a GitHub remote.
-- The repository default branch is fetchable.
-- OpenSpec change artifacts exist and validate.
-- Runner workspace root exists or can be created safely.
+### Needs attention
+- Blockers are shown as product language first, technical detail second.
+- Example: “GitHub CLI is not authenticated, so the agent cannot open a pull request.”
+- Action should be explicit: open docs, rerun check, switch to custom runner, restart sidecar, update runner.
 
-Optional/advisory checks:
+### Custom runner
+- User can point at a localhost endpoint or local binary/path.
+- UI labels it as “Custom runner — updates and compatibility are user-managed.”
+- Studio still performs health, protocol, auth, repo, and event stream checks when possible.
 
-- Codex model/default settings are visible.
-- GitHub remote is writable by the current auth user.
-- Recent runner binary is not stale compared with Studio's expected runner protocol.
+## Packaging and update model
+The spec should allow either bundled or downloadable sidecar packaging, but it must not leave normal users with “clone Symphony” as the required path.
 
-## Diagnostics language
-Diagnostics should describe the user action, not the internal stack.
+Acceptable managed-runner strategies:
 
-Good:
+1. **Bundled sidecar:** Studio installer includes the compatible runner binary.
+2. **First-run download:** Studio downloads a signed/versioned runner asset on demand.
+3. **Managed local install:** Studio installs the runner into app-controlled support data and updates it when protocols change.
+
+The implementation may choose one strategy, but the product contract is the same: Studio owns it, verifies it, and explains failures.
+
+## Version and compatibility contract
+Runner health should expose enough metadata for Studio to make deterministic decisions:
+
+- product/name identity, e.g. `studio-runner`;
+- implementation identity, optionally `symphony` for technical details;
+- runner version/build SHA;
+- protocol version;
+- supported capabilities: signed dispatch, event stream, worktree execution, publication metadata, execution defaults, execution logs if available;
+- signing-secret configured status;
+- accepting dispatch status;
+- compatibility range or minimum Studio protocol.
+
+Studio must refuse dispatch when the runner protocol is incompatible and offer update/reinstall/restart guidance.
+
+## Auth diagnostics
+Studio should diagnose, not own, credentials.
+
+Required categories:
+
+- Codex missing;
+- Codex not logged in;
+- Codex logged in but quota/rate-limited;
+- Codex using API-key auth when subscription auth is expected or recommended;
+- GitHub CLI missing;
+- GitHub CLI not logged in;
+- GitHub CLI logged in but lacking repo permission;
+- remote appears local-only or non-GitHub, so PR publication will fail.
+
+Diagnostics must redact secrets and avoid storing tokens, signatures, auth headers, or raw environment values.
+
+## Repository diagnostics
+Before enabling **Build with agent**, Studio should confirm:
+
+- an OpenSpec workspace is present;
+- selected change exists in the current repo state;
+- required artifacts exist;
+- validation state is available and acceptable;
+- Git repository status is readable;
+- origin or selected publication remote is GitHub-capable;
+- base/default branch can be fetched;
+- runner workspace root exists or can be created safely;
+- stale local runner state has been reconciled enough not to lock the UI incorrectly.
+
+## UI states
+The Runner tab should present setup as a small number of states:
+
+- **Not set up**: explain value and provide setup action.
+- **Checking**: running prerequisite checks.
+- **Needs attention**: blocking checklist rows with fix guidance.
+- **Ready**: runner can start and receive work.
+- **Running**: runner is online and event stream is connected when available.
+- **Incompatible/stale**: runner exists but does not match Studio's expected protocol.
+- **Custom/user-managed**: custom mode active; compatibility is still checked but updates are the user's responsibility.
+
+## Copy principles
+Primary copy should say:
 
 - “Studio Runner is not installed.”
-- “Codex is logged in with an API key that is currently quota-limited. Re-authenticate Codex before running agents.”
-- “GitHub CLI is not authenticated, so the agent cannot open a pull request.”
-- “This repository's origin remote is local-only. Add a GitHub remote before using Build with agent.”
+- “Update Studio Runner.”
+- “Codex is not ready.”
+- “GitHub CLI cannot open pull requests for this repo.”
+- “This repository needs a GitHub remote before agents can publish work.”
 
-Avoid as primary copy:
+Primary copy should not say:
 
 - “Symphony escript missing.”
 - “WORKFLOW.md invalid.”
 - “HMAC secret not configured.”
 - “Phoenix route unavailable.”
 
-Those details may appear in expandable technical details.
+Those can appear in technical details.
 
-## Runner version contract
-The runner health response should expose enough metadata for Studio to decide compatibility, such as:
+## Engineering fit
+Relevant existing surfaces:
 
-- runner name/product identity;
-- runner version;
-- protocol version;
-- supported capabilities, including signed dispatch, event stream, worktree execution, and publication metadata;
-- whether a signing secret is configured;
-- current accepting/ready state.
+- `src/runner/studioRunnerSession.ts` owns frontend runner operations.
+- `src/runner/studioRunnerLog.ts` owns runner history/log policy.
+- `src-tauri/src/bridge/studio_runner.rs` owns native runner lifecycle, endpoint checks, signing, stream, and dispatch behavior.
+- `openspec/specs/local-desktop-shell/spec.md` already treats Runner as a first-class workspace.
+- `openspec/specs/studio-runner-session/spec.md` already defines bounded session/log behavior.
 
-Studio should refuse to dispatch when the runner protocol is incompatible, and should offer update/rebuild guidance instead of letting users discover stale-binary failures later.
+Recommended implementation approach:
 
-## Auth diagnostics
-The setup flow should distinguish:
+1. Add runner setup/readiness model in the Studio Runner Session module.
+2. Extend Tauri runner bridge with managed sidecar discovery/install/update/check commands.
+3. Extend runner health parsing for identity/protocol/capabilities.
+4. Add auth/repo/workspace diagnostic commands with redacted results.
+5. Build Runner tab setup UI as checklist/state machine.
+6. Gate dispatch on setup readiness plus existing per-change eligibility.
+7. Keep custom runner endpoint/path mode as an explicit advanced state.
 
-- Codex missing;
-- Codex not logged in;
-- Codex logged in but quota/rate-limited;
-- Codex using API-key auth when subscription auth is expected;
-- GitHub CLI missing;
-- GitHub CLI not logged in;
-- GitHub CLI logged in but lacking repo permission.
+## Risks and mitigations
 
-Studio does not need to own credential setup, but it should tell the user exactly what is blocking agent execution.
-
-## Repository diagnostics
-Before enabling **Build with agent**, Studio should confirm:
-
-- the open repository has an `openspec/` workspace;
-- the selected change exists in the current repository state;
-- required OpenSpec artifacts exist;
-- validation status is available and acceptable;
-- the repo has a non-local GitHub remote for publication;
-- the base/default branch can be fetched;
-- the runner can create an isolated worktree under its configured workspace root.
-
-## Installation/update UX
-The Runner tab should show setup as a small number of states:
-
-- **Not set up**: explain what Studio Runner enables and provide setup action.
-- **Checking**: running prerequisite checks.
-- **Needs attention**: show blocking checklist rows with fix guidance.
-- **Ready**: runner can start and receive work.
-- **Running**: runner is online and event stream is connected when available.
-- **Incompatible/stale**: runner exists but does not match Studio's expected protocol.
-
-The user should not have to leave Studio to understand which state they are in.
+- **Packaging complexity:** Start with one supported OS/package path if needed, but preserve the product contract and mark unsupported platforms clearly.
+- **Security:** Managed downloads must be signed or checksum-verified; endpoints remain localhost-only; secrets remain session-scoped.
+- **Stale runner binaries:** Protocol/version compatibility check blocks dispatch and offers update.
+- **Credential confusion:** Diagnostics should separate Codex, GitHub, and repo-publication problems.
+- **Advanced users:** Custom mode must remain possible, but it should not define the default experience.
