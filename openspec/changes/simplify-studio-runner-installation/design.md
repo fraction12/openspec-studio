@@ -103,6 +103,19 @@ Acceptable managed-runner strategies:
 
 The implementation may choose one strategy, but the product contract is the same: Studio owns it, verifies it, and explains failures.
 
+## Fresh-install findings
+A source-build setup on a new macOS laptop exposed several install traps that this change must address:
+
+- The frontend fallback runner path is a developer-machine path. A local `.env.local` can repair a source build, but a packaged app needs runtime configuration, auto-detection, and a chooser instead of build-time `VITE_OPENSPEC_STUDIO_RUNNER_REPO`.
+- The runner binary can be built successfully while still being undiscoverable from a Finder-launched app because shell profile PATH and `mise activate` are not guaranteed to run.
+- `bin/symphony` is an escript. If `escript`, `erl`, `elixir`, or `mix` are only available through a shell-managed environment, Studio may start from Finder and fail to launch the runner even though terminal checks pass.
+- A direct symlink to mise-managed Erlang wrapper scripts can break because those scripts resolve install paths relative to `$0`. Managed launch should use a known toolchain root, direct absolute paths, or a bundled runner rather than relying on ad hoc symlinks.
+- Symphony's workflow launches `codex app-server`, so Studio must verify the Codex CLI is available from the runner child environment, not merely from the interactive developer shell.
+- DMG packaging can fail after the app binary and `.app` are already built when the generated disk image is undersized or Finder decoration scripts fail. Build output should distinguish app build success from installer packaging failure and provide a deterministic packaging fallback.
+- Runner ingress can be smoke-tested without creating an agent run by checking `/health`, confirming unsigned dispatch is rejected, and confirming a correctly signed malformed payload reaches payload validation.
+
+These are not just documentation issues. They should become product checks and repair flows so setup failures are explainable inside Studio.
+
 ## Version and compatibility contract
 Runner health should expose enough metadata for Studio to make deterministic decisions:
 
@@ -133,6 +146,21 @@ Required categories:
 
 Diagnostics must redact secrets and avoid storing tokens, signatures, auth headers, or raw environment values.
 
+## Runtime path and tool discovery
+Runner path selection is runtime configuration. Studio should not bake machine-specific runner paths into production bundles.
+
+Default discovery order:
+
+1. Persisted managed runner install metadata.
+2. Bundled sidecar path, if the release includes one.
+3. Well-known source checkout candidates such as `~/Documents/Projects/symphony/elixir` and sibling `../symphony/elixir` for development builds.
+4. User-selected local runner repository or binary.
+5. Advanced custom endpoint.
+
+For each candidate, Studio should validate the expected files before presenting it as ready: `WORKFLOW.md`, `bin/symphony` or configured runner binary, executable permission, and protocol-compatible health once started.
+
+Managed runner launches must construct a deterministic child environment that works from a Finder-launched app. At minimum, the environment should include standard Homebrew/macOS command directories plus any app-discovered Codex and runner-toolchain paths. The app should not rely on `.zprofile`, `.zshrc`, `mise activate`, or the current terminal's PATH.
+
 ## Repository diagnostics
 Before enabling **Build with agent**, Studio should confirm:
 
@@ -145,6 +173,17 @@ Before enabling **Build with agent**, Studio should confirm:
 - base/default branch can be fetched;
 - runner workspace root exists or can be created safely;
 - stale local runner state has been reconciled enough not to lock the UI incorrectly.
+
+## Source-build bootstrap and doctor
+Although normal users should not need a source build, developers and early adopters still will. Provide a documented source-build path that is one command when possible and diagnostic when not.
+
+Recommended commands:
+
+- `scripts/bootstrap-macos.sh`: installs or checks Homebrew dependencies for source builds, initializes Rust, installs OpenSpec CLI, trusts/installs the Symphony `mise.toml` when a local runner checkout is selected, and builds `bin/symphony`.
+- `npm run doctor`: runs read-only checks for Studio build prerequisites, runner path, runner executable, launch environment, Codex CLI, GitHub CLI, OpenSpec CLI, endpoint conflicts, and signing smoke tests.
+- In-app **Doctor**: exposes the same checks with user-facing summaries and expandable technical details.
+
+The doctor should produce actionable output without leaking tokens, auth headers, session secrets, or raw environment dumps.
 
 ## UI states
 The Runner tab should present setup as a small number of states:
@@ -190,9 +229,12 @@ Recommended implementation approach:
 2. Extend Tauri runner bridge with managed sidecar discovery/install/update/check commands.
 3. Extend runner health parsing for identity/protocol/capabilities.
 4. Add auth/repo/workspace diagnostic commands with redacted results.
-5. Build Runner tab setup UI as checklist/state machine.
-6. Gate dispatch on setup readiness plus existing per-change eligibility.
-7. Keep custom runner endpoint/path mode as an explicit advanced state.
+5. Add launch-environment diagnostics and managed runner child-environment construction that works outside interactive shells.
+6. Build Runner tab setup UI as checklist/state machine.
+7. Gate dispatch on setup readiness plus existing per-change eligibility.
+8. Keep custom runner endpoint/path mode as an explicit advanced state.
+9. Add source-build bootstrap/doctor commands and no-agent runner smoke tests.
+10. Fix packaging output so `.app` success, DMG success, and DMG fallback are reported separately.
 
 ## Risks and mitigations
 
@@ -200,4 +242,7 @@ Recommended implementation approach:
 - **Security:** Managed downloads must be signed or checksum-verified; endpoints remain localhost-only; secrets remain session-scoped.
 - **Stale runner binaries:** Protocol/version compatibility check blocks dispatch and offers update.
 - **Credential confusion:** Diagnostics should separate Codex, GitHub, and repo-publication problems.
+- **Finder launch environment:** Managed runner launch should use explicit executable paths and controlled PATH entries, with doctor checks that mimic a clean app environment.
+- **Source-build drift:** Bootstrap and doctor commands should catch missing toolchains, stale runner binaries, endpoint conflicts, and hardcoded path fallbacks before the user reaches the dispatch button.
+- **Installer packaging brittleness:** Treat app bundle creation and DMG creation as separate build products; provide explicit image sizing or a simple fallback artifact when decorative DMG packaging fails.
 - **Advanced users:** Custom mode must remain possible, but it should not define the default experience.

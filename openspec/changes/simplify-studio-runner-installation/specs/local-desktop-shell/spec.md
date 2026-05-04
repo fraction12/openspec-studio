@@ -20,6 +20,13 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **AND** Studio SHALL install, update, start, stop, and health-check the managed runner through Studio-owned controls where supported
 - **AND** Studio SHALL label the experience as Studio Runner rather than Symphony in the primary UI.
 
+#### Scenario: Runner path is configured at runtime
+- **GIVEN** a source build or installed app does not include a managed runner
+- **WHEN** Studio discovers or asks for a runner location
+- **THEN** Studio SHALL persist the selected runner repository, runner binary, or custom endpoint in runtime app state
+- **AND** Studio SHALL NOT depend on a developer-machine fallback path compiled into the frontend bundle
+- **AND** Studio SHALL prefer runtime discovery over build-time environment variables such as `.env.local`.
+
 #### Scenario: One-install product promise is preserved
 - **GIVEN** a normal user installs OpenSpec Studio
 - **WHEN** they open a valid local OpenSpec repository and choose to enable Runner
@@ -32,6 +39,19 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **THEN** Studio SHALL allow a custom local runner path or localhost endpoint
 - **AND** Studio SHALL clearly mark compatibility and updates as user-managed
 - **AND** Studio SHALL still apply localhost-only endpoint restrictions and signed dispatch requirements.
+
+#### Scenario: Runner setup offers repair actions
+- **GIVEN** Studio Runner setup has a missing, stale, unreachable, or incompatible runner
+- **WHEN** Studio reports the problem
+- **THEN** Studio SHALL offer applicable repair actions such as auto-detect runner, choose runner folder, choose runner binary, build or rebuild runner, test health, view logs, or configure custom endpoint
+- **AND** Studio SHALL keep advanced details expandable rather than making them the primary setup path.
+
+#### Scenario: Finder-launched app can start the runner
+- **GIVEN** a user launches OpenSpec Studio from Finder or the Dock on macOS
+- **WHEN** Studio starts or health-checks a local runner
+- **THEN** Studio SHALL construct a deterministic child-process environment for required tools
+- **AND** Studio SHALL NOT rely on interactive shell startup files such as `.zprofile`, `.zshrc`, or `mise activate`
+- **AND** Studio SHALL detect and report missing `codex`, `escript`, Erlang, Elixir, Mix, or equivalent packaged runtime dependencies before dispatch.
 
 #### Scenario: Runner compatibility is checked before dispatch
 - **GIVEN** a runner is configured, discovered, installed, or started
@@ -51,6 +71,24 @@ The desktop shell SHALL provide Studio Runner as a first-class workspace-level s
 - **WHEN** Studio evaluates whether agent execution can be enabled
 - **THEN** Studio SHALL check for an OpenSpec workspace, selected change existence, required artifacts, validation state, Git repository status, GitHub-capable remote, fetchable base branch, publication readiness, and a safe runner workspace root
 - **AND** Studio SHALL show blockers in user-facing language with technical details available on demand.
+
+#### Scenario: Doctor validates setup without launching an agent
+- **GIVEN** a user wants to confirm Studio Runner setup is healthy
+- **WHEN** Studio runs a doctor or smoke-check workflow
+- **THEN** Studio SHALL verify runner health, localhost endpoint reachability, signed-dispatch prerequisites, unsigned request rejection, malformed signed payload validation, and clean port cleanup without launching a real agent task
+- **AND** Studio SHALL report each result as pass, warning, or blocker with non-sensitive technical details available on demand.
+
+#### Scenario: Source-build bootstrap is actionable
+- **GIVEN** a developer is running OpenSpec Studio from source
+- **WHEN** Studio or a bootstrap script checks local prerequisites
+- **THEN** it SHALL validate Node/npm, Rust/Cargo, OpenSpec CLI, Codex CLI, GitHub CLI, runner binary, runner endpoint conflicts, and signing prerequisites
+- **AND** it SHALL provide copyable or executable repair steps without silently mutating shell profiles or installing credentials.
+
+#### Scenario: Packaging failures do not hide app build success
+- **GIVEN** a release build creates a macOS `.app` bundle but fails to create a DMG
+- **WHEN** Studio reports build or packaging status
+- **THEN** Studio SHALL distinguish application bundle success from installer image success
+- **AND** Studio SHALL provide a deterministic fallback path for using or distributing the `.app` bundle.
 
 #### Scenario: Setup states are explicit
 - **GIVEN** Studio Runner setup is not fully ready
